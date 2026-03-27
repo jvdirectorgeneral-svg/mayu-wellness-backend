@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import SessionLocal
+from auth import hash_password, verify_password, create_access_token
 import models
 
 router = APIRouter()
@@ -40,12 +41,20 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     new_user = models.User(
         name=user.name,
         email=user.email,
-        password=user.password
+        password=hash_password(user.password)
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return new_user
+
+    return {
+        "id": new_user.id,
+        "name": new_user.name,
+        "email": new_user.email,
+        "status": new_user.status,
+        "membership_level": new_user.membership_level,
+        "membership_active": new_user.membership_active
+    }
 
 @router.put("/users/{user_id}/membership")
 def update_membership(user_id: int, membership: MembershipUpdate, db: Session = Depends(get_db)):
@@ -60,7 +69,14 @@ def update_membership(user_id: int, membership: MembershipUpdate, db: Session = 
     db.commit()
     db.refresh(user)
 
-    return user
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "status": user.status,
+        "membership_level": user.membership_level,
+        "membership_active": user.membership_active
+    }
 
 @router.post("/login")
 def login(user: LoginRequest, db: Session = Depends(get_db)):
@@ -69,13 +85,23 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if db_user.password != user.password:
+    if not verify_password(user.password, db_user.password):
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+    token = create_access_token({
+        "sub": str(db_user.id),
+        "email": db_user.email
+    })
 
     return {
         "message": "Login exitoso",
-        "user_id": db_user.id,
-        "email": db_user.email,
-        "membership_level": db_user.membership_level,
-        "membership_active": db_user.membership_active
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": db_user.id,
+            "name": db_user.name,
+            "email": db_user.email,
+            "membership_level": db_user.membership_level,
+            "membership_active": db_user.membership_active
+        }
     }
