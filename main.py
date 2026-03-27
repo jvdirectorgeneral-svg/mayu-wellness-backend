@@ -3,6 +3,8 @@ from database import engine, Base
 from users import router as users_router
 from models import User
 
+# 🔥 RESET DE TABLAS (solo temporal)
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
