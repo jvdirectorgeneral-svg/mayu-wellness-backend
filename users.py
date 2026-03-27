@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import SessionLocal
@@ -15,6 +15,10 @@ class MembershipUpdate(BaseModel):
     level: int
     active: bool
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
 def get_db():
     db = SessionLocal()
     try:
@@ -29,6 +33,10 @@ def get_users(db: Session = Depends(get_db)):
 
 @router.post("/users")
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    existing_user = db.query(models.User).filter(models.User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="El correo ya está registrado")
+
     new_user = models.User(
         name=user.name,
         email=user.email,
@@ -44,7 +52,7 @@ def update_membership(user_id: int, membership: MembershipUpdate, db: Session = 
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
-        return {"error": "Usuario no encontrado"}
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     user.membership_level = membership.level
     user.membership_active = membership.active
@@ -53,3 +61,21 @@ def update_membership(user_id: int, membership: MembershipUpdate, db: Session = 
     db.refresh(user)
 
     return user
+
+@router.post("/login")
+def login(user: LoginRequest, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(models.User.email == user.email).first()
+
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if db_user.password != user.password:
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+    return {
+        "message": "Login exitoso",
+        "user_id": db_user.id,
+        "email": db_user.email,
+        "membership_level": db_user.membership_level,
+        "membership_active": db_user.membership_active
+    }
