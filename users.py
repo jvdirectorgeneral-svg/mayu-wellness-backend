@@ -1,50 +1,45 @@
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from database import SessionLocal
+import models
 
 router = APIRouter()
 
-users_db = []
+# Dependencia de DB
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-class UserCreate(BaseModel):
-    name: str
-    email: str
-
-class MembershipUpdate(BaseModel):
-    level: int
-    active: bool
-
+# GET usuarios
 @router.get("/users")
-def get_users():
-    return {"users": users_db}
+def get_users(db: Session = Depends(get_db)):
+    users = db.query(models.User).all()
+    return {"users": users}
 
+# POST crear usuario
 @router.post("/users")
-def create_user(user: UserCreate):
-    new_user = {
-        "id": len(users_db) + 1,
-        "name": user.name,
-        "email": user.email,
-        "status": "registered",
-        "membership": {
-            "level": None,
-            "active": False
-        }
-    }
-    users_db.append(new_user)
-    return {
-        "message": "Usuario creado correctamente",
-        "user": new_user
-    }
+def create_user(name: str, email: str, db: Session = Depends(get_db)):
+    user = models.User(name=name, email=email)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
+# PUT actualizar membresía
 @router.put("/users/{user_id}/membership")
-def update_membership(user_id: int, membership: MembershipUpdate):
-    for user in users_db:
-        if user["id"] == user_id:
-            user["membership"]["level"] = membership.level
-            user["membership"]["active"] = membership.active
+def update_membership(user_id: int, level: int, active: bool, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    
+    if not user:
+        return {"error": "Usuario no encontrado"}
+    
+    user.membership_level = level
+    user.membership_active = active
 
-            return {
-                "message": "Membresía actualizada",
-                "user": user
-            }
+    db.commit()
+    db.refresh(user)
 
-    return {"error": "Usuario no encontrado"}
+    return user
