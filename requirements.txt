@@ -5,6 +5,5 @@ openai
 pydantic
 sqlalchemy
 psycopg2-binary
-passlib[bcrypt]
+passlib
 python-jose
-bcrypt==4.0.1
