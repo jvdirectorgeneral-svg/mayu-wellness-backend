@@ -30,7 +30,19 @@ def get_db():
 @router.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
-    return {"users": users}
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "status": u.status,
+                "membership_level": u.membership_level,
+                "membership_active": u.membership_active
+            }
+            for u in users
+        ]
+    }
 
 @router.post("/users")
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
