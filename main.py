@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+
 from database import engine, Base
 from users import router as users_router
 from dependencies import get_current_user
@@ -10,6 +12,15 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Mayu Wellness API",
     version="1.0.0"
+)
+
+# 🔥 CORS CONFIG (CLAVE PARA FLUTTER WEB)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # en producción luego lo cerramos
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Rutas existentes
