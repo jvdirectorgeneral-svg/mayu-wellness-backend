@@ -3,16 +3,24 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 
+# 🔥 CREAR ROUTER
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
+# =========================
+# OBTENER PRODUCTOS
+# =========================
 @router.get("/")
 def get_products(db: Session = Depends(get_db)):
-    return db.query(models.Product).filter(models.Product.active == True).all()
+    return db.query(models.Product).all()
 
 
+# =========================
+# SEED PRODUCTOS
+# =========================
 @router.post("/seed")
 def seed_products(db: Session = Depends(get_db)):
+
     products = [
         {"name": "Plata Coloidal", "price": 2, "description": "Coloide base"},
         {"name": "Cobre Coloidal", "price": 2, "description": "Coloide base"},
