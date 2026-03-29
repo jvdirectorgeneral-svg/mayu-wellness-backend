@@ -14,8 +14,7 @@ class User(Base):
 
     status = Column(String, default="registered")
 
-    # 🔥 Membresía
-    membership_level = Column(Integer, nullable=True)  # 1, 2, 3
+    membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False)
 
 
@@ -26,12 +25,10 @@ class Plan(Base):
     __tablename__ = "plans"
 
     id = Column(Integer, primary_key=True, index=True)
-
     name = Column(String, nullable=False)
-    level = Column(Integer, nullable=False)  # 1, 2, 3
+    level = Column(Integer, nullable=False)
     price = Column(Integer, nullable=False)
     description = Column(String, nullable=True)
-
     active = Column(Boolean, default=True)
 
 
@@ -42,12 +39,10 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-
     name = Column(String, nullable=False)
     price = Column(Integer, nullable=False)
-
     description = Column(String, nullable=True)
-
+    image_url = Column(String, nullable=True)  # 🔥 NUEVO
     active = Column(Boolean, default=True)
 
 
@@ -58,10 +53,7 @@ class PlanProduct(Base):
     __tablename__ = "plan_products"
 
     id = Column(Integer, primary_key=True, index=True)
-
     plan_id = Column(Integer, ForeignKey("plans.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
-
-    # 🔥 control de lógica
-    is_required = Column(Boolean, default=False)  # obligatorio
-    max_quantity = Column(Integer, default=1)     # límite por usuario
+    is_required = Column(Boolean, default=False)
+    max_quantity = Column(Integer, default=1)
