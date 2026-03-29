@@ -3,7 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base
 from users import router as users_router
-from products import router as products_router  # 🔥 NUEVO
+from products import router as products_router
+from plans import router as plans_router
+from plan_products import router as plan_products_router
 from dependencies import get_current_user
 import models
 
@@ -21,11 +23,11 @@ app = FastAPI(
 )
 
 # =========================
-# 🔥 CORS (NECESARIO PARA FLUTTER WEB)
+# 🌐 CORS (NECESARIO PARA FLUTTER WEB)
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # luego en producción se restringe
+    allow_origins=["*"],  # ⚠️ en producción restringir dominio
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +37,9 @@ app.add_middleware(
 # 📡 ROUTERS
 # =========================
 app.include_router(users_router)
-app.include_router(products_router)  # 🔥 NUEVO
+app.include_router(products_router)
+app.include_router(plans_router)
+app.include_router(plan_products_router)
 
 # =========================
 # ROOT
