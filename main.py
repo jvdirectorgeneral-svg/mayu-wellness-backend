@@ -6,6 +6,7 @@ from users import router as users_router
 from products import router as products_router
 from plans import router as plans_router
 from plan_products import router as plan_products_router
+from plan_selection import router as plan_selection_router
 from dependencies import get_current_user
 import models
 
@@ -40,6 +41,7 @@ app.include_router(users_router)
 app.include_router(products_router)
 app.include_router(plans_router)
 app.include_router(plan_products_router)
+app.include_router(plan_selection_router)
 
 # =========================
 # ROOT
