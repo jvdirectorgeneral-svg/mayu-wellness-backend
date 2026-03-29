@@ -13,7 +13,6 @@ class User(Base):
     password = Column(String, nullable=False)
 
     status = Column(String, default="registered")
-
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False)
 
@@ -42,7 +41,7 @@ class Product(Base):
     name = Column(String, nullable=False)
     price = Column(Integer, nullable=False)
     description = Column(String, nullable=True)
-    image_url = Column(String, nullable=True)  # 🔥 NUEVO
+    image_url = Column(String, nullable=True)
     active = Column(Boolean, default=True)
 
 
@@ -57,3 +56,27 @@ class PlanProduct(Base):
     product_id = Column(Integer, ForeignKey("products.id"))
     is_required = Column(Boolean, default=False)
     max_quantity = Column(Integer, default=1)
+
+
+# =========================
+# 🧾 SELECCIÓN DE PLAN DEL USUARIO
+# =========================
+class UserPlanSelection(Base):
+    __tablename__ = "user_plan_selections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
+    status = Column(String, default="draft")  # draft / confirmed
+
+
+# =========================
+# 📦 PRODUCTOS ELEGIDOS POR EL USUARIO
+# =========================
+class UserPlanSelectionItem(Base):
+    __tablename__ = "user_plan_selection_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    selection_id = Column(Integer, ForeignKey("user_plan_selections.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+    quantity = Column(Integer, default=1)
