@@ -13,7 +13,6 @@ def get_products(db: Session = Depends(get_db)):
 
 @router.post("/seed")
 def seed_products(db: Session = Depends(get_db)):
-
     products = [
         {"name": "Plata Coloidal", "price": 2, "description": "Coloide base"},
         {"name": "Cobre Coloidal", "price": 2, "description": "Coloide base"},
