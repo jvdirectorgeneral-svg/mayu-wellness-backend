@@ -1,44 +1,41 @@
-from fastapi import APIRouter
-from sqlalchemy.orm import Session
-from database import SessionLocal
-from models import Product
-
-router = APIRouter(prefix="/products", tags=["Products"])
-
-
-@router.get("/")
-def get_products():
-    db: Session = SessionLocal()
-    products = db.query(Product).filter(Product.active == True).all()
-
-    return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "price": p.price,
-            "description": p.description,
-        }
-        for p in products
-    ]
-
-
 @router.post("/seed")
-def seed_products():
-    db: Session = SessionLocal()
-
-    if db.query(Product).count() > 0:
-        return {"message": "Los productos ya existen"}
+def seed_products(db: Session = Depends(get_db)):
 
     products = [
-        Product(name="CBD 874 mg", price=6, description="CBD base del club"),
-        Product(name="Coloide Plata", price=2, description="Plata coloidal"),
-        Product(name="Coloide Cobre", price=2, description="Cobre coloidal"),
-        Product(name="Coloide Selenio", price=2, description="Selenio coloidal"),
-        Product(name="Chocomedical", price=2, description="Chocolate funcional"),
-        Product(name="Melena de León", price=6, description="Apoyo cognitivo"),
+        # 🔬 COLOIDES
+        {"name": "Plata Coloidal", "price": 2},
+        {"name": "Cobre Coloidal", "price": 2},
+        {"name": "Selenio Coloidal", "price": 2},
+        {"name": "Oro Coloidal", "price": 4},
+        {"name": "Zinc Coloidal", "price": 3},
+        {"name": "Magnesio Coloidal", "price": 3},
+        {"name": "Silicio Coloidal", "price": 3},
+
+        # 🌿 BASE
+        {"name": "CBD 874 mg", "price": 6},
+        {"name": "Melena de León", "price": 6},
+
+        # 🍫 FUNCIONAL
+        {"name": "Chocomedical", "price": 2},
+
+        # 🍄 ADAPTÓGENOS
+        {"name": "Ashwagandha", "price": 5},
+        {"name": "Reishi", "price": 5},
+        {"name": "Chaga", "price": 6},
     ]
 
-    db.add_all(products)
+    created = []
+
+    for p in products:
+        existing = db.query(models.Product).filter(models.Product.name == p["name"]).first()
+        if not existing:
+            product = models.Product(
+                name=p["name"],
+                price=p["price"]
+            )
+            db.add(product)
+            created.append(product.name)
+
     db.commit()
 
-    return {"message": "Productos creados correctamente"}
+    return {"message": "Productos creados correctamente", "products": created}
