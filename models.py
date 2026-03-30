@@ -59,24 +59,45 @@ class PlanProduct(Base):
 
 
 # =========================
-# 🧾 SELECCIÓN DE PLAN DEL USUARIO
+# 📅 SELECCIÓN MENSUAL
 # =========================
-class UserPlanSelection(Base):
-    __tablename__ = "user_plan_selections"
+class MonthlySelection(Base):
+    __tablename__ = "monthly_selections"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
-    status = Column(String, default="draft")  # draft / confirmed
+
+    month = Column(Integer, nullable=False)
+    year = Column(Integer, nullable=False)
+
+    status = Column(String, default="draft")  # draft / confirmed / locked
+    editable = Column(Boolean, default=True)
 
 
 # =========================
-# 📦 PRODUCTOS ELEGIDOS POR EL USUARIO
+# 📦 ITEMS DE LA SELECCIÓN MENSUAL
 # =========================
-class UserPlanSelectionItem(Base):
-    __tablename__ = "user_plan_selection_items"
+class MonthlySelectionItem(Base):
+    __tablename__ = "monthly_selection_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    selection_id = Column(Integer, ForeignKey("user_plan_selections.id"), nullable=False)
+    monthly_selection_id = Column(Integer, ForeignKey("monthly_selections.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1)
+
+
+# =========================
+# 🔁 SOLICITUD DE CAMBIO DE PLAN
+# =========================
+class PlanChangeRequest(Base):
+    __tablename__ = "plan_change_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    current_plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
+    requested_plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
+
+    status = Column(String, default="pending")  # pending / approved / rejected / applied
+    effective_month = Column(Integer, nullable=True)
+    effective_year = Column(Integer, nullable=True)
