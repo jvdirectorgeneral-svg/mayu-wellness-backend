@@ -7,6 +7,8 @@ from products import router as products_router
 from plans import router as plans_router
 from plan_products import router as plan_products_router
 from plan_selection import router as plan_selection_router
+from monthly_selection import router as monthly_selection_router
+from plan_change import router as plan_change_router
 from dependencies import get_current_user
 import models
 
@@ -24,11 +26,11 @@ app = FastAPI(
 )
 
 # =========================
-# 🌐 CORS (NECESARIO PARA FLUTTER WEB)
+# 🌐 CORS
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ en producción restringir dominio
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,6 +44,8 @@ app.include_router(products_router)
 app.include_router(plans_router)
 app.include_router(plan_products_router)
 app.include_router(plan_selection_router)
+app.include_router(monthly_selection_router)
+app.include_router(plan_change_router)
 
 # =========================
 # ROOT
