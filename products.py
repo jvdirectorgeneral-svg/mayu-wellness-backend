@@ -14,19 +14,22 @@ def get_products(db: Session = Depends(get_db)):
 @router.post("/seed")
 def seed_products(db: Session = Depends(get_db)):
     products = [
-        {"name": "Plata Coloidal", "price": 2, "description": "Coloide base"},
-        {"name": "Cobre Coloidal", "price": 2, "description": "Coloide base"},
-        {"name": "Selenio Coloidal", "price": 2, "description": "Coloide base"},
-        {"name": "Oro Coloidal", "price": 4, "description": "Coloide premium"},
-        {"name": "Zinc Coloidal", "price": 3, "description": "Inmunidad y regeneración"},
-        {"name": "Magnesio Coloidal", "price": 3, "description": "Relajación muscular"},
-        {"name": "Silicio Coloidal", "price": 3, "description": "Soporte estructural"},
-        {"name": "CBD 874 mg", "price": 6, "description": "CBD base del club"},
-        {"name": "Melena de León", "price": 6, "description": "Neuroregenerador"},
+        # COLOIDES
+        {"name": "Plata Coloidal", "price": 2, "description": "Coloide a libre elección"},
+        {"name": "Cobre Coloidal", "price": 2, "description": "Coloide a libre elección"},
+        {"name": "Selenio Coloidal", "price": 2, "description": "Coloide a libre elección"},
+        {"name": "Oro Coloidal", "price": 4, "description": "Coloide a libre elección"},
+        {"name": "Zinc Coloidal", "price": 3, "description": "Coloide a libre elección"},
+        {"name": "Shunguita", "price": 3, "description": "Coloide a libre elección"},
+        {"name": "Silicio", "price": 3, "description": "Coloide a libre elección"},
+        {"name": "Magnesio", "price": 3, "description": "Coloide a libre elección"},
+
+        # BASES / FUNCIONALES
+        {"name": "CBD 874 mg", "price": 6, "description": "Producto base del club"},
         {"name": "Chocomedical", "price": 2, "description": "Chocolate funcional"},
-        {"name": "Ashwagandha", "price": 5, "description": "Adaptógeno"},
-        {"name": "Reishi", "price": 5, "description": "Inmunidad"},
-        {"name": "Chaga", "price": 6, "description": "Antioxidante premium"},
+        {"name": "Melena de León", "price": 6, "description": "Neuroregenerador"},
+        {"name": "Té CBD", "price": 3, "description": "Infusión funcional con CBD"},
+        {"name": "Magnesio Bisglicinato", "price": 3, "description": "Soporte mineral funcional"},
     ]
 
     created = []
