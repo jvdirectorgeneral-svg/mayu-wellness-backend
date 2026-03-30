@@ -6,108 +6,93 @@ import models
 router = APIRouter(prefix="/plan-products", tags=["Plan Products"])
 
 
-@router.get("/")
-def get_plan_products(db: Session = Depends(get_db)):
-    relations = db.query(models.PlanProduct).all()
-    return relations
+def get_product(db, name):
+    return db.query(models.Product).filter(models.Product.name == name).first()
 
 
 @router.post("/seed")
 def seed_plan_products(db: Session = Depends(get_db)):
-    # =========================
-    # BUSCAR PLANES
-    # =========================
-    plan1 = db.query(models.Plan).filter(models.Plan.level == 1).first()
-    plan2 = db.query(models.Plan).filter(models.Plan.level == 2).first()
-    plan3 = db.query(models.Plan).filter(models.Plan.level == 3).first()
+    db.query(models.PlanProduct).delete()
+    db.commit()
 
-    if not plan1 or not plan2 or not plan3:
-        return {"error": "Primero debes crear los planes con /plans/seed"}
+    # COLOIDES (TODOS)
+    coloides = db.query(models.Product).filter(
+        models.Product.name.in_([
+            "Plata Coloidal",
+            "Cobre Coloidal",
+            "Selenio Coloidal",
+            "Oro Coloidal",
+            "Zinc Coloidal",
+            "Shunguita",
+            "Silicio",
+            "Magnesio"
+        ])
+    ).all()
 
-    # =========================
-    # BUSCAR PRODUCTOS
-    # =========================
-    products = {p.name: p for p in db.query(models.Product).all()}
-
-    required_products = [
-        "CBD 874 mg",
-        "Melena de León",
-        "Chocomedical",
-        "Plata Coloidal",
-        "Cobre Coloidal",
-        "Selenio Coloidal",
-        "Oro Coloidal",
-        "Zinc Coloidal",
-        "Magnesio Coloidal",
-        "Silicio Coloidal",
-        "Ashwagandha",
-        "Reishi",
-        "Chaga",
+    # -------- NIVEL 1 – COBRE --------
+    nivel1 = [
+        get_product(db, "CBD 874 mg"),
+        get_product(db, "Chocomedical"),
     ]
 
-    for name in required_products:
-        if name not in products:
-            return {"error": f"Falta el producto: {name}. Ejecuta /products/seed primero"}
+    for p in nivel1:
+        db.add(models.PlanProduct(
+            plan_level=1,
+            product_id=p.id,
+            is_editable=False
+        ))
 
-    relations_to_create = [
-        # =========================
-        # NIVEL 1 - COBRE
-        # =========================
-        {"plan_id": plan1.id, "product_id": products["CBD 874 mg"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan1.id, "product_id": products["Plata Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan1.id, "product_id": products["Cobre Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan1.id, "product_id": products["Selenio Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan1.id, "product_id": products["Chocomedical"].id, "is_required": True, "max_quantity": 1},
+    for c in coloides:
+        db.add(models.PlanProduct(
+            plan_level=1,
+            product_id=c.id,
+            is_editable=True
+        ))
 
-        # =========================
-        # NIVEL 2 - PLATA
-        # =========================
-        {"plan_id": plan2.id, "product_id": products["CBD 874 mg"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Melena de León"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Plata Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Cobre Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Selenio Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Zinc Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Chocomedical"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Ashwagandha"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan2.id, "product_id": products["Reishi"].id, "is_required": False, "max_quantity": 1},
-
-        # =========================
-        # NIVEL 3 - ORO
-        # =========================
-        {"plan_id": plan3.id, "product_id": products["CBD 874 mg"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Melena de León"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Plata Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Cobre Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Selenio Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Oro Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Zinc Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Magnesio Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Silicio Coloidal"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Chocomedical"].id, "is_required": True, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Ashwagandha"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Reishi"].id, "is_required": False, "max_quantity": 1},
-        {"plan_id": plan3.id, "product_id": products["Chaga"].id, "is_required": False, "max_quantity": 1},
+    # -------- NIVEL 2 – PLATA --------
+    nivel2 = [
+        get_product(db, "CBD 874 mg"),
+        get_product(db, "Chocomedical"),
+        get_product(db, "Melena de León"),
     ]
 
-    created = 0
+    for p in nivel2:
+        db.add(models.PlanProduct(
+            plan_level=2,
+            product_id=p.id,
+            is_editable=False
+        ))
 
-    for rel in relations_to_create:
-        existing = db.query(models.PlanProduct).filter(
-            models.PlanProduct.plan_id == rel["plan_id"],
-            models.PlanProduct.product_id == rel["product_id"]
-        ).first()
+    for c in coloides:
+        db.add(models.PlanProduct(
+            plan_level=2,
+            product_id=c.id,
+            is_editable=True
+        ))
 
-        if not existing:
-            new_rel = models.PlanProduct(
-                plan_id=rel["plan_id"],
-                product_id=rel["product_id"],
-                is_required=rel["is_required"],
-                max_quantity=rel["max_quantity"]
-            )
-            db.add(new_rel)
-            created += 1
+    # -------- NIVEL 3 – ORO --------
+    nivel3 = [
+        get_product(db, "CBD 874 mg"),
+        get_product(db, "Chocomedical"),
+        get_product(db, "Melena de León"),
+        get_product(db, "Té CBD"),
+        get_product(db, "Magnesio Bisglicinato"),
+    ]
+
+    for p in nivel3:
+        db.add(models.PlanProduct(
+            plan_level=3,
+            product_id=p.id,
+            is_editable=False
+        ))
+
+    for c in coloides:
+        db.add(models.PlanProduct(
+            plan_level=3,
+            product_id=c.id,
+            is_editable=True
+        ))
 
     db.commit()
 
-    return {"message": "Relaciones plan-producto creadas", "created": created}
+    return {"message": "Planes configurados correctamente"}
