@@ -101,3 +101,19 @@ class PlanChangeRequest(Base):
     status = Column(String, default="pending")  # pending / approved / rejected / applied
     effective_month = Column(Integer, nullable=True)
     effective_year = Column(Integer, nullable=True)
+
+# =========================
+# 💳 TARJETA DIGITAL DEL SOCIO
+# =========================
+class MemberCard(Base):
+    __tablename__ = "member_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    member_code = Column(String, unique=True, nullable=False)
+    qr_token = Column(String, unique=True, nullable=False)
+
+    level_snapshot = Column(Integer, nullable=False)
+    status = Column(String, default="active")  # active / inactive / suspended
+    expires_at = Column(String, nullable=True)
