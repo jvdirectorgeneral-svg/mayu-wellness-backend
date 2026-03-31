@@ -11,7 +11,7 @@ import os
 
 router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
 
-# ⚠️ Cambia esto si tu URL cambia
+# Cambia esto si cambia tu dominio
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
@@ -19,16 +19,31 @@ def generate_member_code(user_id: int, level: int):
     return f"MAYU-{level}-{user_id:06d}"
 
 
-def draw_text_with_shadow(draw, position, text, font, text_color=(255, 255, 255), shadow_color=(0, 0, 0)):
+def draw_text_with_shadow(
+    draw,
+    position,
+    text,
+    font,
+    text_color=(255, 255, 255),
+    shadow_color=(0, 0, 0),
+):
     x, y = position
+    # sombra más fuerte
+    draw.text((x + 3, y + 3), text, fill=shadow_color, font=font)
     draw.text((x + 2, y + 2), text, fill=shadow_color, font=font)
+    # texto blanco puro
     draw.text((x, y), text, fill=text_color, font=font)
 
 
-def draw_spaced_text_with_shadow(draw, position, text, font, spacing=3, text_color=(255, 255, 255), shadow_color=(0, 0, 0)):
-    """
-    Dibuja texto letra por letra para dar tracking/espaciado elegante.
-    """
+def draw_spaced_text_with_shadow(
+    draw,
+    position,
+    text,
+    font,
+    spacing=3,
+    text_color=(255, 255, 255),
+    shadow_color=(0, 0, 0),
+):
     x, y = position
     current_x = x
 
@@ -36,6 +51,7 @@ def draw_spaced_text_with_shadow(draw, position, text, font, spacing=3, text_col
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
 
+        draw.text((current_x + 3, y + 3), char, fill=shadow_color, font=font)
         draw.text((current_x + 2, y + 2), char, fill=shadow_color, font=font)
         draw.text((current_x, y), char, fill=text_color, font=font)
 
@@ -60,7 +76,10 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene membresía asignada")
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene membresía asignada",
+        )
 
     existing = db.query(models.MemberCard).filter(
         models.MemberCard.user_id == user.id
@@ -86,7 +105,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
                 "level_snapshot": existing.level_snapshot,
                 "status": existing.status,
                 "expires_at": existing.expires_at,
-            }
+            },
         }
 
     card = models.MemberCard(
@@ -95,7 +114,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         qr_token=str(uuid.uuid4()),
         level_snapshot=user.membership_level,
         status="active" if user.membership_active else "inactive",
-        expires_at=expires_at
+        expires_at=expires_at,
     )
 
     db.add(card)
@@ -112,7 +131,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
             "level_snapshot": card.level_snapshot,
             "status": card.status,
             "expires_at": card.expires_at,
-        }
+        },
     }
 
 
@@ -156,7 +175,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404
+            status_code=404,
         )
 
     user = db.query(models.User).filter(models.User.id == card.user_id).first()
@@ -173,7 +192,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404
+            status_code=404,
         )
 
     status_text = "ACTIVA" if user.membership_active else "INACTIVA"
@@ -182,7 +201,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     level_map = {
         1: "Nivel 1 - Cobre",
         2: "Nivel 2 - Plata",
-        3: "Nivel 3 - Oro"
+        3: "Nivel 3 - Oro",
     }
     level_text = level_map.get(user.membership_level, "Sin nivel")
 
@@ -261,7 +280,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         image = Image.new(
             "RGB",
             (width, height),
-            fallback_colors.get(card.level_snapshot, (220, 220, 220))
+            fallback_colors.get(card.level_snapshot, (220, 220, 220)),
         )
 
     draw = ImageDraw.Draw(image)
@@ -269,7 +288,11 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     # =========================
     # FUENTES - MONTSERRAT PARA TODO
     # =========================
-    font_path = os.path.join(base_dir, "assets", "Montserrat-Italic-VariableFont_wght.ttf")
+    font_path = os.path.join(
+        base_dir,
+        "assets",
+        "Montserrat-Italic-VariableFont_wght.ttf",
+    )
 
     try:
         title_font = ImageFont.truetype(font_path, 52)
@@ -292,7 +315,25 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         [(18, 18), (width - 18, height - 18)],
         radius=30,
         outline=accent_color,
-        width=4
+        width=4,
+    )
+
+    # =========================
+    # BANDA OSCURA PARA TÍTULO
+    # =========================
+    draw.rounded_rectangle(
+        [(130, 195), (820, 275)],
+        radius=18,
+        fill=(0, 0, 0),
+    )
+
+    # =========================
+    # FONDO OSCURO PARA DATOS
+    # =========================
+    draw.rounded_rectangle(
+        [(35, 285), (610, 525)],
+        radius=18,
+        fill=(25, 25, 25),
     )
 
     # =========================
@@ -325,7 +366,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         title_font,
         spacing=spacing,
         text_color=text_color,
-        shadow_color=shadow_color
+        shadow_color=shadow_color,
     )
 
     # =========================
@@ -354,5 +395,5 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     return FileResponse(
         file_path,
         media_type="image/png",
-        filename=f"mayu_card_{user_id}.png"
+        filename=f"mayu_card_{user_id}.png",
     )
