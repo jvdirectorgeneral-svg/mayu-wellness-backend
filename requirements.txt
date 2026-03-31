@@ -7,3 +7,5 @@ sqlalchemy
 psycopg2-binary
 passlib
 python-jose
+pillow
+qrcode
