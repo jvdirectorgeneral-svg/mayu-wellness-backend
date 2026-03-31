@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -11,6 +11,9 @@ import os
 
 router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
 
+# ⚠️ Cambia esto si tu URL cambia
+BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
+
 
 def generate_member_code(user_id: int, level: int):
     return f"MAYU-{level}-{user_id:06d}"
@@ -20,6 +23,34 @@ def draw_text_with_shadow(draw, position, text, font, text_color=(255, 255, 255)
     x, y = position
     draw.text((x + 2, y + 2), text, fill=shadow_color, font=font)
     draw.text((x, y), text, fill=text_color, font=font)
+
+
+def draw_spaced_text_with_shadow(draw, position, text, font, spacing=3, text_color=(255, 255, 255), shadow_color=(0, 0, 0)):
+    """
+    Dibuja texto letra por letra para dar tracking/espaciado elegante.
+    """
+    x, y = position
+    current_x = x
+
+    for char in text:
+        bbox = draw.textbbox((0, 0), char, font=font)
+        char_width = bbox[2] - bbox[0]
+
+        draw.text((current_x + 2, y + 2), char, fill=shadow_color, font=font)
+        draw.text((current_x, y), char, fill=text_color, font=font)
+
+        current_x += char_width + spacing
+
+
+def get_spaced_text_width(draw, text, font, spacing=3):
+    total_width = 0
+    for i, char in enumerate(text):
+        bbox = draw.textbbox((0, 0), char, font=font)
+        char_width = bbox[2] - bbox[0]
+        total_width += char_width
+        if i < len(text) - 1:
+            total_width += spacing
+    return total_width
 
 
 @router.post("/generate/{user_id}")
@@ -105,30 +136,81 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/validate/{qr_token}")
+@router.get("/validate/{qr_token}", response_class=HTMLResponse)
 def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     card = db.query(models.MemberCard).filter(
         models.MemberCard.qr_token == qr_token
     ).first()
 
     if not card:
-        raise HTTPException(status_code=404, detail="Tarjeta inválida")
+        return HTMLResponse(
+            content="""
+            <html>
+                <head>
+                    <title>Tarjeta inválida</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: Arial, sans-serif; background:#111; color:white; text-align:center; padding:40px;">
+                    <h1 style="color:#ff4d4f;">Tarjeta inválida</h1>
+                    <p>El código QR no corresponde a una tarjeta válida.</p>
+                </body>
+            </html>
+            """,
+            status_code=404
+        )
 
     user = db.query(models.User).filter(models.User.id == card.user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        return HTMLResponse(
+            content="""
+            <html>
+                <head>
+                    <title>Usuario no encontrado</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: Arial, sans-serif; background:#111; color:white; text-align:center; padding:40px;">
+                    <h1 style="color:#ff4d4f;">Usuario no encontrado</h1>
+                </body>
+            </html>
+            """,
+            status_code=404
+        )
 
-    return {
-        "valid": True,
-        "user_id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "membership_level": user.membership_level,
-        "membership_active": user.membership_active,
-        "member_code": card.member_code,
-        "card_status": card.status,
-        "expires_at": card.expires_at,
+    status_text = "ACTIVA" if user.membership_active else "INACTIVA"
+    status_color = "#22c55e" if user.membership_active else "#ef4444"
+
+    level_map = {
+        1: "Nivel 1 - Cobre",
+        2: "Nivel 2 - Plata",
+        3: "Nivel 3 - Oro"
     }
+    level_text = level_map.get(user.membership_level, "Sin nivel")
+
+    html_content = f"""
+    <html>
+        <head>
+            <title>Validación de tarjeta MAYU</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin:0; font-family: Arial, sans-serif; background:#0f172a; color:white; display:flex; align-items:center; justify-content:center; min-height:100vh;">
+            <div style="max-width:520px; width:90%; background:#1e293b; border-radius:24px; padding:32px; box-shadow:0 10px 30px rgba(0,0,0,0.35);">
+                <h1 style="text-align:center; margin-top:0;">MAYU WELLNESS CLUB</h1>
+                <div style="text-align:center; margin:20px 0;">
+                    <span style="display:inline-block; padding:12px 24px; border-radius:999px; background:{status_color}; color:white; font-weight:bold; font-size:22px;">
+                        {status_text}
+                    </span>
+                </div>
+                <p style="font-size:20px; margin:14px 0;"><strong>Nombre:</strong> {user.name}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Email:</strong> {user.email}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Nivel:</strong> {level_text}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Código:</strong> {card.member_code}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Válido hasta:</strong> {card.expires_at}</p>
+            </div>
+        </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html_content, status_code=200)
 
 
 @router.get("/user/{user_id}/image")
@@ -163,7 +245,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
         accent_color = (255, 236, 170)
 
-    # Todo el texto en blanco
     text_color = (255, 255, 255)
     shadow_color = (0, 0, 0)
 
@@ -186,19 +267,19 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     draw = ImageDraw.Draw(image)
 
     # =========================
-    # FUENTES
+    # FUENTES - MONTSERRAT PARA TODO
     # =========================
-    font_path = os.path.join(base_dir, "assets", "PlayfairDisplay-Bold.ttf")
+    font_path = os.path.join(base_dir, "assets", "Montserrat-Italic-VariableFont_wght.ttf")
 
     try:
-        title_font = ImageFont.truetype(font_path, 54)
-        name_font = ImageFont.truetype(font_path, 40)
-        info_font = ImageFont.truetype(font_path, 28)
+        title_font = ImageFont.truetype(font_path, 52)
+        name_font = ImageFont.truetype(font_path, 38)
+        info_font = ImageFont.truetype(font_path, 26)
     except Exception:
         try:
-            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 54)
-            name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
-            info_font = ImageFont.truetype("DejaVuSans.ttf", 28)
+            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
+            name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
+            info_font = ImageFont.truetype("DejaVuSans.ttf", 26)
         except Exception:
             title_font = ImageFont.load_default()
             name_font = ImageFont.load_default()
@@ -229,42 +310,38 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             pass
 
     # =========================
-    # TÍTULO GRANDE, CENTRADO
+    # TÍTULO CON TRACKING ELEGANTE
     # =========================
     title = "MAYU WELLNESS CLUB"
-    title_bbox = draw.textbbox((0, 0), title, font=title_font)
-    title_width = title_bbox[2] - title_bbox[0]
+    spacing = 2
+    title_width = get_spaced_text_width(draw, title, title_font, spacing=spacing)
     title_x = (width - title_width) // 2
-    title_y = 205
+    title_y = 215
 
-    # Negrita simulada + sombra
-    for dx, dy in [(0, 0), (1, 0), (0, 1), (1, 1)]:
-        draw.text(
-            (title_x + dx + 2, title_y + dy + 2),
-            title,
-            fill=shadow_color,
-            font=title_font
-        )
-        draw.text(
-            (title_x + dx, title_y + dy),
-            title,
-            fill=text_color,
-            font=title_font
-        )
+    draw_spaced_text_with_shadow(
+        draw,
+        (title_x, title_y),
+        title,
+        title_font,
+        spacing=spacing,
+        text_color=text_color,
+        shadow_color=shadow_color
+    )
 
     # =========================
-    # DATOS GRANDES EN BLANCO
+    # DATOS EN BLANCO
     # =========================
-    draw_text_with_shadow(draw, (60, 300), user.name, name_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {card.expires_at}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
     # =========================
-    # QR
+    # QR ENLAZADO A VALIDACIÓN REAL
     # =========================
-    qr = qrcode.make(card.qr_token)
+    validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
+    qr = qrcode.make(validation_url)
     qr = qr.resize((170, 170))
     image.paste(qr, (735, 340))
 
