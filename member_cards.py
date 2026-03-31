@@ -138,84 +138,117 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    width, height = 950, 560
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
     # =========================
-    # COLORES ELEGANTES POR NIVEL
+    # FONDO POR NIVEL (JPG)
     # =========================
     if card.level_snapshot == 1:
-        bg_color = (176, 111, 79)        # cobre elegante
-        accent_color = (230, 190, 160)   # brillo cobre
         level_text = "Nivel 1 - Cobre"
+        bg_path = os.path.join(base_dir, "assets", "card_cobre.jpg")
+        accent_color = (236, 210, 190)
+        text_color = (30, 20, 15)
     elif card.level_snapshot == 2:
-        bg_color = (205, 210, 214)       # plata premium
-        accent_color = (245, 245, 245)   # brillo plata
         level_text = "Nivel 2 - Plata"
+        bg_path = os.path.join(base_dir, "assets", "card_plata.jpg")
+        accent_color = (245, 245, 245)
+        text_color = (25, 25, 25)
     else:
-        bg_color = (212, 175, 55)        # oro brillante
-        accent_color = (255, 233, 140)   # brillo oro
         level_text = "Nivel 3 - Oro"
+        bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
+        accent_color = (255, 236, 170)
+        text_color = (40, 28, 10)
 
-    # =========================
-    # CREAR IMAGEN BASE
-    # =========================
-    width, height = 950, 560
-    image = Image.new("RGB", (width, height), bg_color)
+    # Crear imagen desde textura o fallback
+    if os.path.exists(bg_path):
+        image = Image.open(bg_path).convert("RGB")
+        image = image.resize((width, height))
+    else:
+        fallback_colors = {
+            1: (176, 111, 79),
+            2: (205, 210, 214),
+            3: (212, 175, 55),
+        }
+        image = Image.new(
+            "RGB",
+            (width, height),
+            fallback_colors.get(card.level_snapshot, (220, 220, 220))
+        )
+
     draw = ImageDraw.Draw(image)
 
-    # Marco interior elegante
+    # =========================
+    # MARCO ELEGANTE
+    # =========================
     draw.rounded_rectangle(
-        [(20, 20), (width - 20, height - 20)],
-        radius=28,
+        [(18, 18), (width - 18, height - 18)],
+        radius=30,
         outline=accent_color,
         width=4
     )
 
-    # Línea decorativa superior
+    # Franja superior
     draw.rounded_rectangle(
-        [(35, 35), (width - 35, 95)],
+        [(35, 30), (width - 35, 95)],
         radius=18,
-        fill=accent_color
+        fill=(255, 255, 255)
     )
 
     # =========================
     # LOGO
     # =========================
-    base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
-
     if os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert("RGBA")
             logo = logo.resize((120, 120))
-            image.paste(logo, (780, 120), logo)
+            image.paste(logo, (790, 110), logo)
         except Exception:
             pass
 
     # =========================
-    # TEXTOS
+    # TÍTULO GRANDE Y CENTRADO
     # =========================
-    text_color = (20, 20, 20)
+    title = "MAYU WELLNESS CLUB"
+    title_bbox = draw.textbbox((0, 0), title)
+    title_width = title_bbox[2] - title_bbox[0]
+    title_x = (width - title_width) // 2
+    title_y = 48
 
-    draw.text((55, 48), "MAYU WELLNESS CLUB", fill=text_color)
-    draw.text((55, 145), user.name, fill=text_color)
-    draw.text((55, 205), level_text, fill=text_color)
-    draw.text((55, 275), f"Codigo: {card.member_code}", fill=text_color)
-    draw.text((55, 330), f"Valido hasta: {card.expires_at}", fill=text_color)
-    draw.text((55, 385), f"Estado: {card.status}", fill=text_color)
+    # Negrita simulada
+    for offset in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+        draw.text(
+            (title_x + offset[0], title_y + offset[1]),
+            title,
+            fill=text_color
+        )
 
-    # Franja de beneficio
+    # =========================
+    # DATOS DEL SOCIO
+    # =========================
+    draw.text((60, 150), user.name, fill=text_color)
+    draw.text((60, 210), level_text, fill=text_color)
+    draw.text((60, 280), f"Codigo: {card.member_code}", fill=text_color)
+    draw.text((60, 335), f"Valido hasta: {card.expires_at}", fill=text_color)
+    draw.text((60, 390), f"Estado: {card.status}", fill=text_color)
+
+    # =========================
+    # FRANJA INFERIOR
+    # =========================
     draw.rounded_rectangle(
-        [(50, 450), (600, 505)],
-        radius=16,
-        fill=accent_color
+        [(55, 458), (610, 515)],
+        radius=18,
+        fill=(255, 255, 255)
     )
-    draw.text((70, 468), "Tarjeta digital de beneficios MAYU", fill=text_color)
+    draw.text((78, 478), "Tarjeta digital de beneficios MAYU", fill=text_color)
 
     # =========================
     # QR
     # =========================
     qr = qrcode.make(card.qr_token)
-    qr = qr.resize((170, 170))
-    image.paste(qr, (730, 330))
+    qr = qr.resize((175, 175))
+    image.paste(qr, (730, 320))
 
     # =========================
     # GUARDAR IMAGEN TEMPORAL
