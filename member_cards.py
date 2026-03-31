@@ -27,7 +27,6 @@ def draw_text_with_shadow(
     shadow_color=(0, 0, 0),
 ):
     x, y = position
-    draw.text((x + 2, y + 2), text, fill=shadow_color, font=font)
     draw.text((x, y), text, fill=text_color, font=font)
 
 
@@ -36,7 +35,7 @@ def draw_spaced_text_with_shadow(
     position,
     text,
     font,
-    spacing=2,
+    spacing=1,
     text_color=(255, 255, 255),
     shadow_color=(0, 0, 0),
 ):
@@ -47,13 +46,12 @@ def draw_spaced_text_with_shadow(
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
 
-        draw.text((current_x + 2, y + 2), char, fill=shadow_color, font=font)
         draw.text((current_x, y), char, fill=text_color, font=font)
 
         current_x += char_width + spacing
 
 
-def get_spaced_text_width(draw, text, font, spacing=2):
+def get_spaced_text_width(draw, text, font, spacing=1):
     total_width = 0
     for i, char in enumerate(text):
         bbox = draw.textbbox((0, 0), char, font=font)
@@ -273,26 +271,15 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     draw = ImageDraw.Draw(image)
 
-    # Fuentes Montserrat
-    font_path = os.path.join(
-        base_dir,
-        "assets",
-        "Montserrat-Italic-VariableFont_wght.ttf",
-    )
-
+    # Fuentes gruesas blancas
     try:
-        title_font = ImageFont.truetype(font_path, 56)
-        name_font = ImageFont.truetype(font_path, 38)
-        info_font = ImageFont.truetype(font_path, 26)
+        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 64)
+        name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 42)
+        info_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
     except Exception:
-        try:
-            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 56)
-            name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
-            info_font = ImageFont.truetype("DejaVuSans.ttf", 26)
-        except Exception:
-            title_font = ImageFont.load_default()
-            name_font = ImageFont.load_default()
-            info_font = ImageFont.load_default()
+        title_font = ImageFont.load_default()
+        name_font = ImageFont.load_default()
+        info_font = ImageFont.load_default()
 
     # Marco limpio
     draw.rounded_rectangle(
@@ -314,9 +301,9 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    # Título centrado sin fondo negro
+    # Título centrado
     title = "MAYU WELLNESS CLUB"
-    spacing = 2
+    spacing = 1
     title_width = get_spaced_text_width(draw, title, title_font, spacing=spacing)
     title_x = (width - title_width) // 2
     title_y = 215
@@ -331,7 +318,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         shadow_color=shadow_color,
     )
 
-    # Datos sin cajas negras
+    # Datos
     draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
