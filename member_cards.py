@@ -16,6 +16,12 @@ def generate_member_code(user_id: int, level: int):
     return f"MAYU-{level}-{user_id:06d}"
 
 
+def draw_text_with_shadow(draw, position, text, font, text_color=(255, 255, 255), shadow_color=(0, 0, 0)):
+    x, y = position
+    draw.text((x + 2, y + 2), text, fill=shadow_color, font=font)
+    draw.text((x, y), text, fill=text_color, font=font)
+
+
 @router.post("/generate/{user_id}")
 def generate_member_card(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -148,17 +154,18 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         level_text = "Nivel 1 - Cobre"
         bg_path = os.path.join(base_dir, "assets", "card_cobre.jpg")
         accent_color = (236, 210, 190)
-        text_color = (20, 15, 12)
     elif card.level_snapshot == 2:
         level_text = "Nivel 2 - Plata"
         bg_path = os.path.join(base_dir, "assets", "card_plata.jpg")
         accent_color = (245, 245, 245)
-        text_color = (20, 20, 20)
     else:
         level_text = "Nivel 3 - Oro"
         bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
         accent_color = (255, 236, 170)
-        text_color = (35, 28, 10)
+
+    # Todo el texto en blanco
+    text_color = (255, 255, 255)
+    shadow_color = (0, 0, 0)
 
     # Fondo con imagen o fallback
     if os.path.exists(bg_path):
@@ -181,7 +188,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     # =========================
     # FUENTES
     # =========================
-    # Si luego subes una fuente .ttf a assets, la tomará.
     font_path = os.path.join(base_dir, "assets", "PlayfairDisplay-Bold.ttf")
 
     try:
@@ -223,7 +229,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             pass
 
     # =========================
-    # TÍTULO GRANDE, CENTRADO, NEGRITA
+    # TÍTULO GRANDE, CENTRADO
     # =========================
     title = "MAYU WELLNESS CLUB"
     title_bbox = draw.textbbox((0, 0), title, font=title_font)
@@ -231,8 +237,14 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     title_x = (width - title_width) // 2
     title_y = 205
 
-    # Negrita simulada
+    # Negrita simulada + sombra
     for dx, dy in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+        draw.text(
+            (title_x + dx + 2, title_y + dy + 2),
+            title,
+            fill=shadow_color,
+            font=title_font
+        )
         draw.text(
             (title_x + dx, title_y + dy),
             title,
@@ -241,13 +253,13 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         )
 
     # =========================
-    # DATOS GRANDES
+    # DATOS GRANDES EN BLANCO
     # =========================
-    draw.text((60, 300), user.name, fill=text_color, font=name_font)
-    draw.text((60, 355), level_text, fill=text_color, font=info_font)
-    draw.text((60, 400), f"Código: {card.member_code}", fill=text_color, font=info_font)
-    draw.text((60, 440), f"Válido hasta: {card.expires_at}", fill=text_color, font=info_font)
-    draw.text((60, 480), f"Estado: {card.status}", fill=text_color, font=info_font)
+    draw_text_with_shadow(draw, (60, 300), user.name, name_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {card.expires_at}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
     # =========================
     # QR
