@@ -11,7 +11,6 @@ import os
 
 router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
 
-# Cambia esto si cambia tu dominio
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
@@ -28,10 +27,7 @@ def draw_text_with_shadow(
     shadow_color=(0, 0, 0),
 ):
     x, y = position
-    # sombra más fuerte
-    draw.text((x + 3, y + 3), text, fill=shadow_color, font=font)
     draw.text((x + 2, y + 2), text, fill=shadow_color, font=font)
-    # texto blanco puro
     draw.text((x, y), text, fill=text_color, font=font)
 
 
@@ -40,7 +36,7 @@ def draw_spaced_text_with_shadow(
     position,
     text,
     font,
-    spacing=3,
+    spacing=2,
     text_color=(255, 255, 255),
     shadow_color=(0, 0, 0),
 ):
@@ -51,14 +47,13 @@ def draw_spaced_text_with_shadow(
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
 
-        draw.text((current_x + 3, y + 3), char, fill=shadow_color, font=font)
         draw.text((current_x + 2, y + 2), char, fill=shadow_color, font=font)
         draw.text((current_x, y), char, fill=text_color, font=font)
 
         current_x += char_width + spacing
 
 
-def get_spaced_text_width(draw, text, font, spacing=3):
+def get_spaced_text_width(draw, text, font, spacing=2):
     total_width = 0
     for i, char in enumerate(text):
         bbox = draw.textbbox((0, 0), char, font=font)
@@ -76,10 +71,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(
-            status_code=400,
-            detail="El usuario no tiene membresía asignada",
-        )
+        raise HTTPException(status_code=400, detail="El usuario no tiene membresía asignada")
 
     existing = db.query(models.MemberCard).filter(
         models.MemberCard.user_id == user.id
@@ -105,7 +97,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
                 "level_snapshot": existing.level_snapshot,
                 "status": existing.status,
                 "expires_at": existing.expires_at,
-            },
+            }
         }
 
     card = models.MemberCard(
@@ -114,7 +106,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         qr_token=str(uuid.uuid4()),
         level_snapshot=user.membership_level,
         status="active" if user.membership_active else "inactive",
-        expires_at=expires_at,
+        expires_at=expires_at
     )
 
     db.add(card)
@@ -131,7 +123,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
             "level_snapshot": card.level_snapshot,
             "status": card.status,
             "expires_at": card.expires_at,
-        },
+        }
     }
 
 
@@ -175,7 +167,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404,
+            status_code=404
         )
 
     user = db.query(models.User).filter(models.User.id == card.user_id).first()
@@ -192,7 +184,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404,
+            status_code=404
         )
 
     status_text = "ACTIVA" if user.membership_active else "INACTIVA"
@@ -201,7 +193,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     level_map = {
         1: "Nivel 1 - Cobre",
         2: "Nivel 2 - Plata",
-        3: "Nivel 3 - Oro",
+        3: "Nivel 3 - Oro"
     }
     level_text = level_map.get(user.membership_level, "Sin nivel")
 
@@ -248,9 +240,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     width, height = 950, 560
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # =========================
-    # FONDO POR NIVEL
-    # =========================
     if card.level_snapshot == 1:
         level_text = "Nivel 1 - Cobre"
         bg_path = os.path.join(base_dir, "assets", "card_cobre.jpg")
@@ -267,7 +256,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     text_color = (255, 255, 255)
     shadow_color = (0, 0, 0)
 
-    # Fondo con imagen o fallback
     if os.path.exists(bg_path):
         image = Image.open(bg_path).convert("RGB")
         image = image.resize((width, height))
@@ -285,9 +273,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     draw = ImageDraw.Draw(image)
 
-    # =========================
-    # FUENTES - MONTSERRAT PARA TODO
-    # =========================
+    # Fuentes Montserrat
     font_path = os.path.join(
         base_dir,
         "assets",
@@ -295,12 +281,12 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     )
 
     try:
-        title_font = ImageFont.truetype(font_path, 52)
+        title_font = ImageFont.truetype(font_path, 56)
         name_font = ImageFont.truetype(font_path, 38)
         info_font = ImageFont.truetype(font_path, 26)
     except Exception:
         try:
-            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
+            title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 56)
             name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
             info_font = ImageFont.truetype("DejaVuSans.ttf", 26)
         except Exception:
@@ -308,9 +294,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             name_font = ImageFont.load_default()
             info_font = ImageFont.load_default()
 
-    # =========================
-    # MARCO
-    # =========================
+    # Marco limpio
     draw.rounded_rectangle(
         [(18, 18), (width - 18, height - 18)],
         radius=30,
@@ -318,27 +302,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         width=4,
     )
 
-    # =========================
-    # BANDA OSCURA PARA TÍTULO
-    # =========================
-    draw.rounded_rectangle(
-        [(130, 195), (820, 275)],
-        radius=18,
-        fill=(0, 0, 0),
-    )
-
-    # =========================
-    # FONDO OSCURO PARA DATOS
-    # =========================
-    draw.rounded_rectangle(
-        [(35, 285), (610, 525)],
-        radius=18,
-        fill=(25, 25, 25),
-    )
-
-    # =========================
-    # LOGO CENTRADO Y GRANDE
-    # =========================
+    # Logo centrado y grande
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
     if os.path.exists(logo_path):
         try:
@@ -350,9 +314,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    # =========================
-    # TÍTULO CON TRACKING ELEGANTE
-    # =========================
+    # Título centrado sin fondo negro
     title = "MAYU WELLNESS CLUB"
     spacing = 2
     title_width = get_spaced_text_width(draw, title, title_font, spacing=spacing)
@@ -369,26 +331,19 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         shadow_color=shadow_color,
     )
 
-    # =========================
-    # DATOS EN BLANCO
-    # =========================
+    # Datos sin cajas negras
     draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {card.expires_at}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
-    # =========================
-    # QR ENLAZADO A VALIDACIÓN REAL
-    # =========================
+    # QR con validación real
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     qr = qrcode.make(validation_url)
     qr = qr.resize((170, 170))
     image.paste(qr, (735, 340))
 
-    # =========================
-    # GUARDAR
-    # =========================
     file_path = f"card_{user_id}.png"
     image.save(file_path)
 
