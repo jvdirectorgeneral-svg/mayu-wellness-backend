@@ -69,7 +69,10 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene membresía asignada")
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene membresía asignada",
+        )
 
     existing = db.query(models.MemberCard).filter(
         models.MemberCard.user_id == user.id
@@ -95,7 +98,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
                 "level_snapshot": existing.level_snapshot,
                 "status": existing.status,
                 "expires_at": existing.expires_at,
-            }
+            },
         }
 
     card = models.MemberCard(
@@ -104,7 +107,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         qr_token=str(uuid.uuid4()),
         level_snapshot=user.membership_level,
         status="active" if user.membership_active else "inactive",
-        expires_at=expires_at
+        expires_at=expires_at,
     )
 
     db.add(card)
@@ -121,7 +124,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
             "level_snapshot": card.level_snapshot,
             "status": card.status,
             "expires_at": card.expires_at,
-        }
+        },
     }
 
 
@@ -165,7 +168,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404
+            status_code=404,
         )
 
     user = db.query(models.User).filter(models.User.id == card.user_id).first()
@@ -182,7 +185,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </body>
             </html>
             """,
-            status_code=404
+            status_code=404,
         )
 
     status_text = "ACTIVA" if user.membership_active else "INACTIVA"
@@ -191,7 +194,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     level_map = {
         1: "Nivel 1 - Cobre",
         2: "Nivel 2 - Plata",
-        3: "Nivel 3 - Oro"
+        3: "Nivel 3 - Oro",
     }
     level_text = level_map.get(user.membership_level, "Sin nivel")
 
@@ -271,7 +274,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     draw = ImageDraw.Draw(image)
 
-    # Fuentes gruesas blancas
     try:
         title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 64)
         name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 42)
@@ -281,7 +283,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         name_font = ImageFont.load_default()
         info_font = ImageFont.load_default()
 
-    # Marco limpio
     draw.rounded_rectangle(
         [(18, 18), (width - 18, height - 18)],
         radius=30,
@@ -289,7 +290,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         width=4,
     )
 
-    # Logo centrado y grande
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
     if os.path.exists(logo_path):
         try:
@@ -301,7 +301,6 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    # Título centrado
     title = "MAYU WELLNESS CLUB"
     spacing = 1
     title_width = get_spaced_text_width(draw, title, title_font, spacing=spacing)
@@ -318,14 +317,12 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         shadow_color=shadow_color,
     )
 
-    # Datos
     draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {card.expires_at}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
-    # QR con validación real
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     qr = qrcode.make(validation_url)
     qr = qr.resize((170, 170))
@@ -335,7 +332,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     image.save(file_path)
 
     return FileResponse(
-        file_path,
+        path=file_path,
         media_type="image/png",
-        filename=f"mayu_card_{user_id}.png",
+        content_disposition_type="inline",
     )
