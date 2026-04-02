@@ -1,0 +1,173 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from database import get_db
+import models
+import uuid
+
+router = APIRouter(prefix="/ambassadors", tags=["Ambassadors"])
+
+
+def generate_ambassador_code(ambassador_id: int):
+    return f"EMB-{ambassador_id:06d}"
+
+
+# =========================
+# 🤝 REGISTRO DE EMBAJADOR
+# =========================
+@router.post("/register")
+def register_ambassador(
+    name: str,
+    email: str,
+    password: str,
+    national_id: str,
+    address: str,
+    bank_name: str,
+    account_type: str,
+    bank_account_number: str,
+    db: Session = Depends(get_db)
+):
+    existing_user = db.query(models.User).filter(models.User.email == email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="El email ya está registrado")
+
+    user = models.User(
+        name=name,
+        email=email,
+        password=password,
+        status="registered",
+        membership_level=None,
+        membership_active=False,
+        role="ambassador"
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    ambassador = models.Ambassador(
+        user_id=user.id,
+        ambassador_code=f"TEMP-{user.id}",
+        ambassador_token=str(uuid.uuid4()),
+        national_id=national_id,
+        address=address,
+        bank_name=bank_name,
+        account_type=account_type,
+        bank_account_number=bank_account_number,
+        status="active",
+        is_active=True
+    )
+
+    db.add(ambassador)
+    db.commit()
+    db.refresh(ambassador)
+
+    ambassador.ambassador_code = generate_ambassador_code(ambassador.id)
+    db.commit()
+    db.refresh(ambassador)
+
+    return {
+        "message": "Embajador registrado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role
+        },
+        "ambassador": {
+            "id": ambassador.id,
+            "user_id": ambassador.user_id,
+            "ambassador_code": ambassador.ambassador_code,
+            "ambassador_token": ambassador.ambassador_token,
+            "national_id": ambassador.national_id,
+            "address": ambassador.address,
+            "bank_name": ambassador.bank_name,
+            "account_type": ambassador.account_type,
+            "bank_account_number": ambassador.bank_account_number,
+            "status": ambassador.status,
+            "is_active": ambassador.is_active
+        }
+    }
+
+
+# =========================
+# 🔐 LOGIN DE EMBAJADOR
+# =========================
+@router.post("/login")
+def login_ambassador(
+    email: str,
+    password: str,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(
+        models.User.email == email,
+        models.User.password == password,
+        models.User.role == "ambassador"
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    ambassador = db.query(models.Ambassador).filter(
+        models.Ambassador.user_id == user.id
+    ).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
+
+    return {
+        "message": "Login de embajador exitoso",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role
+        },
+        "ambassador": {
+            "id": ambassador.id,
+            "user_id": ambassador.user_id,
+            "ambassador_code": ambassador.ambassador_code,
+            "ambassador_token": ambassador.ambassador_token,
+            "national_id": ambassador.national_id,
+            "address": ambassador.address,
+            "bank_name": ambassador.bank_name,
+            "account_type": ambassador.account_type,
+            "bank_account_number": ambassador.bank_account_number,
+            "status": ambassador.status,
+            "is_active": ambassador.is_active
+        }
+    }
+
+
+# =========================
+# 👤 PERFIL DEL EMBAJADOR
+# =========================
+@router.get("/{ambassador_id}")
+def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
+    ambassador = db.query(models.Ambassador).filter(
+        models.Ambassador.id == ambassador_id
+    ).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
+
+    return {
+        "ambassador": {
+            "id": ambassador.id,
+            "user_id": ambassador.user_id,
+            "name": user.name,
+            "email": user.email,
+            "ambassador_code": ambassador.ambassador_code,
+            "ambassador_token": ambassador.ambassador_token,
+            "national_id": ambassador.national_id,
+            "address": ambassador.address,
+            "bank_name": ambassador.bank_name,
+            "account_type": ambassador.account_type,
+            "bank_account_number": ambassador.bank_account_number,
+            "status": ambassador.status,
+            "is_active": ambassador.is_active
+        }
+    }
