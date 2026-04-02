@@ -30,6 +30,60 @@ def current_cycle_status():
 
 
 # =========================
+# HELPERS HISTORIAL
+# =========================
+def get_fixed_products_by_level(level: int):
+    if level == 1:
+        return [
+            "CBD 874 mg",
+            "Chocomedical",
+        ]
+    elif level == 2:
+        return [
+            "Melena de León",
+            "CBD 874 mg",
+            "Chocomedical",
+        ]
+    elif level == 3:
+        return [
+            "CBD 874 mg",
+            "Té CBD",
+            "Melena de León",
+            "Magnesio Bisglicinato",
+            "Chocomedical",
+        ]
+    return []
+
+
+def get_plan_name_by_level(level: int):
+    if level == 1:
+        return "Nivel 1 - Cobre"
+    elif level == 2:
+        return "Nivel 2 - Plata"
+    elif level == 3:
+        return "Nivel 3 - Oro"
+    return "Sin plan"
+
+
+def format_month_label(month: int, year: int):
+    month_names = {
+        1: "Enero",
+        2: "Febrero",
+        3: "Marzo",
+        4: "Abril",
+        5: "Mayo",
+        6: "Junio",
+        7: "Julio",
+        8: "Agosto",
+        9: "Septiembre",
+        10: "Octubre",
+        11: "Noviembre",
+        12: "Diciembre",
+    }
+    return f"{month_names.get(month, 'Mes')} {year}"
+
+
+# =========================
 # CREAR OBTENER SELECCIÓN DEL MES
 # =========================
 @router.post("/init")
@@ -149,12 +203,10 @@ def save_monthly_selection_items(
             detail="La ventana de edición está cerrada. Solo se permite del 21 al 5."
         )
 
-    # borrar items anteriores
     db.query(models.MonthlySelectionItem).filter(
         models.MonthlySelectionItem.monthly_selection_id == selection.id
     ).delete()
 
-    # crear nuevos items
     for product_id in product_ids:
         product = db.query(models.Product).filter(models.Product.id == product_id).first()
         if not product:
@@ -172,6 +224,77 @@ def save_monthly_selection_items(
     return {
         "message": "Selección mensual actualizada correctamente",
         "selection_id": selection.id
+    }
+
+
+# =========================
+# HISTORIAL DE ENTREGAS Y PRÓXIMO CICLO
+# =========================
+@router.get("/user/{user_id}/history")
+def get_user_monthly_selection_history(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    selections = db.query(models.MonthlySelection).filter(
+        models.MonthlySelection.user_id == user_id
+    ).order_by(
+        models.MonthlySelection.year.desc(),
+        models.MonthlySelection.month.desc()
+    ).all()
+
+    if not selections:
+        return {
+            "history": [],
+            "upcoming": None
+        }
+
+    now = datetime.now()
+    current_month = now.month
+    current_year = now.year
+
+    history = []
+    upcoming = None
+
+    for selection in selections:
+        items = db.query(models.MonthlySelectionItem).filter(
+            models.MonthlySelectionItem.monthly_selection_id == selection.id
+        ).all()
+
+        editable_product_name = None
+        if items:
+            first_item = items[0]
+            product = db.query(models.Product).filter(
+                models.Product.id == first_item.product_id
+            ).first()
+
+            if product:
+                editable_product_name = product.name
+
+        selection_data = {
+            "monthLabel": format_month_label(selection.month, selection.year),
+            "planName": get_plan_name_by_level(user.membership_level or 0),
+            "fixedProducts": get_fixed_products_by_level(user.membership_level or 0),
+            "editableProduct": editable_product_name or "No seleccionado",
+            "status": "Próximo envío" if (
+                selection.year > current_year or
+                (selection.year == current_year and selection.month >= current_month)
+            ) else "Entregado"
+        }
+
+        is_upcoming_candidate = (
+            selection.year > current_year or
+            (selection.year == current_year and selection.month >= current_month)
+        )
+
+        if upcoming is None and is_upcoming_candidate:
+            upcoming = selection_data
+        else:
+            history.append(selection_data)
+
+    return {
+        "history": history,
+        "upcoming": upcoming
     }
 
 
