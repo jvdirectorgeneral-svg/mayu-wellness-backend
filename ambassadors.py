@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import uuid
+from schemas import AmbassadorRegister, AmbassadorLogin
 
 router = APIRouter(prefix="/ambassadors", tags=["Ambassadors"])
 
@@ -16,24 +17,20 @@ def generate_ambassador_code(ambassador_id: int):
 # =========================
 @router.post("/register")
 def register_ambassador(
-    name: str,
-    email: str,
-    password: str,
-    national_id: str,
-    address: str,
-    bank_name: str,
-    account_type: str,
-    bank_account_number: str,
+    data: AmbassadorRegister,
     db: Session = Depends(get_db)
 ):
-    existing_user = db.query(models.User).filter(models.User.email == email).first()
+    existing_user = db.query(models.User).filter(
+        models.User.email == data.email
+    ).first()
+
     if existing_user:
         raise HTTPException(status_code=400, detail="El email ya está registrado")
 
     user = models.User(
-        name=name,
-        email=email,
-        password=password,
+        name=data.name,
+        email=data.email,
+        password=data.password,
         status="registered",
         membership_level=None,
         membership_active=False,
@@ -48,11 +45,11 @@ def register_ambassador(
         user_id=user.id,
         ambassador_code=f"TEMP-{user.id}",
         ambassador_token=str(uuid.uuid4()),
-        national_id=national_id,
-        address=address,
-        bank_name=bank_name,
-        account_type=account_type,
-        bank_account_number=bank_account_number,
+        national_id=data.national_id,
+        address=data.address,
+        bank_name=data.bank_name,
+        account_type=data.account_type,
+        bank_account_number=data.bank_account_number,
         status="active",
         is_active=True
     )
@@ -94,13 +91,12 @@ def register_ambassador(
 # =========================
 @router.post("/login")
 def login_ambassador(
-    email: str,
-    password: str,
+    data: AmbassadorLogin,
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(
-        models.User.email == email,
-        models.User.password == password,
+        models.User.email == data.email,
+        models.User.password == data.password,
         models.User.role == "ambassador"
     ).first()
 
@@ -150,7 +146,10 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
-    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
+    user = db.query(models.User).filter(
+        models.User.id == ambassador.user_id
+    ).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
 
