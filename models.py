@@ -1,5 +1,8 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
+from sqlalchemy.orm import relationship
+from datetime import datetime
 from database import Base
+
 
 # =========================
 # 👤 USUARIO
@@ -15,6 +18,42 @@ class User(Base):
     status = Column(String, default="registered")
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False)
+
+    # nuevo: tipo de usuario
+    role = Column(String, default="member", nullable=False)
+
+    # relación 1 a 1 con embajador
+    ambassador_profile = relationship(
+        "Ambassador",
+        back_populates="user",
+        uselist=False
+    )
+
+
+# =========================
+# 🤝 EMBAJADOR
+# =========================
+class Ambassador(Base):
+    __tablename__ = "ambassadors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+
+    ambassador_code = Column(String, unique=True, index=True, nullable=False)
+    ambassador_token = Column(String, unique=True, index=True, nullable=False)
+
+    national_id = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    bank_name = Column(String, nullable=False)
+    account_type = Column(String, nullable=False)
+    bank_account_number = Column(String, nullable=False)
+
+    status = Column(String, default="active", nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="ambassador_profile")
 
 
 # =========================
@@ -82,7 +121,11 @@ class MonthlySelectionItem(Base):
     __tablename__ = "monthly_selection_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    monthly_selection_id = Column(Integer, ForeignKey("monthly_selections.id"), nullable=False)
+    monthly_selection_id = Column(
+        Integer,
+        ForeignKey("monthly_selections.id"),
+        nullable=False
+    )
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1)
 
@@ -101,6 +144,7 @@ class PlanChangeRequest(Base):
     status = Column(String, default="pending")  # pending / approved / rejected / applied
     effective_month = Column(Integer, nullable=True)
     effective_year = Column(Integer, nullable=True)
+
 
 # =========================
 # 💳 TARJETA DIGITAL DEL SOCIO
