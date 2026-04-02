@@ -10,6 +10,7 @@ from plan_selection import router as plan_selection_router
 from monthly_selection import router as monthly_selection_router
 from plan_change import router as plan_change_router
 from member_cards import router as member_cards_router
+from ambassadors import router as ambassadors_router
 from dependencies import get_current_user
 import models
 
@@ -48,6 +49,7 @@ app.include_router(plan_selection_router)
 app.include_router(monthly_selection_router)
 app.include_router(plan_change_router)
 app.include_router(member_cards_router)
+app.include_router(ambassadors_router)
 
 # =========================
 # ROOT
@@ -73,5 +75,6 @@ def get_me(current_user: models.User = Depends(get_current_user)):
         "name": current_user.name,
         "email": current_user.email,
         "membership_level": current_user.membership_level,
-        "membership_active": current_user.membership_active
+        "membership_active": current_user.membership_active,
+        "role": current_user.role
     }
