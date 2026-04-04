@@ -199,3 +199,54 @@ def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
         "status": ambassador.status,
         "qr_token": ambassador.ambassador_token
     }
+
+
+# =========================
+# 📊 DASHBOARD DE EMBAJADOR
+# =========================
+@router.get("/{ambassador_id}/dashboard")
+def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
+    ambassador = db.query(models.Ambassador).filter(
+        models.Ambassador.id == ambassador_id
+    ).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    user = db.query(models.User).filter(
+        models.User.id == ambassador.user_id
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
+
+    # Por ahora estas métricas están iniciales en 0
+    # Luego aquí conectamos afiliados reales, pagos y comisiones
+    total_referrals = 0
+    active_referrals = 0
+    inactive_referrals = 0
+    total_payments = 0
+    monthly_commission = 0
+
+    return {
+        "card": {
+            "name": user.name,
+            "type": "Embajador Mayu",
+            "code": ambassador.ambassador_code,
+            "valid_until": "Indefinido",
+            "status": ambassador.status,
+            "qr_token": ambassador.ambassador_token
+        },
+        "stats": {
+            "total_referrals": total_referrals,
+            "active_referrals": active_referrals,
+            "inactive_referrals": inactive_referrals,
+            "total_payments": total_payments,
+            "monthly_commission": monthly_commission
+        },
+        "reward_progress": {
+            "goal": 100,
+            "current": active_referrals,
+            "reward": "Viaje a la playa"
+        }
+    }
