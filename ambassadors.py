@@ -170,18 +170,13 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
             "is_active": ambassador.is_active
         }
     }
-from fastapi import HTTPException
-from sqlalchemy.orm import Session
-from dependencies import get_db
-import models
-from fastapi import Depends
+
 
 # =========================
 # 💳 TARJETA DE EMBAJADOR
 # =========================
 @router.get("/{ambassador_id}/card")
 def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
-    
     ambassador = db.query(models.Ambassador).filter(
         models.Ambassador.id == ambassador_id
     ).first()
@@ -192,6 +187,9 @@ def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(
         models.User.id == ambassador.user_id
     ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
 
     return {
         "name": user.name,
