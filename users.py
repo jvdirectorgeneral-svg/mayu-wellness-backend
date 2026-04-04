@@ -1,24 +1,30 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from typing import Optional
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
 import models
 
 router = APIRouter()
 
+
 class UserCreate(BaseModel):
     name: str
     email: str
     password: str
+    ambassador_code: Optional[str] = None
+
 
 class MembershipUpdate(BaseModel):
     level: int
     active: bool
 
+
 class LoginRequest(BaseModel):
     email: str
     password: str
+
 
 def get_db():
     db = SessionLocal()
@@ -26,6 +32,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 @router.get("/users")
 def get_users(db: Session = Depends(get_db)):
@@ -38,26 +45,56 @@ def get_users(db: Session = Depends(get_db)):
                 "email": u.email,
                 "status": u.status,
                 "membership_level": u.membership_level,
-                "membership_active": u.membership_active
+                "membership_active": u.membership_active,
+                "role": u.role
             }
             for u in users
         ]
     }
 
+
 @router.post("/users")
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(models.User).filter(models.User.email == user.email).first()
+    existing_user = db.query(models.User).filter(
+        models.User.email == user.email
+    ).first()
+
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
+
+    ambassador = None
+    cleaned_ambassador_code = None
+
+    if user.ambassador_code is not None and user.ambassador_code.strip() != "":
+        cleaned_ambassador_code = user.ambassador_code.strip()
+
+        ambassador = db.query(models.Ambassador).filter(
+            models.Ambassador.ambassador_code == cleaned_ambassador_code
+        ).first()
+
+        if not ambassador:
+            raise HTTPException(status_code=400, detail="Código de embajador inválido")
 
     new_user = models.User(
         name=user.name,
         email=user.email,
-        password=hash_password(user.password)
+        password=hash_password(user.password),
+        role="member"
     )
+
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    if ambassador:
+        referral = models.AmbassadorReferral(
+            ambassador_id=ambassador.id,
+            user_id=new_user.id,
+            referral_code=cleaned_ambassador_code,
+            status="active"
+        )
+        db.add(referral)
+        db.commit()
 
     return {
         "id": new_user.id,
@@ -65,11 +102,18 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         "email": new_user.email,
         "status": new_user.status,
         "membership_level": new_user.membership_level,
-        "membership_active": new_user.membership_active
+        "membership_active": new_user.membership_active,
+        "role": new_user.role,
+        "ambassador_code": cleaned_ambassador_code
     }
 
+
 @router.put("/users/{user_id}/membership")
-def update_membership(user_id: int, membership: MembershipUpdate, db: Session = Depends(get_db)):
+def update_membership(
+    user_id: int,
+    membership: MembershipUpdate,
+    db: Session = Depends(get_db)
+):
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
@@ -87,12 +131,16 @@ def update_membership(user_id: int, membership: MembershipUpdate, db: Session = 
         "email": user.email,
         "status": user.status,
         "membership_level": user.membership_level,
-        "membership_active": user.membership_active
+        "membership_active": user.membership_active,
+        "role": user.role
     }
+
 
 @router.post("/login")
 def login(user: LoginRequest, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(models.User.email == user.email).first()
+    db_user = db.query(models.User).filter(
+        models.User.email == user.email
+    ).first()
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -114,6 +162,7 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "membership_level": db_user.membership_level,
-            "membership_active": db_user.membership_active
+            "membership_active": db_user.membership_active,
+            "role": db_user.role
         }
     }
