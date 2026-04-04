@@ -19,10 +19,8 @@ class User(Base):
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False)
 
-    # nuevo: tipo de usuario
     role = Column(String, default="member", nullable=False)
 
-    # relación 1 a 1 con embajador
     ambassador_profile = relationship(
         "Ambassador",
         back_populates="user",
@@ -54,6 +52,33 @@ class Ambassador(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="ambassador_profile")
+
+
+# =========================
+# 🔗 REFERIDOS DE EMBAJADOR
+# =========================
+class AmbassadorReferral(Base):
+    __tablename__ = "ambassador_referrals"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    ambassador_id = Column(
+        Integer,
+        ForeignKey("ambassadors.id"),
+        nullable=False
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        unique=True
+    )
+
+    referral_code = Column(String, nullable=False)
+    status = Column(String, default="active", nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # =========================
