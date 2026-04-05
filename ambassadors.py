@@ -18,6 +18,31 @@ def generate_ambassador_code(ambassador_id: int):
     return f"EMB-{ambassador_id:06d}"
 
 
+def normalize_phone_for_whatsapp(phone: str | None):
+    if not phone:
+        return None
+
+    cleaned = (
+        phone.replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace("+", "")
+    )
+
+    if cleaned.startswith("0"):
+        cleaned = "593" + cleaned[1:]
+
+    return cleaned
+
+
+def build_whatsapp_url(phone: str | None):
+    normalized = normalize_phone_for_whatsapp(phone)
+    if not normalized:
+        return None
+    return f"https://wa.me/{normalized}"
+
+
 def draw_text_with_shadow(
     draw,
     position,
@@ -79,6 +104,7 @@ def register_ambassador(
         name=data.name,
         email=data.email,
         password=data.password,
+        phone=data.phone,
         status="registered",
         membership_level=None,
         membership_active=False,
@@ -116,6 +142,7 @@ def register_ambassador(
             "id": user.id,
             "name": user.name,
             "email": user.email,
+            "phone": user.phone,
             "role": user.role
         },
         "ambassador": {
@@ -164,6 +191,7 @@ def login_ambassador(
             "id": user.id,
             "name": user.name,
             "email": user.email,
+            "phone": user.phone,
             "role": user.role
         },
         "ambassador": {
@@ -207,6 +235,7 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
             "user_id": ambassador.user_id,
             "name": user.name,
             "email": user.email,
+            "phone": user.phone,
             "ambassador_code": ambassador.ambassador_code,
             "ambassador_token": ambassador.ambassador_token,
             "national_id": ambassador.national_id,
@@ -314,6 +343,7 @@ def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db
                 </div>
                 <p style="font-size:20px; margin:14px 0;"><strong>Nombre:</strong> {user.name}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Email:</strong> {user.email}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Celular:</strong> {user.phone or ''}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Tipo:</strong> Embajador Mayu</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Código:</strong> {ambassador.ambassador_code}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Vigencia:</strong> Indefinido</p>
@@ -466,6 +496,8 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
                 "id": referred_user.id,
                 "name": referred_user.name,
                 "email": referred_user.email,
+                "phone": referred_user.phone,
+                "whatsapp_url": build_whatsapp_url(referred_user.phone),
                 "membership_level": referred_user.membership_level,
                 "membership_active": referred_user.membership_active
             })
@@ -499,3 +531,4 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
         },
         "affiliates": affiliates
     }
+}
