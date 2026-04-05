@@ -443,20 +443,34 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
 
-    total_referrals = db.query(models.AmbassadorReferral).filter(
+    referrals = db.query(models.AmbassadorReferral).filter(
         models.AmbassadorReferral.ambassador_id == ambassador.id
-    ).count()
+    ).all()
 
-    active_referrals = db.query(models.AmbassadorReferral).filter(
-        models.AmbassadorReferral.ambassador_id == ambassador.id,
-        models.AmbassadorReferral.status == "active"
-    ).count()
+    affiliates = []
+    active_referrals = 0
+    inactive_referrals = 0
 
-    inactive_referrals = db.query(models.AmbassadorReferral).filter(
-        models.AmbassadorReferral.ambassador_id == ambassador.id,
-        models.AmbassadorReferral.status == "inactive"
-    ).count()
+    for referral in referrals:
+        referred_user = db.query(models.User).filter(
+            models.User.id == referral.user_id
+        ).first()
 
+        if referred_user:
+            if referred_user.membership_active:
+                active_referrals += 1
+            else:
+                inactive_referrals += 1
+
+            affiliates.append({
+                "id": referred_user.id,
+                "name": referred_user.name,
+                "email": referred_user.email,
+                "membership_level": referred_user.membership_level,
+                "membership_active": referred_user.membership_active
+            })
+
+    total_referrals = len(affiliates)
     total_payments = 0
     monthly_commission = 0
 
@@ -468,7 +482,7 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
             "valid_until": "Indefinido",
             "status": ambassador.status,
             "qr_token": ambassador.ambassador_token,
-            "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
+            "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image"
         },
         "stats": {
             "total_referrals": total_referrals,
@@ -476,11 +490,12 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
             "inactive_referrals": inactive_referrals,
             "total_payments": total_payments,
             "monthly_commission": monthly_commission,
-            "goal": 100,
+            "goal": 100
         },
         "reward_progress": {
             "goal": 100,
             "current": active_referrals,
             "reward": "Viaje a la playa"
-        }
+        },
+        "affiliates": affiliates
     }
