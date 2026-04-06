@@ -11,6 +11,7 @@ from monthly_selection import router as monthly_selection_router
 from plan_change import router as plan_change_router
 from member_cards import router as member_cards_router
 from ambassadors import router as ambassadors_router
+from commissions import router as commissions_router
 from dependencies import get_current_user
 import models
 
@@ -50,6 +51,7 @@ app.include_router(monthly_selection_router)
 app.include_router(plan_change_router)
 app.include_router(member_cards_router)
 app.include_router(ambassadors_router)
+app.include_router(commissions_router)
 
 # =========================
 # ROOT
