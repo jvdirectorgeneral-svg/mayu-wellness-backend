@@ -158,8 +158,8 @@ class Plan(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    level = Column(Integer, nullable=False)
-    price = Column(Integer, nullable=False)
+    level = Column(Integer, nullable=False, unique=True, index=True)
+    price = Column(Float, nullable=False)
     description = Column(String, nullable=True)
     active = Column(Boolean, default=True, nullable=False)
 
@@ -199,8 +199,8 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    price = Column(Integer, nullable=False)
+    name = Column(String, nullable=False, unique=True, index=True)
+    price = Column(Float, nullable=False)
     description = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
     active = Column(Boolean, default=True, nullable=False)
@@ -232,6 +232,10 @@ class PlanProduct(Base):
     plan = relationship("Plan", back_populates="plan_products")
     product = relationship("Product", back_populates="plan_products")
 
+    __table_args__ = (
+        UniqueConstraint("plan_id", "product_id", name="uq_plan_product"),
+    )
+
 
 # =========================
 # 📅 SELECCIÓN MENSUAL
@@ -258,6 +262,10 @@ class MonthlySelection(Base):
         cascade="all, delete-orphan"
     )
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "month", "year", name="uq_monthly_selection_user_cycle"),
+    )
+
 
 # =========================
 # 📦 ITEMS DE LA SELECCIÓN MENSUAL
@@ -282,6 +290,14 @@ class MonthlySelectionItem(Base):
     product = relationship(
         "Product",
         back_populates="monthly_selection_items"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "monthly_selection_id",
+            "product_id",
+            name="uq_monthly_selection_item_product"
+        ),
     )
 
 
@@ -367,10 +383,17 @@ class Commission(Base):
     commission_percent = Column(Float, nullable=False, default=14.5)
     commission_amount = Column(Float, nullable=False)
 
+    # active / inactive / suspended
     member_status = Column(String, nullable=False, default="active")
+
+    # paid / pending / failed / waived
     payment_status = Column(String, nullable=False, default="paid")
+
+    # eligible / ineligible / cancelled
     eligibility_status = Column(String, nullable=False, default="eligible")
-    status = Column(String, nullable=False, default="pending")  # pending / paid / cancelled
+
+    # pending / paid / cancelled
+    status = Column(String, nullable=False, default="pending")
 
     generated_at = Column(DateTime, default=datetime.utcnow)
     paid_at = Column(DateTime, nullable=True)
