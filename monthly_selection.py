@@ -1,10 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 from datetime import datetime
 from database import get_db
 import models
 
 router = APIRouter(prefix="/monthly-selection", tags=["Monthly Selection"])
+
+
+# =========================
+# SCHEMAS
+# =========================
+class MonthlySelectionInitRequest(BaseModel):
+    user_id: int
+
+
+class MonthlySelectionItemInput(BaseModel):
+    product_id: int | None = None
+    product_name: str | None = None
+
+
+class MonthlySelectionSaveRequest(BaseModel):
+    items: list[MonthlySelectionItemInput]
+    force_save: bool = False
 
 
 # =========================
@@ -83,12 +101,42 @@ def format_month_label(month: int, year: int):
     return f"{month_names.get(month, 'Mes')} {year}"
 
 
+def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
+    if item.product_id is not None:
+        return db.query(models.Product).filter(
+            models.Product.id == item.product_id
+        ).first()
+
+    if item.product_name is not None and item.product_name.strip() != "":
+        return db.query(models.Product).filter(
+            models.Product.name == item.product_name.strip()
+        ).first()
+
+    return None
+
+
+def get_available_editable_products():
+    return [
+        "Plata Coloidal",
+        "Cobre Coloidal",
+        "Selenio Coloidal",
+        "Oro Coloidal",
+        "Zinc Coloidal",
+        "Shunguita",
+        "Silicio",
+        "Magnesio",
+    ]
+
+
 # =========================
-# CREAR OBTENER SELECCIÓN DEL MES
+# CREAR / OBTENER SELECCIÓN DEL MES
 # =========================
 @router.post("/init")
-def init_monthly_selection(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+def init_monthly_selection(
+    payload: MonthlySelectionInitRequest,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -147,6 +195,10 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
     month = now.month
     year = now.year
 
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
     selection = db.query(models.MonthlySelection).filter(
         models.MonthlySelection.user_id == user_id,
         models.MonthlySelection.month == month,
@@ -161,6 +213,8 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
     ).all()
 
     products = []
+    editable_product = None
+
     for item in items:
         product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
         if product:
@@ -170,6 +224,9 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
                 "quantity": item.quantity
             })
 
+    if products:
+        editable_product = products[0]["name"]
+
     return {
         "selection_id": selection.id,
         "month": selection.month,
@@ -177,7 +234,9 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
         "editable": selection.editable,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
-        "products": products
+        "products": products,
+        "editable_product": editable_product,
+        "available_editable_products": get_available_editable_products()
     }
 
 
@@ -187,7 +246,7 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
 @router.post("/{selection_id}/save-items")
 def save_monthly_selection_items(
     selection_id: int,
-    product_ids: list[int],
+    payload: MonthlySelectionSaveRequest,
     db: Session = Depends(get_db)
 ):
     selection = db.query(models.MonthlySelection).filter(
@@ -197,18 +256,21 @@ def save_monthly_selection_items(
     if not selection:
         raise HTTPException(status_code=404, detail="Selección no encontrada")
 
-    if not selection.editable or not is_edit_window_open():
-        raise HTTPException(
-            status_code=400,
-            detail="La ventana de edición está cerrada. Solo se permite del 21 al 5."
-        )
+    if not payload.force_save:
+        if not selection.editable or not is_edit_window_open():
+            raise HTTPException(
+                status_code=400,
+                detail="La ventana de edición está cerrada. Solo se permite del 21 al 5."
+            )
 
     db.query(models.MonthlySelectionItem).filter(
         models.MonthlySelectionItem.monthly_selection_id == selection.id
     ).delete()
 
-    for product_id in product_ids:
-        product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    saved_products = []
+
+    for item_input in payload.items:
+        product = get_product_by_input(db, item_input)
         if not product:
             continue
 
@@ -218,12 +280,18 @@ def save_monthly_selection_items(
             quantity=1
         )
         db.add(item)
+        saved_products.append(product.name)
 
+    if not saved_products:
+        raise HTTPException(status_code=400, detail="No se encontró ningún producto válido para guardar")
+
+    selection.status = "confirmed"
     db.commit()
 
     return {
         "message": "Selección mensual actualizada correctamente",
-        "selection_id": selection.id
+        "selection_id": selection.id,
+        "saved_products": saved_products
     }
 
 
