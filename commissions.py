@@ -1,8 +1,11 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+
 from database import SessionLocal
-from models import Commission, Ambassador, User
+from models import Commission, Ambassador, AmbassadorReferral, User, Plan
 
 
 router = APIRouter(prefix="/commissions", tags=["commissions"])
@@ -17,6 +20,43 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# =========================
+# REQUEST SCHEMA
+# =========================
+class GenerateMonthlyCommissionsRequest(BaseModel):
+    month: int
+    year: int
+
+
+# =========================
+# HELPERS
+# =========================
+def calculate_commission(plan_price: float) -> float:
+    return round(float(plan_price) * 0.145, 2)
+
+
+def get_member_status(user: User) -> str:
+    return user.status if user.status else "unknown"
+
+
+def get_payment_status(user: User) -> str:
+    return "paid" if user.membership_active else "pending"
+
+
+def is_user_eligible(user: User, plan: Plan | None) -> bool:
+    if not user:
+        return False
+    if not user.membership_active:
+        return False
+    if user.membership_level is None:
+        return False
+    if not plan:
+        return False
+    if not plan.active:
+        return False
+    return True
 
 
 # =========================
@@ -35,6 +75,120 @@ def commissions_test(db: Session = Depends(get_db)):
         "pending": pending,
         "paid": paid,
         "cancelled": cancelled
+    }
+
+
+# =========================
+# GENERAR COMISIONES MENSUALES
+# =========================
+@router.post("/generate-monthly")
+def generate_monthly_commissions(
+    payload: GenerateMonthlyCommissionsRequest,
+    db: Session = Depends(get_db)
+):
+    month = payload.month
+    year = payload.year
+
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Mes inválido")
+
+    if year < 2024 or year > 2100:
+        raise HTTPException(status_code=400, detail="Año inválido")
+
+    referrals = db.query(AmbassadorReferral).all()
+
+    created_count = 0
+    skipped_existing = 0
+    skipped_not_eligible = 0
+    created_items = []
+
+    for referral in referrals:
+        ambassador = db.query(Ambassador).filter(
+            Ambassador.id == referral.ambassador_id
+        ).first()
+
+        if not ambassador:
+            skipped_not_eligible += 1
+            continue
+
+        referred_user = db.query(User).filter(
+            User.id == referral.user_id
+        ).first()
+
+        if not referred_user:
+            skipped_not_eligible += 1
+            continue
+
+        plan = db.query(Plan).filter(
+            Plan.level == referred_user.membership_level
+        ).first()
+
+        member_status = get_member_status(referred_user)
+        payment_status = get_payment_status(referred_user)
+
+        eligible = is_user_eligible(referred_user, plan)
+        eligibility_status = "eligible" if eligible else "not_eligible"
+
+        existing_commission = db.query(Commission).filter(
+            Commission.ambassador_id == ambassador.id,
+            Commission.referred_user_id == referred_user.id,
+            Commission.month == month,
+            Commission.year == year
+        ).first()
+
+        if existing_commission:
+            skipped_existing += 1
+            continue
+
+        if not eligible:
+            skipped_not_eligible += 1
+            continue
+
+        commission_amount = calculate_commission(plan.price)
+
+        commission = Commission(
+            ambassador_id=ambassador.id,
+            referred_user_id=referred_user.id,
+            plan_id=plan.id,
+            month=month,
+            year=year,
+            base_amount=float(plan.price),
+            commission_percent=14.5,
+            commission_amount=commission_amount,
+            member_status=member_status,
+            payment_status=payment_status,
+            eligibility_status=eligibility_status,
+            status="pending",
+            generated_at=datetime.utcnow(),
+            notes=f"Comisión generada automáticamente para {month}/{year}"
+        )
+
+        db.add(commission)
+        created_count += 1
+
+        created_items.append({
+            "ambassador_id": ambassador.id,
+            "ambassador_code": ambassador.ambassador_code,
+            "referred_user_id": referred_user.id,
+            "referred_user_name": referred_user.name,
+            "plan_id": plan.id,
+            "plan_name": plan.name,
+            "base_amount": float(plan.price),
+            "commission_amount": commission_amount,
+            "month": month,
+            "year": year
+        })
+
+    db.commit()
+
+    return {
+        "message": "Generación mensual completada",
+        "month": month,
+        "year": year,
+        "created_count": created_count,
+        "skipped_existing": skipped_existing,
+        "skipped_not_eligible": skipped_not_eligible,
+        "created_items": created_items
     }
 
 
