@@ -9,6 +9,8 @@ class UserRegister(BaseModel):
     email: str
     password: str
     phone: str
+    delivery_address: str  # 🆕 domicilio obligatorio
+
     ambassador_code: str | None = None
 
 
@@ -42,3 +44,20 @@ class AmbassadorRegister(BaseModel):
 class AmbassadorLogin(BaseModel):
     email: str
     password: str
+
+
+# =========================
+# 👤 RESPUESTA USUARIO (ME)
+# =========================
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: str | None
+    delivery_address: str | None  # 🆕 devolver dirección
+
+    membership_level: int | None
+    membership_active: bool
+
+    class Config:
+        from_attributes = True
