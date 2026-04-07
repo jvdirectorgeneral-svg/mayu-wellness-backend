@@ -1,4 +1,6 @@
 from datetime import datetime
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -23,11 +25,11 @@ def get_db():
 
 
 # =========================
-# REQUEST SCHEMA
+# REQUEST SCHEMAS
 # =========================
 class GenerateMonthlyCommissionsRequest(BaseModel):
-    month: int
-    year: int
+    month: Optional[int] = None
+    year: Optional[int] = None
 
 
 # =========================
@@ -38,25 +40,38 @@ def calculate_commission(plan_price: float) -> float:
 
 
 def get_member_status(user: User) -> str:
-    return user.status if user.status else "unknown"
+    return "active" if user.membership_active else "inactive"
 
 
 def get_payment_status(user: User) -> str:
     return "paid" if user.membership_active else "pending"
 
 
-def is_user_eligible(user: User, plan: Plan | None) -> bool:
+def get_eligibility_status(user: User, plan: Plan | None) -> str:
     if not user:
-        return False
+        return "cancelled"
     if not user.membership_active:
-        return False
+        return "ineligible"
     if user.membership_level is None:
-        return False
+        return "ineligible"
     if not plan:
-        return False
+        return "ineligible"
     if not plan.active:
-        return False
-    return True
+        return "ineligible"
+    return "eligible"
+
+
+def is_user_eligible(user: User, plan: Plan | None) -> bool:
+    return get_eligibility_status(user, plan) == "eligible"
+
+
+def get_plan_by_user_level(db: Session, user: User) -> Plan | None:
+    if user.membership_level is None:
+        return None
+
+    return db.query(Plan).filter(
+        Plan.level == user.membership_level
+    ).first()
 
 
 # =========================
@@ -86,8 +101,9 @@ def generate_monthly_commissions(
     payload: GenerateMonthlyCommissionsRequest,
     db: Session = Depends(get_db)
 ):
-    month = payload.month
-    year = payload.year
+    now = datetime.utcnow()
+    month = payload.month or now.month
+    year = payload.year or now.year
 
     if month < 1 or month > 12:
         raise HTTPException(status_code=400, detail="Mes inválido")
@@ -100,7 +116,9 @@ def generate_monthly_commissions(
     created_count = 0
     skipped_existing = 0
     skipped_not_eligible = 0
+    skipped_missing_data = 0
     created_items = []
+    skipped_items = []
 
     for referral in referrals:
         ambassador = db.query(Ambassador).filter(
@@ -108,7 +126,11 @@ def generate_monthly_commissions(
         ).first()
 
         if not ambassador:
-            skipped_not_eligible += 1
+            skipped_missing_data += 1
+            skipped_items.append({
+                "referral_id": referral.id,
+                "reason": "Embajador no encontrado"
+            })
             continue
 
         referred_user = db.query(User).filter(
@@ -116,18 +138,18 @@ def generate_monthly_commissions(
         ).first()
 
         if not referred_user:
-            skipped_not_eligible += 1
+            skipped_missing_data += 1
+            skipped_items.append({
+                "referral_id": referral.id,
+                "reason": "Usuario referido no encontrado"
+            })
             continue
 
-        plan = db.query(Plan).filter(
-            Plan.level == referred_user.membership_level
-        ).first()
+        plan = get_plan_by_user_level(db, referred_user)
 
         member_status = get_member_status(referred_user)
         payment_status = get_payment_status(referred_user)
-
-        eligible = is_user_eligible(referred_user, plan)
-        eligibility_status = "eligible" if eligible else "not_eligible"
+        eligibility_status = get_eligibility_status(referred_user, plan)
 
         existing_commission = db.query(Commission).filter(
             Commission.ambassador_id == ambassador.id,
@@ -138,10 +160,23 @@ def generate_monthly_commissions(
 
         if existing_commission:
             skipped_existing += 1
+            skipped_items.append({
+                "ambassador_id": ambassador.id,
+                "referred_user_id": referred_user.id,
+                "reason": "Comisión ya existe para este mes"
+            })
             continue
 
-        if not eligible:
+        if not is_user_eligible(referred_user, plan):
             skipped_not_eligible += 1
+            skipped_items.append({
+                "ambassador_id": ambassador.id,
+                "referred_user_id": referred_user.id,
+                "reason": "Usuario no elegible",
+                "member_status": member_status,
+                "payment_status": payment_status,
+                "eligibility_status": eligibility_status
+            })
             continue
 
         commission_amount = calculate_commission(plan.price)
@@ -188,7 +223,9 @@ def generate_monthly_commissions(
         "created_count": created_count,
         "skipped_existing": skipped_existing,
         "skipped_not_eligible": skipped_not_eligible,
-        "created_items": created_items
+        "skipped_missing_data": skipped_missing_data,
+        "created_items": created_items,
+        "skipped_items": skipped_items
     }
 
 
@@ -214,12 +251,15 @@ def get_commissions_by_ambassador(
     results = []
     for c in commissions:
         referred_user = db.query(User).filter(User.id == c.referred_user_id).first()
+        plan = db.query(Plan).filter(Plan.id == c.plan_id).first()
 
         results.append({
             "commission_id": c.id,
             "referred_user_id": c.referred_user_id,
             "referred_user_name": referred_user.name if referred_user else None,
+            "referred_user_email": referred_user.email if referred_user else None,
             "plan_id": c.plan_id,
+            "plan_name": plan.name if plan else None,
             "month": c.month,
             "year": c.year,
             "base_amount": c.base_amount,
@@ -316,10 +356,28 @@ def get_ambassadors_ranking(db: Session = Depends(get_db)):
         db.query(
             Commission.ambassador_id,
             func.count(Commission.id).label("total_records"),
-            func.coalesce(func.sum(Commission.commission_amount), 0).label("total_generated")
+            func.coalesce(func.sum(Commission.commission_amount), 0).label("total_generated"),
+            func.coalesce(
+                func.sum(
+                    func.case(
+                        (Commission.status == "pending", Commission.commission_amount),
+                        else_=0
+                    )
+                ),
+                0
+            ).label("total_pending"),
+            func.coalesce(
+                func.sum(
+                    func.case(
+                        (Commission.status == "paid", Commission.commission_amount),
+                        else_=0
+                    )
+                ),
+                0
+            ).label("total_paid")
         )
         .group_by(Commission.ambassador_id)
-        .order_by(func.sum(Commission.commission_amount).desc())
+        .order_by(func.coalesce(func.sum(Commission.commission_amount), 0).desc())
         .all()
     )
 
@@ -333,10 +391,129 @@ def get_ambassadors_ranking(db: Session = Depends(get_db)):
             "ambassador_code": ambassador.ambassador_code if ambassador else None,
             "ambassador_name": ambassador_user.name if ambassador_user else None,
             "total_records": row.total_records,
-            "total_generated": round(float(row.total_generated or 0), 2)
+            "total_generated": round(float(row.total_generated or 0), 2),
+            "total_pending": round(float(row.total_pending or 0), 2),
+            "total_paid": round(float(row.total_paid or 0), 2)
         })
 
     return {
         "total_ambassadors_in_ranking": len(ranking),
         "items": ranking
+    }
+
+
+# =========================
+# LISTAR COMISIONES PENDIENTES
+# =========================
+@router.get("/pending")
+def get_pending_commissions(db: Session = Depends(get_db)):
+    commissions = (
+        db.query(Commission)
+        .filter(Commission.status == "pending")
+        .order_by(Commission.year.desc(), Commission.month.desc(), Commission.id.desc())
+        .all()
+    )
+
+    items = []
+    for c in commissions:
+        ambassador = db.query(Ambassador).filter(Ambassador.id == c.ambassador_id).first()
+        ambassador_user = db.query(User).filter(User.id == ambassador.user_id).first() if ambassador else None
+        referred_user = db.query(User).filter(User.id == c.referred_user_id).first()
+        plan = db.query(Plan).filter(Plan.id == c.plan_id).first()
+
+        items.append({
+            "commission_id": c.id,
+            "ambassador_id": c.ambassador_id,
+            "ambassador_name": ambassador_user.name if ambassador_user else None,
+            "ambassador_code": ambassador.ambassador_code if ambassador else None,
+            "referred_user_id": c.referred_user_id,
+            "referred_user_name": referred_user.name if referred_user else None,
+            "plan_name": plan.name if plan else None,
+            "commission_amount": c.commission_amount,
+            "month": c.month,
+            "year": c.year,
+            "status": c.status
+        })
+
+    return {
+        "total_items": len(items),
+        "items": items
+    }
+
+
+# =========================
+# LISTAR COMISIONES PAGADAS
+# =========================
+@router.get("/paid")
+def get_paid_commissions(db: Session = Depends(get_db)):
+    commissions = (
+        db.query(Commission)
+        .filter(Commission.status == "paid")
+        .order_by(Commission.year.desc(), Commission.month.desc(), Commission.id.desc())
+        .all()
+    )
+
+    items = []
+    for c in commissions:
+        ambassador = db.query(Ambassador).filter(Ambassador.id == c.ambassador_id).first()
+        ambassador_user = db.query(User).filter(User.id == ambassador.user_id).first() if ambassador else None
+        referred_user = db.query(User).filter(User.id == c.referred_user_id).first()
+        plan = db.query(Plan).filter(Plan.id == c.plan_id).first()
+
+        items.append({
+            "commission_id": c.id,
+            "ambassador_id": c.ambassador_id,
+            "ambassador_name": ambassador_user.name if ambassador_user else None,
+            "ambassador_code": ambassador.ambassador_code if ambassador else None,
+            "referred_user_id": c.referred_user_id,
+            "referred_user_name": referred_user.name if referred_user else None,
+            "plan_name": plan.name if plan else None,
+            "commission_amount": c.commission_amount,
+            "month": c.month,
+            "year": c.year,
+            "status": c.status,
+            "paid_at": c.paid_at
+        })
+
+    return {
+        "total_items": len(items),
+        "items": items
+    }
+
+
+# =========================
+# MARCAR COMISIÓN COMO PAGADA
+# =========================
+@router.put("/{commission_id}/mark-paid")
+def mark_commission_as_paid(
+    commission_id: int,
+    db: Session = Depends(get_db)
+):
+    commission = db.query(Commission).filter(Commission.id == commission_id).first()
+
+    if not commission:
+        raise HTTPException(status_code=404, detail="Comisión no encontrada")
+
+    if commission.status == "paid":
+        return {
+            "message": "La comisión ya estaba pagada",
+            "commission_id": commission.id,
+            "status": commission.status,
+            "paid_at": commission.paid_at
+        }
+
+    commission.status = "paid"
+    commission.paid_at = datetime.utcnow()
+    commission.notes = (
+        f"{commission.notes or ''} | Marcada como pagada manualmente el {datetime.utcnow().isoformat()}"
+    ).strip(" |")
+
+    db.commit()
+    db.refresh(commission)
+
+    return {
+        "message": "Comisión marcada como pagada correctamente",
+        "commission_id": commission.id,
+        "status": commission.status,
+        "paid_at": commission.paid_at
     }
