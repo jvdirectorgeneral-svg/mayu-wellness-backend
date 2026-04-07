@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case
 
 from database import SessionLocal
 from models import Commission, Ambassador, AmbassadorReferral, User, Plan
@@ -359,7 +359,7 @@ def get_ambassadors_ranking(db: Session = Depends(get_db)):
             func.coalesce(func.sum(Commission.commission_amount), 0).label("total_generated"),
             func.coalesce(
                 func.sum(
-                    func.case(
+                    case(
                         (Commission.status == "pending", Commission.commission_amount),
                         else_=0
                     )
@@ -368,7 +368,7 @@ def get_ambassadors_ranking(db: Session = Depends(get_db)):
             ).label("total_pending"),
             func.coalesce(
                 func.sum(
-                    func.case(
+                    case(
                         (Commission.status == "paid", Commission.commission_amount),
                         else_=0
                     )
