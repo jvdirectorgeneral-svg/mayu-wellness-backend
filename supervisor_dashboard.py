@@ -50,11 +50,14 @@ def get_supervisor_kpis(db: Session = Depends(get_db)):
         Commission.status == "paid"
     ).scalar()
 
+    total_commission_records = db.query(Commission).count()
+
     return {
         "total_users": total_users,
         "active_users": active_users,
         "inactive_users": inactive_users,
         "total_ambassadors": total_ambassadors,
+        "total_commission_records": total_commission_records,
         "total_generated": float(total_generated or 0),
         "total_pending": float(total_pending or 0),
         "total_paid": float(total_paid or 0)
@@ -81,7 +84,10 @@ def get_plan_distribution(db: Session = Depends(get_db)):
         User.membership_active == True
     ).count()
 
+    total = cobre + plata + oro
+
     return {
+        "total_active_members": total,
         "cobre": cobre,
         "plata": plata,
         "oro": oro
