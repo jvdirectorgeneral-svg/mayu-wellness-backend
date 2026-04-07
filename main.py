@@ -13,6 +13,7 @@ from member_cards import router as member_cards_router
 from ambassadors import router as ambassadors_router
 from commissions import router as commissions_router
 from admin_dashboard import router as admin_dashboard_router
+from supervisor_dashboard import router as supervisor_dashboard_router
 from dependencies import get_current_user
 import models
 
@@ -54,6 +55,7 @@ app.include_router(member_cards_router)
 app.include_router(ambassadors_router)
 app.include_router(commissions_router)
 app.include_router(admin_dashboard_router)
+app.include_router(supervisor_dashboard_router)
 
 # =========================
 # ROOT
