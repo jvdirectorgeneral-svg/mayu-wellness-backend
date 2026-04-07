@@ -24,12 +24,13 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
     phone = Column(String, nullable=True)
+    delivery_address = Column(String, nullable=True)  # 🆕 domicilio de entrega
 
     status = Column(String, default="registered", nullable=False)
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False, nullable=False)
 
-    # member / ambassador / admin / supervisor
+    # member / ambassador / admin / supervisor / logistics
     role = Column(String, default="member", nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
