@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
     email: str
     password: str
     phone: str
+    delivery_address: str
     ambassador_code: Optional[str] = None
 
 
@@ -45,6 +46,7 @@ def get_users(db: Session = Depends(get_db)):
                 "name": u.name,
                 "email": u.email,
                 "phone": u.phone,
+                "delivery_address": u.delivery_address,
                 "status": u.status,
                 "membership_level": u.membership_level,
                 "membership_active": u.membership_active,
@@ -82,6 +84,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         email=user.email,
         password=hash_password(user.password),
         phone=user.phone,
+        delivery_address=user.delivery_address,
         role="member"
     )
 
@@ -104,6 +107,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         "name": new_user.name,
         "email": new_user.email,
         "phone": new_user.phone,
+        "delivery_address": new_user.delivery_address,
         "status": new_user.status,
         "membership_level": new_user.membership_level,
         "membership_active": new_user.membership_active,
@@ -134,6 +138,7 @@ def update_membership(
         "name": user.name,
         "email": user.email,
         "phone": user.phone,
+        "delivery_address": user.delivery_address,
         "status": user.status,
         "membership_level": user.membership_level,
         "membership_active": user.membership_active,
@@ -167,6 +172,7 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "phone": db_user.phone,
+            "delivery_address": db_user.delivery_address,
             "membership_level": db_user.membership_level,
             "membership_active": db_user.membership_active,
             "role": db_user.role
