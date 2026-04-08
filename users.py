@@ -6,6 +6,13 @@ from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
 import models
 
+import os
+import smtplib
+import ssl
+import secrets
+import string
+from email.message import EmailMessage
+
 router = APIRouter()
 
 
@@ -28,12 +35,58 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def generate_temporary_password(length: int = 10) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+def send_reset_email(to_email: str, temporary_password: str):
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+
+    if not smtp_email or not smtp_password:
+        raise Exception(
+            "Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor"
+        )
+
+    msg = EmailMessage()
+    msg["Subject"] = "Recuperación de contraseña - Mayu Wellness Club"
+    msg["From"] = smtp_email
+    msg["To"] = to_email
+    msg.set_content(
+        f"""
+Hola,
+
+Hemos generado una contraseña temporal para tu cuenta de Mayu Wellness Club.
+
+Tu nueva contraseña temporal es:
+{temporary_password}
+
+Te recomendamos iniciar sesión y cambiarla lo antes posible.
+
+Equipo Mayu Wellness Club
+""".strip()
+    )
+
+    context = ssl.create_default_context()
+
+    with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+        server.login(smtp_email, smtp_password)
+        server.send_message(msg)
 
 
 @router.get("/users")
@@ -177,4 +230,32 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "membership_active": db_user.membership_active,
             "role": db_user.role
         }
+    }
+
+
+@router.post("/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(
+        models.User.email == payload.email
+    ).first()
+
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    temporary_password = generate_temporary_password()
+    db_user.password = hash_password(temporary_password)
+
+    db.commit()
+    db.refresh(db_user)
+
+    try:
+        send_reset_email(db_user.email, temporary_password)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo enviar el correo: {str(e)}"
+        )
+
+    return {
+        "message": "Se envió una contraseña temporal al correo registrado"
     }
