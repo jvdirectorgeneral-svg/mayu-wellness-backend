@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
@@ -22,7 +22,7 @@ router = APIRouter()
 # =========================
 class UserCreate(BaseModel):
     name: str
-    email: EmailStr
+    email: str
     password: str
     phone: str
     delivery_address: str
@@ -35,17 +35,17 @@ class MembershipUpdate(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    email: str
 
 
 class StaffCreate(BaseModel):
     name: str
-    email: EmailStr
+    email: str
     password: str
     phone: Optional[str] = None
     role: str  # admin / supervisor / logistics
