@@ -24,13 +24,18 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
     phone = Column(String, nullable=True)
-    delivery_address = Column(String, nullable=True)  # 🆕 domicilio de entrega
+    delivery_address = Column(String, nullable=True)
 
     status = Column(String, default="registered", nullable=False)
+
+    # Solo aplica al club / membresías
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False, nullable=False)
 
-    # member / ambassador / admin / supervisor / logistics
+    # Control general de acceso al sistema
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # member / ambassador / admin / supervisor / logistics / superadmin
     role = Column(String, default="member", nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -251,7 +256,7 @@ class MonthlySelection(Base):
     month = Column(Integer, nullable=False)
     year = Column(Integer, nullable=False)
 
-    status = Column(String, default="draft", nullable=False)  # draft / confirmed / locked
+    status = Column(String, default="draft", nullable=False)
     editable = Column(Boolean, default=True, nullable=False)
 
     user = relationship("User", back_populates="monthly_selections")
@@ -313,7 +318,7 @@ class PlanChangeRequest(Base):
     current_plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
     requested_plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
 
-    status = Column(String, default="pending", nullable=False)  # pending / approved / rejected / applied
+    status = Column(String, default="pending", nullable=False)
     effective_month = Column(Integer, nullable=True)
     effective_year = Column(Integer, nullable=True)
 
@@ -345,7 +350,7 @@ class MemberCard(Base):
     qr_token = Column(String, unique=True, nullable=False)
 
     level_snapshot = Column(Integer, nullable=False)
-    status = Column(String, default="active", nullable=False)  # active / inactive / suspended
+    status = Column(String, default="active", nullable=False)
     expires_at = Column(String, nullable=True)
 
     user = relationship("User", back_populates="member_card")
@@ -384,16 +389,9 @@ class Commission(Base):
     commission_percent = Column(Float, nullable=False, default=14.5)
     commission_amount = Column(Float, nullable=False)
 
-    # active / inactive / suspended
     member_status = Column(String, nullable=False, default="active")
-
-    # paid / pending / failed / waived
     payment_status = Column(String, nullable=False, default="paid")
-
-    # eligible / ineligible / cancelled
     eligibility_status = Column(String, nullable=False, default="eligible")
-
-    # pending / paid / cancelled
     status = Column(String, nullable=False, default="pending")
 
     generated_at = Column(DateTime, default=datetime.utcnow)
