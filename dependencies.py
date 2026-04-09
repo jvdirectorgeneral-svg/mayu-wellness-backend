@@ -9,6 +9,10 @@ import models
 
 security = HTTPBearer()
 
+
+# =========================
+# DB
+# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -16,6 +20,10 @@ def get_db():
     finally:
         db.close()
 
+
+# =========================
+# 🔐 USUARIO ACTUAL
+# =========================
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
@@ -32,9 +40,15 @@ def get_current_user(
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido")
 
-    user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+    user = db.query(models.User).filter(
+        models.User.id == int(user_id)
+    ).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # 🔥 NUEVO — CONTROL GLOBAL DE ACCESO
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario desactivado")
 
     return user
