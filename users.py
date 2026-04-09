@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
+from dependencies import get_current_user
 import models
 
 import os
@@ -16,9 +17,12 @@ from email.message import EmailMessage
 router = APIRouter()
 
 
+# =========================
+# SCHEMAS
+# =========================
 class UserCreate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     phone: str
     delivery_address: str
@@ -31,20 +35,53 @@ class MembershipUpdate(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 
+class StaffCreate(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    phone: Optional[str] = None
+    role: str  # admin / supervisor / logistics
+
+
+class StaffPasswordResetRequest(BaseModel):
+    new_password: str
+
+
+class StaffStatusUpdate(BaseModel):
+    is_active: bool
+
+
+# =========================
+# DB
+# =========================
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+# =========================
+# HELPERS
+# =========================
+def require_superadmin(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="Acceso solo para superadmin")
 
 
 def generate_temporary_password(length: int = 10) -> str:
@@ -59,9 +96,7 @@ def send_reset_email(to_email: str, temporary_password: str):
     smtp_port = int(os.getenv("SMTP_PORT", "465"))
 
     if not smtp_email or not smtp_password:
-        raise Exception(
-            "Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor"
-        )
+        raise Exception("Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor")
 
     msg = EmailMessage()
     msg["Subject"] = "Recuperación de contraseña - Mayu Wellness Club"
@@ -89,6 +124,9 @@ Equipo Mayu Wellness Club
         server.send_message(msg)
 
 
+# =========================
+# USUARIOS GENERALES
+# =========================
 @router.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
@@ -103,6 +141,7 @@ def get_users(db: Session = Depends(get_db)):
                 "status": u.status,
                 "membership_level": u.membership_level,
                 "membership_active": u.membership_active,
+                "is_active": getattr(u, "is_active", True),
                 "role": u.role
             }
             for u in users
@@ -138,7 +177,8 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         password=hash_password(user.password),
         phone=user.phone,
         delivery_address=user.delivery_address,
-        role="member"
+        role="member",
+        is_active=True
     )
 
     db.add(new_user)
@@ -164,6 +204,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         "status": new_user.status,
         "membership_level": new_user.membership_level,
         "membership_active": new_user.membership_active,
+        "is_active": new_user.is_active,
         "role": new_user.role,
         "ambassador_code": cleaned_ambassador_code
     }
@@ -195,10 +236,14 @@ def update_membership(
         "status": user.status,
         "membership_level": user.membership_level,
         "membership_active": user.membership_active,
+        "is_active": getattr(user, "is_active", True),
         "role": user.role
     }
 
 
+# =========================
+# LOGIN
+# =========================
 @router.post("/login")
 def login(user: LoginRequest, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(
@@ -207,6 +252,9 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not getattr(db_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if not verify_password(user.password, db_user.password):
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
@@ -228,11 +276,15 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "delivery_address": db_user.delivery_address,
             "membership_level": db_user.membership_level,
             "membership_active": db_user.membership_active,
+            "is_active": getattr(db_user, "is_active", True),
             "role": db_user.role
         }
     }
 
 
+# =========================
+# FORGOT PASSWORD GENERAL
+# =========================
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(
@@ -241,6 +293,9 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not getattr(db_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     temporary_password = generate_temporary_password()
     db_user.password = hash_password(temporary_password)
@@ -258,4 +313,164 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
     return {
         "message": "Se envió una contraseña temporal al correo registrado"
+    }
+
+
+# =========================
+# SUPERADMIN - CREAR STAFF
+# =========================
+@router.post("/superadmin/staff")
+def create_staff(
+    staff: StaffCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    allowed_roles = {"admin", "supervisor", "logistics"}
+    if staff.role not in allowed_roles:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Solo se permite admin, supervisor o logistics"
+        )
+
+    existing_user = db.query(models.User).filter(
+        models.User.email == staff.email
+    ).first()
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="El correo ya está registrado")
+
+    new_staff = models.User(
+        name=staff.name,
+        email=staff.email,
+        password=hash_password(staff.password),
+        phone=staff.phone,
+        delivery_address=None,
+        role=staff.role,
+        status="staff",
+        membership_level=None,
+        membership_active=False,
+        is_active=True
+    )
+
+    db.add(new_staff)
+    db.commit()
+    db.refresh(new_staff)
+
+    return {
+        "message": "Usuario staff creado correctamente",
+        "user": {
+            "id": new_staff.id,
+            "name": new_staff.name,
+            "email": new_staff.email,
+            "phone": new_staff.phone,
+            "role": new_staff.role,
+            "status": new_staff.status,
+            "is_active": new_staff.is_active
+        }
+    }
+
+
+# =========================
+# SUPERADMIN - LISTAR STAFF
+# =========================
+@router.get("/superadmin/staff")
+def list_staff(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    staff_roles = ["superadmin", "admin", "supervisor", "logistics"]
+
+    users = (
+        db.query(models.User)
+        .filter(models.User.role.in_(staff_roles))
+        .order_by(models.User.created_at.desc())
+        .all()
+    )
+
+    return {
+        "items": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "phone": u.phone,
+                "role": u.role,
+                "status": u.status,
+                "is_active": getattr(u, "is_active", True),
+                "created_at": u.created_at
+            }
+            for u in users
+        ]
+    }
+
+
+# =========================
+# SUPERADMIN - RESETEAR CLAVE STAFF
+# =========================
+@router.put("/superadmin/staff/{user_id}/reset-password")
+def reset_staff_password(
+    user_id: int,
+    payload: StaffPasswordResetRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
+        raise HTTPException(status_code=400, detail="Solo se puede resetear password de staff interno")
+
+    user.password = hash_password(payload.new_password)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Contraseña actualizada correctamente",
+        "user_id": user.id,
+        "email": user.email,
+        "role": user.role
+    }
+
+
+# =========================
+# SUPERADMIN - ACTIVAR / DESACTIVAR STAFF
+# =========================
+@router.put("/superadmin/staff/{user_id}/status")
+def update_staff_status(
+    user_id: int,
+    payload: StaffStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
+        raise HTTPException(status_code=400, detail="Solo se puede activar o desactivar staff interno")
+
+    user.is_active = payload.is_active
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Estado actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "is_active": user.is_active
+        }
     }
