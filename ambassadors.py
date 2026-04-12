@@ -161,49 +161,47 @@ def register_ambassador(
 
 
 @router.post("/login")
-def login_ambassador(
-    data: AmbassadorLogin,
-    db: Session = Depends(get_db)
-):
-    user = db.query(models.User).filter(
-        models.User.email == data.email,
-        models.User.role == "ambassador"
+def login(user: LoginRequest, db: Session = Depends(get_db)):
+    db_user = db.query(models.User).filter(
+        models.User.email == user.email
     ).first()
 
-    if not user:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if not verify_password(data.password, user.password):
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    if not getattr(db_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.user_id == user.id
-    ).first()
+    try:
+        password_ok = verify_password(user.password, db_user.password)
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Contraseña inválida o hash dañado"
+        )
 
-    if not ambassador:
-        raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
+    if not password_ok:
+        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+    token = create_access_token({
+        "sub": str(db_user.id),
+        "email": db_user.email
+    })
 
     return {
-        "message": "Login de embajador exitoso",
+        "message": "Login exitoso",
+        "access_token": token,
+        "token_type": "bearer",
         "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "phone": user.phone,
-            "role": user.role
-        },
-        "ambassador": {
-            "id": ambassador.id,
-            "user_id": ambassador.user_id,
-            "ambassador_code": ambassador.ambassador_code,
-            "ambassador_token": ambassador.ambassador_token,
-            "national_id": ambassador.national_id,
-            "address": ambassador.address,
-            "bank_name": ambassador.bank_name,
-            "account_type": ambassador.account_type,
-            "bank_account_number": ambassador.bank_account_number,
-            "status": ambassador.status,
-            "is_active": ambassador.is_active
+            "id": db_user.id,
+            "name": db_user.name,
+            "email": db_user.email,
+            "phone": db_user.phone,
+            "delivery_address": db_user.delivery_address,
+            "membership_level": db_user.membership_level,
+            "membership_active": db_user.membership_active,
+            "is_active": getattr(db_user, "is_active", True),
+            "role": db_user.role
         }
     }
 
