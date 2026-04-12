@@ -317,9 +317,9 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
 
 # =========================
-# SUPERADMIN - CREAR STAFF
+# SUPERADMIN - CREAR USUARIOS INTERNOS
 # =========================
-@router.post("/superadmin/staff")
+@router.post("/superadmin/internal-users")
 def create_staff(
     staff: StaffCreate,
     db: Session = Depends(get_db),
@@ -373,9 +373,9 @@ def create_staff(
 
 
 # =========================
-# SUPERADMIN - LISTAR STAFF
+# SUPERADMIN - LISTAR USUARIOS INTERNOS
 # =========================
-@router.get("/superadmin/staff")
+@router.get("/superadmin/internal-users")
 def list_staff(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -409,9 +409,9 @@ def list_staff(
 
 
 # =========================
-# SUPERADMIN - RESETEAR CLAVE STAFF
+# SUPERADMIN - RESETEAR CLAVE USUARIO INTERNO
 # =========================
-@router.put("/superadmin/staff/{user_id}/reset-password")
+@router.put("/superadmin/internal-users/{user_id}/reset-password")
 def reset_staff_password(
     user_id: int,
     payload: StaffPasswordResetRequest,
@@ -441,9 +441,9 @@ def reset_staff_password(
 
 
 # =========================
-# SUPERADMIN - ACTIVAR / DESACTIVAR STAFF
+# SUPERADMIN - ACTIVAR / DESACTIVAR USUARIO INTERNO
 # =========================
-@router.put("/superadmin/staff/{user_id}/status")
+@router.put("/superadmin/internal-users/{user_id}/status")
 def update_staff_status(
     user_id: int,
     payload: StaffStatusUpdate,
