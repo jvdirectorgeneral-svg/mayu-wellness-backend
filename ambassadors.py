@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from database import get_db
+from auth import hash_password, verify_password
 import models
 import uuid
 from schemas import AmbassadorRegister, AmbassadorLogin
@@ -85,9 +86,6 @@ def get_spaced_text_width(draw, text, font, spacing=1):
     return total_width
 
 
-# =========================
-# 🤝 REGISTRO DE EMBAJADOR
-# =========================
 @router.post("/register")
 def register_ambassador(
     data: AmbassadorRegister,
@@ -103,12 +101,13 @@ def register_ambassador(
     user = models.User(
         name=data.name,
         email=data.email,
-        password=data.password,
+        password=hash_password(data.password),
         phone=data.phone,
         status="registered",
         membership_level=None,
         membership_active=False,
-        role="ambassador"
+        role="ambassador",
+        is_active=True
     )
 
     db.add(user)
@@ -161,9 +160,6 @@ def register_ambassador(
     }
 
 
-# =========================
-# 🔐 LOGIN DE EMBAJADOR
-# =========================
 @router.post("/login")
 def login_ambassador(
     data: AmbassadorLogin,
@@ -171,11 +167,13 @@ def login_ambassador(
 ):
     user = db.query(models.User).filter(
         models.User.email == data.email,
-        models.User.password == data.password,
         models.User.role == "ambassador"
     ).first()
 
     if not user:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    if not verify_password(data.password, user.password):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     ambassador = db.query(models.Ambassador).filter(
@@ -210,9 +208,6 @@ def login_ambassador(
     }
 
 
-# =========================
-# 👤 PERFIL DEL EMBAJADOR
-# =========================
 @router.get("/{ambassador_id}")
 def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
     ambassador = db.query(models.Ambassador).filter(
@@ -249,9 +244,6 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
     }
 
 
-# =========================
-# 💳 TARJETA JSON DEL EMBAJADOR
-# =========================
 @router.get("/{ambassador_id}/card")
 def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
     ambassador = db.query(models.Ambassador).filter(
@@ -278,9 +270,6 @@ def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
     }
 
 
-# =========================
-# ✅ VALIDACIÓN WEB DEL QR
-# =========================
 @router.get("/validate/{ambassador_token}", response_class=HTMLResponse)
 def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db)):
     ambassador = db.query(models.Ambassador).filter(
@@ -355,9 +344,6 @@ def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db
     return HTMLResponse(content=html_content, status_code=200)
 
 
-# =========================
-# 🖼️ IMAGEN DE TARJETA DEL EMBAJADOR
-# =========================
 @router.get("/{ambassador_id}/image")
 def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get_db)):
     ambassador = db.query(models.Ambassador).filter(
@@ -454,9 +440,6 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
     )
 
 
-# =========================
-# 📊 DASHBOARD DE EMBAJADOR
-# =========================
 @router.get("/{ambassador_id}/dashboard")
 def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
     ambassador = db.query(models.Ambassador).filter(
@@ -531,4 +514,4 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
         },
         "affiliates": affiliates
     }
-
+}
