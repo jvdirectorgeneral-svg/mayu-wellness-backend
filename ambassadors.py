@@ -514,4 +514,4 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
         },
         "affiliates": affiliates
     }
-}
+
