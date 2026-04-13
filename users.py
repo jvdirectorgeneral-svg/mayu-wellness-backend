@@ -55,6 +55,10 @@ class StaffPasswordResetRequest(BaseModel):
     new_password: str
 
 
+class UserPasswordResetRequest(BaseModel):
+    new_password: str
+
+
 class StaffStatusUpdate(BaseModel):
     is_active: bool
 
@@ -449,6 +453,8 @@ def reset_staff_password(
         "email": user.email,
         "role": user.role
     }
+
+
 # =========================
 # SUPERADMIN - RESETEAR CLAVE DE CUALQUIER USUARIO
 # =========================
@@ -483,6 +489,7 @@ def reset_any_user_password(
             "is_active": getattr(user, "is_active", True)
         }
     }
+
 
 # =========================
 # SUPERADMIN - ACTIVAR / DESACTIVAR USUARIO INTERNO
