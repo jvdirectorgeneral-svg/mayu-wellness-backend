@@ -59,16 +59,6 @@ class StaffStatusUpdate(BaseModel):
     is_active: bool
 
 
-# 🔥 Fuerza reconstrucción de modelos para Pydantic v2
-UserCreate.model_rebuild()
-MembershipUpdate.model_rebuild()
-LoginRequest.model_rebuild()
-ForgotPasswordRequest.model_rebuild()
-StaffCreate.model_rebuild()
-StaffPasswordResetRequest.model_rebuild()
-StaffStatusUpdate.model_rebuild()
-
-
 # =========================
 # DB
 # =========================
@@ -444,7 +434,10 @@ def reset_staff_password(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
-        raise HTTPException(status_code=400, detail="Solo se puede resetear password de staff interno")
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede resetear password de staff interno"
+        )
 
     user.password = hash_password(payload.new_password)
     db.commit()
@@ -476,7 +469,10 @@ def update_staff_status(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
-        raise HTTPException(status_code=400, detail="Solo se puede activar o desactivar staff interno")
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede activar o desactivar staff interno"
+        )
 
     user.is_active = payload.is_active
     db.commit()
