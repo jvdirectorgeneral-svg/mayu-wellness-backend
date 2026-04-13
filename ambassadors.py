@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from database import get_db
-from auth import hash_password, verify_password
+from auth import hash_password, verify_password, create_access_token
 import models
 import uuid
 from schemas import AmbassadorRegister, AmbassadorLogin
@@ -161,9 +161,10 @@ def register_ambassador(
 
 
 @router.post("/login")
-def login(user: LoginRequest, db: Session = Depends(get_db)):
+def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(
-        models.User.email == user.email
+        models.User.email == payload.email,
+        models.User.role == "ambassador"
     ).first()
 
     if not db_user:
@@ -173,7 +174,7 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     try:
-        password_ok = verify_password(user.password, db_user.password)
+        password_ok = verify_password(payload.password, db_user.password)
     except Exception:
         raise HTTPException(
             status_code=401,
@@ -182,6 +183,13 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
 
     if not password_ok:
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+    ambassador = db.query(models.Ambassador).filter(
+        models.Ambassador.user_id == db_user.id
+    ).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
 
     token = create_access_token({
         "sub": str(db_user.id),
@@ -197,11 +205,20 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "phone": db_user.phone,
-            "delivery_address": db_user.delivery_address,
-            "membership_level": db_user.membership_level,
-            "membership_active": db_user.membership_active,
-            "is_active": getattr(db_user, "is_active", True),
             "role": db_user.role
+        },
+        "ambassador": {
+            "id": ambassador.id,
+            "user_id": ambassador.user_id,
+            "ambassador_code": ambassador.ambassador_code,
+            "ambassador_token": ambassador.ambassador_token,
+            "national_id": ambassador.national_id,
+            "address": ambassador.address,
+            "bank_name": ambassador.bank_name,
+            "account_type": ambassador.account_type,
+            "bank_account_number": ambassador.bank_account_number,
+            "status": ambassador.status,
+            "is_active": ambassador.is_active
         }
     }
 
@@ -512,4 +529,3 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
         },
         "affiliates": affiliates
     }
-
