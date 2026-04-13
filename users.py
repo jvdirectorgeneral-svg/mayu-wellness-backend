@@ -63,6 +63,10 @@ class StaffStatusUpdate(BaseModel):
     is_active: bool
 
 
+class UserStatusUpdate(BaseModel):
+    is_active: bool
+
+
 # =========================
 # DB
 # =========================
@@ -513,6 +517,39 @@ def update_staff_status(
             status_code=400,
             detail="Solo se puede activar o desactivar staff interno"
         )
+
+    user.is_active = payload.is_active
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Estado actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "is_active": user.is_active
+        }
+    }
+
+
+# =========================
+# SUPERADMIN - ACTIVAR / DESACTIVAR CUALQUIER USUARIO
+# =========================
+@router.put("/superadmin/users/{user_id}/status")
+def update_any_user_status(
+    user_id: int,
+    payload: UserStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     user.is_active = payload.is_active
     db.commit()
