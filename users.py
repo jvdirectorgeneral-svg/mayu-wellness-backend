@@ -51,6 +51,13 @@ class StaffCreate(BaseModel):
     role: str
 
 
+class StaffUpdate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    role: str
+
+
 class StaffPasswordResetRequest(BaseModel):
     new_password: str
 
@@ -425,6 +432,66 @@ def list_staff(
 
 
 # =========================
+# SUPERADMIN - ACTUALIZAR USUARIO INTERNO
+# =========================
+@router.put("/superadmin/internal-users/{user_id}")
+def update_staff(
+    user_id: int,
+    payload: StaffUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
+
+    allowed_roles = {"admin", "supervisor", "logistics"}
+    if payload.role not in allowed_roles:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Solo se permite admin, supervisor o logistics"
+        )
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se puede editar usuarios internos"
+        )
+
+    existing_user = db.query(models.User).filter(
+        models.User.email == payload.email,
+        models.User.id != user_id
+    ).first()
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
+
+    user.name = payload.name
+    user.email = payload.email
+    user.phone = payload.phone
+    user.role = payload.role
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Usuario interno actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+            "status": user.status,
+            "is_active": getattr(user, "is_active", True)
+        }
+    }
+
+
+# =========================
 # SUPERADMIN - RESETEAR CLAVE USUARIO INTERNO
 # =========================
 @router.put("/superadmin/internal-users/{user_id}/reset-password")
@@ -590,4 +657,3 @@ def delete_user(
         "message": "Usuario eliminado correctamente",
         "user_id": user_id
     }
-    
