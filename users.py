@@ -59,6 +59,16 @@ class StaffStatusUpdate(BaseModel):
     is_active: bool
 
 
+# 🔥 Fuerza reconstrucción de modelos para Pydantic v2
+UserCreate.model_rebuild()
+MembershipUpdate.model_rebuild()
+LoginRequest.model_rebuild()
+ForgotPasswordRequest.model_rebuild()
+StaffCreate.model_rebuild()
+StaffPasswordResetRequest.model_rebuild()
+StaffStatusUpdate.model_rebuild()
+
+
 # =========================
 # DB
 # =========================
@@ -150,9 +160,9 @@ def get_users(db: Session = Depends(get_db)):
 
 
 @router.post("/users")
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(models.User).filter(
-        models.User.email == user.email
+        models.User.email == payload.email
     ).first()
 
     if existing_user:
@@ -161,8 +171,8 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     ambassador = None
     cleaned_ambassador_code = None
 
-    if user.ambassador_code is not None and user.ambassador_code.strip() != "":
-        cleaned_ambassador_code = user.ambassador_code.strip()
+    if payload.ambassador_code is not None and payload.ambassador_code.strip() != "":
+        cleaned_ambassador_code = payload.ambassador_code.strip()
 
         ambassador = db.query(models.Ambassador).filter(
             models.Ambassador.ambassador_code == cleaned_ambassador_code
@@ -172,11 +182,11 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Código de embajador inválido")
 
     new_user = models.User(
-        name=user.name,
-        email=user.email,
-        password=hash_password(user.password),
-        phone=user.phone,
-        delivery_address=user.delivery_address,
+        name=payload.name,
+        email=payload.email,
+        password=hash_password(payload.password),
+        phone=payload.phone,
+        delivery_address=payload.delivery_address,
         role="member",
         is_active=True
     )
@@ -213,7 +223,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 @router.put("/users/{user_id}/membership")
 def update_membership(
     user_id: int,
-    membership: MembershipUpdate,
+    payload: MembershipUpdate,
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -221,8 +231,8 @@ def update_membership(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    user.membership_level = membership.level
-    user.membership_active = membership.active
+    user.membership_level = payload.level
+    user.membership_active = payload.active
 
     db.commit()
     db.refresh(user)
@@ -289,6 +299,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         }
     }
 
+
 # =========================
 # FORGOT PASSWORD GENERAL
 # =========================
@@ -328,33 +339,33 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 # =========================
 @router.post("/superadmin/internal-users")
 def create_staff(
-    staff: StaffCreate,
+    payload: StaffCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     require_superadmin(current_user)
 
     allowed_roles = {"admin", "supervisor", "logistics"}
-    if staff.role not in allowed_roles:
+    if payload.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
             detail="Rol inválido. Solo se permite admin, supervisor o logistics"
         )
 
     existing_user = db.query(models.User).filter(
-        models.User.email == staff.email
+        models.User.email == payload.email
     ).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
 
     new_staff = models.User(
-        name=staff.name,
-        email=staff.email,
-        password=hash_password(staff.password),
-        phone=staff.phone,
+        name=payload.name,
+        email=payload.email,
+        password=hash_password(payload.password),
+        phone=payload.phone,
         delivery_address=None,
-        role=staff.role,
+        role=payload.role,
         status="staff",
         membership_level=None,
         membership_active=False,
