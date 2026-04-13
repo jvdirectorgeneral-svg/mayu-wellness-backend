@@ -565,6 +565,8 @@ def update_any_user_status(
             "is_active": user.is_active
         }
     }
+
+
 # =========================
 # SUPERADMIN - ELIMINAR USUARIO
 # =========================
@@ -587,5 +589,5 @@ def delete_user(
     return {
         "message": "Usuario eliminado correctamente",
         "user_id": user_id
-        }
     }
+    
