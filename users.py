@@ -449,7 +449,40 @@ def reset_staff_password(
         "email": user.email,
         "role": user.role
     }
+# =========================
+# SUPERADMIN - RESETEAR CLAVE DE CUALQUIER USUARIO
+# =========================
+@router.put("/superadmin/users/{user_id}/reset-password")
+def reset_any_user_password(
+    user_id: int,
+    payload: UserPasswordResetRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_superadmin(current_user)
 
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not payload.new_password or payload.new_password.strip() == "":
+        raise HTTPException(status_code=400, detail="La nueva contraseña es obligatoria")
+
+    user.password = hash_password(payload.new_password.strip())
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Contraseña actualizada correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "is_active": getattr(user, "is_active", True)
+        }
+    }
 
 # =========================
 # SUPERADMIN - ACTIVAR / DESACTIVAR USUARIO INTERNO
