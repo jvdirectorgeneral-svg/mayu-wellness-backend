@@ -48,7 +48,7 @@ class StaffCreate(BaseModel):
     email: str
     password: str
     phone: Optional[str] = None
-    role: str  # admin / supervisor / logistics
+    role: str
 
 
 class StaffPasswordResetRequest(BaseModel):
@@ -245,9 +245,9 @@ def update_membership(
 # LOGIN
 # =========================
 @router.post("/login")
-def login(user: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(
-        models.User.email == user.email
+        models.User.email == payload.email
     ).first()
 
     if not db_user:
@@ -256,7 +256,15 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
     if not getattr(db_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if not verify_password(user.password, db_user.password):
+    try:
+        password_ok = verify_password(payload.password, db_user.password)
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Contraseña inválida o hash dañado"
+        )
+
+    if not password_ok:
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
     token = create_access_token({
@@ -280,7 +288,6 @@ def login(user: LoginRequest, db: Session = Depends(get_db)):
             "role": db_user.role
         }
     }
-
 
 # =========================
 # FORGOT PASSWORD GENERAL
