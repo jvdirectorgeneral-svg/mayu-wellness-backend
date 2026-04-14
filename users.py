@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
@@ -22,10 +22,15 @@ router = APIRouter()
 # =========================
 class UserCreate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     phone: str
-    delivery_address: str
+    cedula: str
+    city: str
+    address: str
+    reference: str
+    delivery_notes: str
+    phone_secondary: Optional[str] = None
     ambassador_code: Optional[str] = None
 
 
@@ -35,26 +40,28 @@ class MembershipUpdate(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 
 class StaffCreate(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
-    phone: Optional[str] = None
+    phone: str
+    cedula: str
     role: str
 
 
 class StaffUpdate(BaseModel):
     name: str
-    email: str
-    phone: Optional[str] = None
+    email: EmailStr
+    phone: str
+    cedula: str
     role: str
 
 
@@ -101,7 +108,7 @@ def require_superadmin(current_user: models.User):
 
 def generate_temporary_password(length: int = 10) -> str:
     alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def send_reset_email(to_email: str, temporary_password: str):
@@ -152,12 +159,17 @@ def get_users(db: Session = Depends(get_db)):
                 "name": u.name,
                 "email": u.email,
                 "phone": u.phone,
-                "delivery_address": u.delivery_address,
+                "cedula": u.cedula,
+                "city": u.city,
+                "address": u.address,
+                "reference": u.reference,
+                "delivery_notes": u.delivery_notes,
+                "phone_secondary": u.phone_secondary,
                 "status": u.status,
                 "membership_level": u.membership_level,
                 "membership_active": u.membership_active,
                 "is_active": getattr(u, "is_active", True),
-                "role": u.role
+                "role": u.role,
             }
             for u in users
         ]
@@ -166,12 +178,43 @@ def get_users(db: Session = Depends(get_db)):
 
 @router.post("/users")
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    cedula = payload.cedula.strip()
+
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    if not payload.phone.strip():
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    if not cedula:
+        raise HTTPException(status_code=400, detail="La cédula es obligatoria")
+
+    if not payload.city.strip():
+        raise HTTPException(status_code=400, detail="La ciudad es obligatoria")
+
+    if not payload.address.strip():
+        raise HTTPException(status_code=400, detail="La dirección es obligatoria")
+
+    if not payload.reference.strip():
+        raise HTTPException(status_code=400, detail="La referencia es obligatoria")
+
+    if not payload.delivery_notes.strip():
+        raise HTTPException(status_code=400, detail="Las notas de entrega son obligatorias")
+
     existing_user = db.query(models.User).filter(
-        models.User.email == payload.email
+        models.User.email == email
     ).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
+
+    existing_cedula = db.query(models.User).filter(
+        models.User.cedula == cedula
+    ).first()
+
+    if existing_cedula:
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
     ambassador = None
     cleaned_ambassador_code = None
@@ -187,13 +230,18 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Código de embajador inválido")
 
     new_user = models.User(
-        name=payload.name,
-        email=payload.email,
+        name=payload.name.strip(),
+        email=email,
         password=hash_password(payload.password),
-        phone=payload.phone,
-        delivery_address=payload.delivery_address,
+        phone=payload.phone.strip(),
+        cedula=cedula,
+        city=payload.city.strip(),
+        address=payload.address.strip(),
+        reference=payload.reference.strip(),
+        delivery_notes=payload.delivery_notes.strip(),
+        phone_secondary=payload.phone_secondary.strip() if payload.phone_secondary else None,
         role="member",
-        is_active=True
+        is_active=True,
     )
 
     db.add(new_user)
@@ -205,7 +253,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
             ambassador_id=ambassador.id,
             user_id=new_user.id,
             referral_code=cleaned_ambassador_code,
-            status="active"
+            status="active",
         )
         db.add(referral)
         db.commit()
@@ -215,13 +263,18 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         "name": new_user.name,
         "email": new_user.email,
         "phone": new_user.phone,
-        "delivery_address": new_user.delivery_address,
+        "cedula": new_user.cedula,
+        "city": new_user.city,
+        "address": new_user.address,
+        "reference": new_user.reference,
+        "delivery_notes": new_user.delivery_notes,
+        "phone_secondary": new_user.phone_secondary,
         "status": new_user.status,
         "membership_level": new_user.membership_level,
         "membership_active": new_user.membership_active,
         "is_active": new_user.is_active,
         "role": new_user.role,
-        "ambassador_code": cleaned_ambassador_code
+        "ambassador_code": cleaned_ambassador_code,
     }
 
 
@@ -229,7 +282,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
 def update_membership(
     user_id: int,
     payload: MembershipUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
@@ -247,12 +300,17 @@ def update_membership(
         "name": user.name,
         "email": user.email,
         "phone": user.phone,
-        "delivery_address": user.delivery_address,
+        "cedula": user.cedula,
+        "city": user.city,
+        "address": user.address,
+        "reference": user.reference,
+        "delivery_notes": user.delivery_notes,
+        "phone_secondary": user.phone_secondary,
         "status": user.status,
         "membership_level": user.membership_level,
         "membership_active": user.membership_active,
         "is_active": getattr(user, "is_active", True),
-        "role": user.role
+        "role": user.role,
     }
 
 
@@ -261,8 +319,10 @@ def update_membership(
 # =========================
 @router.post("/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+
     db_user = db.query(models.User).filter(
-        models.User.email == payload.email
+        models.User.email == email
     ).first()
 
     if not db_user:
@@ -276,7 +336,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     except Exception:
         raise HTTPException(
             status_code=401,
-            detail="Contraseña inválida o hash dañado"
+            detail="Contraseña inválida o hash dañado",
         )
 
     if not password_ok:
@@ -284,7 +344,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
     token = create_access_token({
         "sub": str(db_user.id),
-        "email": db_user.email
+        "email": db_user.email,
     })
 
     return {
@@ -296,12 +356,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "phone": db_user.phone,
-            "delivery_address": db_user.delivery_address,
+            "cedula": db_user.cedula,
+            "city": db_user.city,
+            "address": db_user.address,
+            "reference": db_user.reference,
+            "delivery_notes": db_user.delivery_notes,
+            "phone_secondary": db_user.phone_secondary,
             "membership_level": db_user.membership_level,
             "membership_active": db_user.membership_active,
             "is_active": getattr(db_user, "is_active", True),
-            "role": db_user.role
-        }
+            "role": db_user.role,
+        },
     }
 
 
@@ -310,8 +375,10 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 # =========================
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+
     db_user = db.query(models.User).filter(
-        models.User.email == payload.email
+        models.User.email == email
     ).first()
 
     if not db_user:
@@ -331,7 +398,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"No se pudo enviar el correo: {str(e)}"
+            detail=f"No se pudo enviar el correo: {str(e)}",
         )
 
     return {
@@ -346,7 +413,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 def create_staff(
     payload: StaffCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -354,27 +421,39 @@ def create_staff(
     if payload.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
-            detail="Rol inválido. Solo se permite admin, supervisor o logistics"
+            detail="Rol inválido. Solo se permite admin, supervisor o logistics",
         )
 
     existing_user = db.query(models.User).filter(
-        models.User.email == payload.email
+        models.User.email == payload.email.strip().lower()
     ).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
 
+    existing_cedula = db.query(models.User).filter(
+        models.User.cedula == payload.cedula.strip()
+    ).first()
+
+    if existing_cedula:
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
+
     new_staff = models.User(
-        name=payload.name,
-        email=payload.email,
+        name=payload.name.strip(),
+        email=payload.email.strip().lower(),
         password=hash_password(payload.password),
-        phone=payload.phone,
-        delivery_address=None,
+        phone=payload.phone.strip(),
+        cedula=payload.cedula.strip(),
+        city="N/A",
+        address="N/A",
+        reference="N/A",
+        delivery_notes="N/A",
+        phone_secondary=None,
         role=payload.role,
         status="staff",
         membership_level=None,
         membership_active=False,
-        is_active=True
+        is_active=True,
     )
 
     db.add(new_staff)
@@ -388,10 +467,11 @@ def create_staff(
             "name": new_staff.name,
             "email": new_staff.email,
             "phone": new_staff.phone,
+            "cedula": new_staff.cedula,
             "role": new_staff.role,
             "status": new_staff.status,
-            "is_active": new_staff.is_active
-        }
+            "is_active": new_staff.is_active,
+        },
     }
 
 
@@ -401,7 +481,7 @@ def create_staff(
 @router.get("/superadmin/internal-users")
 def list_staff(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -421,10 +501,11 @@ def list_staff(
                 "name": u.name,
                 "email": u.email,
                 "phone": u.phone,
+                "cedula": u.cedula,
                 "role": u.role,
                 "status": u.status,
                 "is_active": getattr(u, "is_active", True),
-                "created_at": u.created_at
+                "created_at": u.created_at,
             }
             for u in users
         ]
@@ -439,7 +520,7 @@ def update_staff(
     user_id: int,
     payload: StaffUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -447,7 +528,7 @@ def update_staff(
     if payload.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
-            detail="Rol inválido. Solo se permite admin, supervisor o logistics"
+            detail="Rol inválido. Solo se permite admin, supervisor o logistics",
         )
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -458,20 +539,29 @@ def update_staff(
     if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
         raise HTTPException(
             status_code=400,
-            detail="Solo se puede editar usuarios internos"
+            detail="Solo se puede editar usuarios internos",
         )
 
     existing_user = db.query(models.User).filter(
-        models.User.email == payload.email,
-        models.User.id != user_id
+        models.User.email == payload.email.strip().lower(),
+        models.User.id != user_id,
     ).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
 
-    user.name = payload.name
-    user.email = payload.email
-    user.phone = payload.phone
+    existing_cedula = db.query(models.User).filter(
+        models.User.cedula == payload.cedula.strip(),
+        models.User.id != user_id,
+    ).first()
+
+    if existing_cedula:
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada por otro usuario")
+
+    user.name = payload.name.strip()
+    user.email = payload.email.strip().lower()
+    user.phone = payload.phone.strip()
+    user.cedula = payload.cedula.strip()
     user.role = payload.role
 
     db.commit()
@@ -484,10 +574,11 @@ def update_staff(
             "name": user.name,
             "email": user.email,
             "phone": user.phone,
+            "cedula": user.cedula,
             "role": user.role,
             "status": user.status,
-            "is_active": getattr(user, "is_active", True)
-        }
+            "is_active": getattr(user, "is_active", True),
+        },
     }
 
 
@@ -499,7 +590,7 @@ def reset_staff_password(
     user_id: int,
     payload: StaffPasswordResetRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -511,7 +602,7 @@ def reset_staff_password(
     if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
         raise HTTPException(
             status_code=400,
-            detail="Solo se puede resetear password de staff interno"
+            detail="Solo se puede resetear password de staff interno",
         )
 
     user.password = hash_password(payload.new_password)
@@ -522,7 +613,7 @@ def reset_staff_password(
         "message": "Contraseña actualizada correctamente",
         "user_id": user.id,
         "email": user.email,
-        "role": user.role
+        "role": user.role,
     }
 
 
@@ -534,7 +625,7 @@ def reset_any_user_password(
     user_id: int,
     payload: UserPasswordResetRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -557,8 +648,8 @@ def reset_any_user_password(
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "is_active": getattr(user, "is_active", True)
-        }
+            "is_active": getattr(user, "is_active", True),
+        },
     }
 
 
@@ -570,7 +661,7 @@ def update_staff_status(
     user_id: int,
     payload: StaffStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -582,7 +673,7 @@ def update_staff_status(
     if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
         raise HTTPException(
             status_code=400,
-            detail="Solo se puede activar o desactivar staff interno"
+            detail="Solo se puede activar o desactivar staff interno",
         )
 
     user.is_active = payload.is_active
@@ -596,8 +687,8 @@ def update_staff_status(
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "is_active": user.is_active
-        }
+            "is_active": user.is_active,
+        },
     }
 
 
@@ -609,7 +700,7 @@ def update_any_user_status(
     user_id: int,
     payload: UserStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -629,8 +720,8 @@ def update_any_user_status(
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "is_active": user.is_active
-        }
+            "is_active": user.is_active,
+        },
     }
 
 
@@ -641,7 +732,7 @@ def update_any_user_status(
 def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
 
@@ -655,5 +746,5 @@ def delete_user(
 
     return {
         "message": "Usuario eliminado correctamente",
-        "user_id": user_id
+        "user_id": user_id,
     }
