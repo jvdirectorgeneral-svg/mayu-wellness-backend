@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 
 # =========================
@@ -6,19 +7,26 @@ from pydantic import BaseModel
 # =========================
 class UserRegister(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
-    phone: str
-    delivery_address: str  # 🆕 domicilio obligatorio
 
-    ambassador_code: str | None = None
+    phone: str
+    cedula: str
+    city: str
+    address: str
+    reference: str
+    delivery_notes: str
+
+    phone_secondary: Optional[str] = None
+
+    ambassador_code: Optional[str] = None
 
 
 # =========================
 # 🔐 LOGIN USUARIO NORMAL
 # =========================
 class UserLogin(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 
@@ -27,7 +35,7 @@ class UserLogin(BaseModel):
 # =========================
 class AmbassadorRegister(BaseModel):
     name: str
-    email: str
+    email: EmailStr
     password: str
     phone: str
 
@@ -42,7 +50,7 @@ class AmbassadorRegister(BaseModel):
 # 🔐 LOGIN DE EMBAJADOR
 # =========================
 class AmbassadorLogin(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 
@@ -52,11 +60,18 @@ class AmbassadorLogin(BaseModel):
 class UserResponse(BaseModel):
     id: int
     name: str
-    email: str
-    phone: str | None
-    delivery_address: str | None  # 🆕 devolver dirección
+    email: EmailStr
 
-    membership_level: int | None
+    phone: Optional[str]
+    phone_secondary: Optional[str]
+
+    cedula: str
+    city: str
+    address: str
+    reference: str
+    delivery_notes: str
+
+    membership_level: Optional[int]
     membership_active: bool
 
     class Config:
