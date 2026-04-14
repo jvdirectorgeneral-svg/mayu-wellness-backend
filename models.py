@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     UniqueConstraint,
+    Text,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -23,8 +24,14 @@ class User(Base):
     name = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False, index=True)
     password = Column(String, nullable=False)
-    phone = Column(String, nullable=True)
-    delivery_address = Column(String, nullable=True)
+
+    phone = Column(String, nullable=False)
+    cedula = Column(String, unique=True, nullable=False, index=True)
+    city = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    reference = Column(String, nullable=False)
+    delivery_notes = Column(Text, nullable=False)
+    phone_secondary = Column(String, nullable=True)
 
     status = Column(String, default="registered", nullable=False)
 
