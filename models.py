@@ -86,6 +86,12 @@ class User(Base):
         back_populates="referred_user"
     )
 
+    orders = relationship(
+        "Order",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 
 # =========================
 # 🤝 EMBAJADOR
@@ -226,6 +232,11 @@ class Product(Base):
 
     monthly_selection_items = relationship(
         "MonthlySelectionItem",
+        back_populates="product"
+    )
+
+    order_items = relationship(
+        "OrderItem",
         back_populates="product"
     )
 
@@ -430,3 +441,63 @@ class Commission(Base):
             name="uq_commission_monthly"
         ),
     )
+
+
+# =========================
+# 📦 ORDENES
+# =========================
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_code = Column(String, unique=True, nullable=False, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    month = Column(Integer, nullable=False)
+    year = Column(Integer, nullable=False)
+
+    membership_level_snapshot = Column(Integer, nullable=True)
+    user_status_snapshot = Column(String, nullable=False, default="inactive")
+
+    city_snapshot = Column(String, nullable=False)
+    address_snapshot = Column(String, nullable=False)
+    reference_snapshot = Column(String, nullable=False)
+    delivery_notes_snapshot = Column(Text, nullable=False)
+
+    status = Column(String, nullable=False, default="pending")
+    logistics_notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    prepared_at = Column(DateTime, nullable=True)
+    shipped_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="orders")
+
+    items = relationship(
+        "OrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "month", "year", name="uq_order_user_cycle"),
+    )
+
+
+# =========================
+# 📦 ITEMS DE ORDEN
+# =========================
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
+
+    product_name_snapshot = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+
+    order = relationship("Order", back_populates="items")
+    product = relationship("Product", back_populates="order_items")
