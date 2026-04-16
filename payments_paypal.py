@@ -6,7 +6,7 @@ import urllib.error
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -473,13 +473,11 @@ async def paypal_webhook_listener(
 ):
     raw_body = await request.body()
 
-    # Guardamos el payload aunque luego todavía no procesemos todo
     try:
         event = json.loads(raw_body.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido")
 
-    # Verificación de firma PayPal
     if PAYPAL_WEBHOOK_ID:
         token = get_paypal_access_token()
 
@@ -510,7 +508,6 @@ async def paypal_webhook_listener(
     event_type = event.get("event_type")
     resource = event.get("resource", {})
 
-    # Evento común de captura completada
     if event_type == "PAYMENT.CAPTURE.COMPLETED":
         capture_id = resource.get("id")
         supplementary = resource.get("supplementary_data", {})
