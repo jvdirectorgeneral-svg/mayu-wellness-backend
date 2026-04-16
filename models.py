@@ -94,6 +94,7 @@ class User(Base):
 
     payments = relationship(
         "MembershipPayment",
+        foreign_keys="MembershipPayment.user_id",
         back_populates="user",
         cascade="all, delete-orphan"
     )
