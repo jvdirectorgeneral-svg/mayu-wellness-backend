@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime
 
 from database import SessionLocal
@@ -36,12 +36,43 @@ class OrderStatusUpdate(BaseModel):
     logistics_notes: Optional[str] = None
 
 
+class OrderApprovalUpdate(BaseModel):
+    approval_notes: Optional[str] = None
+
+
 # =========================
 # HELPERS
 # =========================
 def generate_order_code(user_id: int, month: int, year: int) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
+
+
+def require_team_access(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    allowed_roles = {"superadmin", "admin", "supervisor", "logistics"}
+    if current_user.role not in allowed_roles:
+        raise HTTPException(status_code=403, detail="Acceso no autorizado")
+
+
+def require_admin_or_superadmin(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    allowed_roles = {"superadmin", "admin"}
+    if current_user.role not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para admin o superadmin"
+        )
 
 
 def require_logistics_or_admin(current_user: models.User):
@@ -51,7 +82,7 @@ def require_logistics_or_admin(current_user: models.User):
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    allowed_roles = {"superadmin", "admin", "supervisor", "logistics"}
+    allowed_roles = {"superadmin", "admin", "logistics"}
     if current_user.role not in allowed_roles:
         raise HTTPException(status_code=403, detail="Acceso no autorizado")
 
@@ -65,7 +96,7 @@ def create_order_manual(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    require_logistics_or_admin(current_user)
+    require_admin_or_superadmin(current_user)
 
     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
     if not user:
@@ -122,8 +153,8 @@ def create_order_manual(
         address_snapshot=user.address,
         reference_snapshot=user.reference,
         delivery_notes_snapshot=user.delivery_notes,
-        status="pending",
-        logistics_notes=None
+        status="pending_payment_review",
+        logistics_notes="Orden creada, pendiente de validación administrativa"
     )
 
     db.add(new_order)
@@ -142,7 +173,7 @@ def create_order_manual(
     db.refresh(new_order)
 
     return {
-        "message": "Orden creada correctamente",
+        "message": "Orden creada correctamente y pendiente de aprobación administrativa",
         "order": {
             "id": new_order.id,
             "order_code": new_order.order_code,
@@ -161,6 +192,50 @@ def create_order_manual(
 
 
 # =========================
+# APROBAR ORDEN PARA LOGÍSTICA
+# =========================
+@router.put("/{order_id}/approve")
+def approve_order_for_logistics(
+    order_id: int,
+    payload: OrderApprovalUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    require_admin_or_superadmin(current_user)
+
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if order.status != "pending_payment_review":
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se pueden aprobar órdenes en revisión de pago"
+        )
+
+    order.status = "approved_for_logistics"
+
+    if payload.approval_notes and payload.approval_notes.strip():
+        order.logistics_notes = payload.approval_notes.strip()
+    else:
+        order.logistics_notes = "Pagos OK - orden liberada a logística"
+
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "message": "Orden aprobada y liberada para logística",
+        "order": {
+            "id": order.id,
+            "order_code": order.order_code,
+            "status": order.status,
+            "logistics_notes": order.logistics_notes
+        }
+    }
+
+
+# =========================
 # LISTAR ÓRDENES
 # =========================
 @router.get("")
@@ -172,9 +247,20 @@ def list_orders(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    require_logistics_or_admin(current_user)
+    require_team_access(current_user)
 
     query = db.query(models.Order)
+
+    # Si es logística, solo ve órdenes ya aprobadas o en flujo logístico
+    if current_user.role == "logistics":
+        query = query.filter(
+            models.Order.status.in_([
+                "approved_for_logistics",
+                "preparing",
+                "shipped",
+                "delivered"
+            ])
+        )
 
     if status:
         query = query.filter(models.Order.status == status)
@@ -211,7 +297,8 @@ def list_orders(
                 "created_at": order.created_at,
                 "prepared_at": order.prepared_at,
                 "shipped_at": order.shipped_at,
-                "delivered_at": order.delivered_at
+                "delivered_at": order.delivered_at,
+                "items_count": len(order.items)
             }
             for order in orders
         ]
@@ -227,12 +314,19 @@ def get_order_detail(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    require_logistics_or_admin(current_user)
+    require_team_access(current_user)
 
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
 
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    # Si es logística, no debería ver órdenes no aprobadas
+    if current_user.role == "logistics" and order.status == "pending_payment_review":
+        raise HTTPException(
+            status_code=403,
+            detail="La orden aún no ha sido liberada para logística"
+        )
 
     return {
         "id": order.id,
@@ -285,13 +379,43 @@ def update_order_status(
 ):
     require_logistics_or_admin(current_user)
 
-    allowed_statuses = {"pending", "preparing", "shipped", "delivered", "cancelled"}
+    allowed_statuses = {
+        "pending_payment_review",
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+        "delivered",
+        "cancelled"
+    }
+
     if payload.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail="Estado inválido")
 
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    # Logística NO puede tocar órdenes que no estén aprobadas
+    if current_user.role == "logistics":
+        if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
+            raise HTTPException(
+                status_code=403,
+                detail="La orden no está liberada para logística"
+            )
+
+        # Logística solo puede avanzar en flujo operativo
+        allowed_logistics_transitions = {
+            "approved_for_logistics": {"preparing"},
+            "preparing": {"shipped"},
+            "shipped": {"delivered"},
+        }
+
+        next_allowed = allowed_logistics_transitions.get(order.status, set())
+        if payload.status not in next_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="Transición de estado no permitida para logística"
+            )
 
     order.status = payload.status
 
