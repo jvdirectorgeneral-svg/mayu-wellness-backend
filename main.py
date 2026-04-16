@@ -15,6 +15,7 @@ from commissions import router as commissions_router
 from admin_dashboard import router as admin_dashboard_router
 from supervisor_dashboard import router as supervisor_dashboard_router
 from orders import router as orders_router
+from payments_paypal import router as payments_paypal_router
 from dependencies import get_current_user
 import models
 
@@ -62,6 +63,7 @@ app.include_router(commissions_router)
 app.include_router(admin_dashboard_router)
 app.include_router(supervisor_dashboard_router)
 app.include_router(orders_router)
+app.include_router(payments_paypal_router)
 
 # =========================
 # ROOT
