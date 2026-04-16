@@ -29,18 +29,33 @@ def get_db():
 
 
 # =========================
-# CONFIG
+# CONFIG DINÁMICA
 # =========================
-PAYPAL_MODE = os.getenv("PAYPAL_MODE", "sandbox").lower()
-PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID")
-PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET")
-PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID")
+def get_paypal_mode() -> str:
+    return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
 
-PAYPAL_BASE_URL = (
-    "https://api-m.sandbox.paypal.com"
-    if PAYPAL_MODE == "sandbox"
-    else "https://api-m.paypal.com"
-)
+
+def get_paypal_client_id() -> Optional[str]:
+    value = os.getenv("PAYPAL_CLIENT_ID")
+    return value.strip() if value else None
+
+
+def get_paypal_client_secret() -> Optional[str]:
+    value = os.getenv("PAYPAL_CLIENT_SECRET")
+    return value.strip() if value else None
+
+
+def get_paypal_webhook_id() -> Optional[str]:
+    value = os.getenv("PAYPAL_WEBHOOK_ID")
+    return value.strip() if value else None
+
+
+def get_paypal_base_url() -> str:
+    return (
+        "https://api-m.sandbox.paypal.com"
+        if get_paypal_mode() == "sandbox"
+        else "https://api-m.paypal.com"
+    )
 
 
 # =========================
@@ -93,7 +108,10 @@ def require_team_access(current_user: models.User):
 
 
 def require_paypal_config():
-    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+    client_id = get_paypal_client_id()
+    client_secret = get_paypal_client_secret()
+
+    if not client_id or not client_secret:
         raise HTTPException(
             status_code=500,
             detail="Faltan PAYPAL_CLIENT_ID o PAYPAL_CLIENT_SECRET en variables de entorno"
@@ -107,7 +125,7 @@ def paypal_request(
     body: Optional[dict] = None,
     extra_headers: Optional[dict] = None,
 ):
-    url = f"{PAYPAL_BASE_URL}{path}"
+    url = f"{get_paypal_base_url()}{path}"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
@@ -139,14 +157,20 @@ def paypal_request(
             parsed = {"detail": raw or "Error HTTP PayPal"}
         return e.code, parsed
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al conectar con PayPal: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al conectar con PayPal: {str(e)}"
+        )
 
 
 def get_paypal_access_token() -> str:
     require_paypal_config()
 
-    token_url = f"{PAYPAL_BASE_URL}/v1/oauth2/token"
-    auth_bytes = f"{PAYPAL_CLIENT_ID}:{PAYPAL_CLIENT_SECRET}".encode("utf-8")
+    client_id = get_paypal_client_id()
+    client_secret = get_paypal_client_secret()
+
+    token_url = f"{get_paypal_base_url()}/v1/oauth2/token"
+    auth_bytes = f"{client_id}:{client_secret}".encode("utf-8")
     auth_b64 = base64.b64encode(auth_bytes).decode("utf-8")
 
     data = "grant_type=client_credentials".encode("utf-8")
@@ -167,7 +191,10 @@ def get_paypal_access_token() -> str:
             payload = json.loads(response.read().decode("utf-8"))
             access_token = payload.get("access_token")
             if not access_token:
-                raise HTTPException(status_code=500, detail="No se pudo obtener access_token de PayPal")
+                raise HTTPException(
+                    status_code=500,
+                    detail="No se pudo obtener access_token de PayPal"
+                )
             return access_token
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8") if e.fp else ""
@@ -192,6 +219,24 @@ def extract_capture_data(capture_response: dict):
     amount = capture.get("amount", {}).get("value")
 
     return capture_id, payer_email, amount
+
+
+# =========================
+# DEBUG CONFIG
+# =========================
+@router.get("/debug-config")
+def debug_paypal_config():
+    client_id = get_paypal_client_id()
+    client_secret = get_paypal_client_secret()
+
+    return {
+        "paypal_mode": get_paypal_mode(),
+        "paypal_base_url": get_paypal_base_url(),
+        "has_client_id": bool(client_id),
+        "has_client_secret": bool(client_secret),
+        "client_id_prefix": client_id[:12] if client_id else None,
+        "client_secret_length": len(client_secret) if client_secret else 0,
+    }
 
 
 # =========================
@@ -241,10 +286,7 @@ def create_paypal_order(
     )
 
     if status_code not in {200, 201}:
-        raise HTTPException(
-            status_code=500,
-            detail=paypal_response
-        )
+        raise HTTPException(status_code=500, detail=paypal_response)
 
     paypal_order_id = paypal_response.get("id")
     if not paypal_order_id:
@@ -478,7 +520,9 @@ async def paypal_webhook_listener(
     except Exception:
         raise HTTPException(status_code=400, detail="Payload inválido")
 
-    if PAYPAL_WEBHOOK_ID:
+    webhook_id = get_paypal_webhook_id()
+
+    if webhook_id:
         token = get_paypal_access_token()
 
         verification_body = {
@@ -487,7 +531,7 @@ async def paypal_webhook_listener(
             "transmission_id": request.headers.get("PAYPAL-TRANSMISSION-ID"),
             "transmission_sig": request.headers.get("PAYPAL-TRANSMISSION-SIG"),
             "transmission_time": request.headers.get("PAYPAL-TRANSMISSION-TIME"),
-            "webhook_id": PAYPAL_WEBHOOK_ID,
+            "webhook_id": webhook_id,
             "webhook_event": event,
         }
 
