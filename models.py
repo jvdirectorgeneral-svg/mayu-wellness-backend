@@ -92,6 +92,12 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    payments = relationship(
+        "MembershipPayment",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 
 # =========================
 # 🤝 EMBAJADOR
@@ -481,6 +487,11 @@ class Order(Base):
         cascade="all, delete-orphan"
     )
 
+    payments = relationship(
+        "MembershipPayment",
+        back_populates="order"
+    )
+
     __table_args__ = (
         UniqueConstraint("user_id", "month", "year", name="uq_order_user_cycle"),
     )
@@ -501,3 +512,54 @@ class OrderItem(Base):
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product", back_populates="order_items")
+
+
+# =========================
+# 💸 PAGOS DE MEMBRESÍA
+# =========================
+class MembershipPayment(Base):
+    __tablename__ = "membership_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+
+    payment_type = Column(String, nullable=False, default="signup")
+    provider = Column(String, nullable=False, default="paypal")
+
+    paypal_order_id = Column(String, unique=True, nullable=True, index=True)
+    paypal_capture_id = Column(String, unique=True, nullable=True, index=True)
+
+    amount = Column(Float, nullable=False)
+    currency = Column(String, nullable=False, default="USD")
+
+    status = Column(String, nullable=False, default="created")
+    payer_email = Column(String, nullable=True)
+    payment_reference = Column(String, nullable=True)
+    receipt_url = Column(String, nullable=True)
+
+    raw_payload = Column(Text, nullable=True)
+
+    admin_verified = Column(Boolean, default=False, nullable=False)
+    admin_verified_at = Column(DateTime, nullable=True)
+    admin_verified_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    paid_at = Column(DateTime, nullable=True)
+
+    user = relationship(
+        "User",
+        foreign_keys=[user_id],
+        back_populates="payments"
+    )
+
+    order = relationship(
+        "Order",
+        back_populates="payments"
+    )
+
+    admin_verifier = relationship(
+        "User",
+        foreign_keys=[admin_verified_by]
+    )
