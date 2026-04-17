@@ -275,6 +275,8 @@ def create_paypal_order(
         "application_context": {
             "brand_name": "Mayu Wellness Club",
             "user_action": "PAY_NOW",
+            "return_url": "https://mayu-wellness-backend-v1.onrender.com/health",
+            "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/health",
         }
     }
 
