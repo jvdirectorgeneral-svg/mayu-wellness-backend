@@ -65,7 +65,7 @@ class PayPalCreateOrderRequest(BaseModel):
     user_id: int
     amount: float
     currency: str = "USD"
-    payment_type: str = "signup"   # signup / monthly
+    payment_type: str = "signup"
     order_id: Optional[int] = None
     month: Optional[int] = None
     year: Optional[int] = None
@@ -116,6 +116,11 @@ def require_paypal_config():
             status_code=500,
             detail="Faltan PAYPAL_CLIENT_ID o PAYPAL_CLIENT_SECRET en variables de entorno"
         )
+
+
+def generate_order_code(user_id: int, month: int, year: int) -> str:
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
 
 
 def paypal_request(
@@ -251,12 +256,13 @@ def create_paypal_order(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    linked_order = None
     if payload.order_id is not None:
-        linked_order = db.query(models.Order).filter(models.Order.id == payload.order_id).first()
+        linked_order = db.query(models.Order).filter(
+            models.Order.id == payload.order_id
+        ).first()
         if not linked_order:
             raise HTTPException(status_code=404, detail="Orden interna no encontrada")
-    else:
-        linked_order = None
 
     token = get_paypal_access_token()
 
@@ -452,7 +458,7 @@ def list_membership_payments(
 
 
 # =========================
-# VERIFY PAYMENT BY ADMIN
+# VERIFY PAYMENT BY ADMIN + CREAR ORDEN AUTOMÁTICA
 # =========================
 @router.put("/{payment_id}/verify")
 def verify_payment_by_admin(
@@ -478,19 +484,104 @@ def verify_payment_by_admin(
             detail="Solo se pueden verificar pagos que ya estén capturados como paid"
         )
 
+    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario del pago no encontrado")
+
+    now = datetime.utcnow()
+    current_month = now.month
+    current_year = now.year
+
     payment.admin_verified = True
-    payment.admin_verified_at = datetime.utcnow()
+    payment.admin_verified_at = now
     payment.admin_verified_by = current_user.id
     payment.status = "verified"
 
-    if payment.order_id:
-        order = db.query(models.Order).filter(models.Order.id == payment.order_id).first()
-        if order and order.status == "pending_payment_review":
-            order.logistics_notes = (
+    created_order = None
+
+    if not payment.order_id:
+        monthly_selection = (
+            db.query(models.MonthlySelection)
+            .filter(
+                models.MonthlySelection.user_id == user.id,
+                models.MonthlySelection.month == current_month,
+                models.MonthlySelection.year == current_year
+            )
+            .first()
+        )
+
+        if not monthly_selection:
+            raise HTTPException(
+                status_code=400,
+                detail="No existe selección mensual para crear la orden automáticamente"
+            )
+
+        if not monthly_selection.items or len(monthly_selection.items) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="La selección mensual no tiene productos"
+            )
+
+        existing_order = (
+            db.query(models.Order)
+            .filter(
+                models.Order.user_id == user.id,
+                models.Order.month == current_month,
+                models.Order.year == current_year
+            )
+            .first()
+        )
+
+        if existing_order:
+            payment.order_id = existing_order.id
+            created_order = existing_order
+        else:
+            new_order = models.Order(
+                order_code=generate_order_code(user.id, current_month, current_year),
+                user_id=user.id,
+                month=current_month,
+                year=current_year,
+                membership_level_snapshot=user.membership_level,
+                user_status_snapshot="active" if user.membership_active else "inactive",
+                city_snapshot=user.city,
+                address_snapshot=user.address,
+                reference_snapshot=user.reference,
+                delivery_notes_snapshot=user.delivery_notes,
+                status="pending_payment_review",
+                logistics_notes=(
+                    payload.verification_notes.strip()
+                    if payload.verification_notes and payload.verification_notes.strip()
+                    else "Pago verificado - pendiente de liberación a despacho"
+                )
+            )
+
+            db.add(new_order)
+            db.flush()
+
+            for item in monthly_selection.items:
+                order_item = models.OrderItem(
+                    order_id=new_order.id,
+                    product_id=item.product_id,
+                    product_name_snapshot=item.product.name,
+                    quantity=item.quantity
+                )
+                db.add(order_item)
+
+            payment.order_id = new_order.id
+            created_order = new_order
+
+    else:
+        existing_order = db.query(models.Order).filter(
+            models.Order.id == payment.order_id
+        ).first()
+
+        if existing_order:
+            existing_order.logistics_notes = (
                 payload.verification_notes.strip()
                 if payload.verification_notes and payload.verification_notes.strip()
                 else "Pago OK - pendiente de liberación a despacho"
             )
+            created_order = existing_order
 
     db.commit()
     db.refresh(payment)
@@ -503,7 +594,13 @@ def verify_payment_by_admin(
             "admin_verified": payment.admin_verified,
             "admin_verified_at": payment.admin_verified_at,
             "admin_verified_by": payment.admin_verified_by,
-        }
+            "order_id": payment.order_id,
+        },
+        "order": {
+            "id": created_order.id,
+            "order_code": created_order.order_code,
+            "status": created_order.status,
+        } if created_order else None
     }
 
 
