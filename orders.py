@@ -48,6 +48,26 @@ def generate_order_code(user_id: int, month: int, year: int) -> str:
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
 
 
+def get_order_payment(db: Session, order_id: int):
+    return (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.order_id == order_id)
+        .order_by(models.MembershipPayment.created_at.desc())
+        .first()
+    )
+
+
+def payment_data(payment):
+    return {
+        "payment_id": payment.id if payment else None,
+        "payment_status": payment.status if payment else None,
+        "payment_amount": payment.amount if payment else None,
+        "payer_email": payment.payer_email if payment else None,
+        "admin_verified": payment.admin_verified if payment else False,
+        "admin_verified_at": payment.admin_verified_at if payment else None,
+    }
+
+
 def require_team_access(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -140,15 +160,13 @@ def create_order_manual(
             detail="La selección mensual no tiene productos"
         )
 
-    user_status_snapshot = "active" if user.membership_active else "inactive"
-
     new_order = models.Order(
         order_code=generate_order_code(user.id, payload.month, payload.year),
         user_id=user.id,
         month=payload.month,
         year=payload.year,
         membership_level_snapshot=user.membership_level,
-        user_status_snapshot=user_status_snapshot,
+        user_status_snapshot="active" if user.membership_active else "inactive",
         city_snapshot=user.city,
         address_snapshot=user.address,
         reference_snapshot=user.reference,
@@ -186,7 +204,8 @@ def create_order_manual(
             "address_snapshot": new_order.address_snapshot,
             "reference_snapshot": new_order.reference_snapshot,
             "delivery_notes_snapshot": new_order.delivery_notes_snapshot,
-            "created_at": new_order.created_at
+            "created_at": new_order.created_at,
+            "admin_verified": False,
         }
     }
 
@@ -214,6 +233,14 @@ def approve_order_for_logistics(
             detail="Solo se pueden aprobar órdenes en revisión de pago"
         )
 
+    payment = get_order_payment(db, order.id)
+
+    if not payment or payment.status != "verified" or not payment.admin_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="La orden necesita un pago verificado por administración"
+        )
+
     order.status = "approved_for_logistics"
 
     if payload.approval_notes and payload.approval_notes.strip():
@@ -224,13 +251,16 @@ def approve_order_for_logistics(
     db.commit()
     db.refresh(order)
 
+    payment_info = payment_data(payment)
+
     return {
         "message": "Orden aprobada y liberada para logística",
         "order": {
             "id": order.id,
             "order_code": order.order_code,
             "status": order.status,
-            "logistics_notes": order.logistics_notes
+            "logistics_notes": order.logistics_notes,
+            **payment_info,
         }
     }
 
@@ -251,7 +281,6 @@ def list_orders(
 
     query = db.query(models.Order)
 
-    # Si es logística, solo ve órdenes ya aprobadas o en flujo logístico
     if current_user.role == "logistics":
         query = query.filter(
             models.Order.status.in_([
@@ -276,33 +305,37 @@ def list_orders(
 
     orders = query.order_by(models.Order.created_at.desc()).all()
 
-    return {
-        "items": [
-            {
-                "id": order.id,
-                "order_code": order.order_code,
-                "user_id": order.user_id,
-                "user_name": order.user.name,
-                "user_phone": order.user.phone,
-                "membership_level_snapshot": order.membership_level_snapshot,
-                "user_status_snapshot": order.user_status_snapshot,
-                "city_snapshot": order.city_snapshot,
-                "address_snapshot": order.address_snapshot,
-                "reference_snapshot": order.reference_snapshot,
-                "delivery_notes_snapshot": order.delivery_notes_snapshot,
-                "status": order.status,
-                "logistics_notes": order.logistics_notes,
-                "month": order.month,
-                "year": order.year,
-                "created_at": order.created_at,
-                "prepared_at": order.prepared_at,
-                "shipped_at": order.shipped_at,
-                "delivered_at": order.delivered_at,
-                "items_count": len(order.items)
-            }
-            for order in orders
-        ]
-    }
+    items = []
+
+    for order in orders:
+        payment = get_order_payment(db, order.id)
+        payment_info = payment_data(payment)
+
+        items.append({
+            "id": order.id,
+            "order_code": order.order_code,
+            "user_id": order.user_id,
+            "user_name": order.user.name,
+            "user_phone": order.user.phone,
+            "membership_level_snapshot": order.membership_level_snapshot,
+            "user_status_snapshot": order.user_status_snapshot,
+            "city_snapshot": order.city_snapshot,
+            "address_snapshot": order.address_snapshot,
+            "reference_snapshot": order.reference_snapshot,
+            "delivery_notes_snapshot": order.delivery_notes_snapshot,
+            "status": order.status,
+            "logistics_notes": order.logistics_notes,
+            "month": order.month,
+            "year": order.year,
+            "created_at": order.created_at,
+            "prepared_at": order.prepared_at,
+            "shipped_at": order.shipped_at,
+            "delivered_at": order.delivered_at,
+            "items_count": len(order.items),
+            **payment_info,
+        })
+
+    return {"items": items}
 
 
 # =========================
@@ -321,12 +354,14 @@ def get_order_detail(
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
-    # Si es logística, no debería ver órdenes no aprobadas
     if current_user.role == "logistics" and order.status == "pending_payment_review":
         raise HTTPException(
             status_code=403,
             detail="La orden aún no ha sido liberada para logística"
         )
+
+    payment = get_order_payment(db, order.id)
+    payment_info = payment_data(payment)
 
     return {
         "id": order.id,
@@ -363,7 +398,8 @@ def get_order_detail(
                 "quantity": item.quantity
             }
             for item in order.items
-        ]
+        ],
+        **payment_info,
     }
 
 
@@ -395,7 +431,6 @@ def update_order_status(
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
-    # Logística NO puede tocar órdenes que no estén aprobadas
     if current_user.role == "logistics":
         if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
             raise HTTPException(
@@ -403,7 +438,6 @@ def update_order_status(
                 detail="La orden no está liberada para logística"
             )
 
-        # Logística solo puede avanzar en flujo operativo
         allowed_logistics_transitions = {
             "approved_for_logistics": {"preparing"},
             "preparing": {"shipped"},
@@ -436,6 +470,9 @@ def update_order_status(
     db.commit()
     db.refresh(order)
 
+    payment = get_order_payment(db, order.id)
+    payment_info = payment_data(payment)
+
     return {
         "message": "Estado de orden actualizado correctamente",
         "order": {
@@ -445,6 +482,7 @@ def update_order_status(
             "logistics_notes": order.logistics_notes,
             "prepared_at": order.prepared_at,
             "shipped_at": order.shipped_at,
-            "delivered_at": order.delivered_at
+            "delivered_at": order.delivered_at,
+            **payment_info,
         }
     }
