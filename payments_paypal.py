@@ -6,7 +6,7 @@ import urllib.error
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -31,24 +31,20 @@ def get_db():
 # =========================
 # CONFIG
 # =========================
-def get_paypal_mode() -> str:
-    return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
+def get_paypal_mode():
+    return os.getenv("PAYPAL_MODE", "sandbox")
 
 
-def get_paypal_client_id() -> Optional[str]:
+def get_paypal_client_id():
     return os.getenv("PAYPAL_CLIENT_ID")
 
 
-def get_paypal_client_secret() -> Optional[str]:
+def get_paypal_client_secret():
     return os.getenv("PAYPAL_CLIENT_SECRET")
 
 
-def get_paypal_base_url() -> str:
-    return (
-        "https://api-m.sandbox.paypal.com"
-        if get_paypal_mode() == "sandbox"
-        else "https://api-m.paypal.com"
-    )
+def get_base_url():
+    return "https://api-m.sandbox.paypal.com" if get_paypal_mode() == "sandbox" else "https://api-m.paypal.com"
 
 
 # =========================
@@ -58,7 +54,6 @@ class PayPalCreateOrderRequest(BaseModel):
     user_id: int
     amount: float
     currency: str = "USD"
-    payment_type: str = "signup"
     order_id: Optional[int] = None
 
 
@@ -73,9 +68,9 @@ class AdminVerifyPaymentRequest(BaseModel):
 # =========================
 # HELPERS
 # =========================
-def require_admin_or_superadmin(user):
-    if not user or user.role not in {"admin", "superadmin"}:
-        raise HTTPException(403, "Solo admin")
+def require_admin(user):
+    if not user or user.role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Acceso solo admin")
 
 
 def generate_order_code(user_id, month, year):
@@ -83,36 +78,45 @@ def generate_order_code(user_id, month, year):
 
 
 def get_token():
-    auth = base64.b64encode(
-        f"{get_paypal_client_id()}:{get_paypal_client_secret()}".encode()
-    ).decode()
+    try:
+        auth = base64.b64encode(
+            f"{get_paypal_client_id()}:{get_paypal_client_secret()}".encode()
+        ).decode()
 
-    req = urllib.request.Request(
-        f"{get_paypal_base_url()}/v1/oauth2/token",
-        data="grant_type=client_credentials".encode(),
-        headers={
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
-    )
+        req = urllib.request.Request(
+            f"{get_base_url()}/v1/oauth2/token",
+            data="grant_type=client_credentials".encode(),
+            headers={
+                "Authorization": f"Basic {auth}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+        )
 
-    res = urllib.request.urlopen(req)
-    return json.loads(res.read())["access_token"]
+        res = urllib.request.urlopen(req)
+        return json.loads(res.read())["access_token"]
+
+    except Exception as e:
+        raise HTTPException(500, f"Error obteniendo token PayPal: {str(e)}")
 
 
 def paypal_request(method, path, token, body=None):
-    req = urllib.request.Request(
-        f"{get_paypal_base_url()}{path}",
-        data=json.dumps(body).encode() if body else None,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}"
-        },
-        method=method
-    )
+    try:
+        req = urllib.request.Request(
+            f"{get_base_url()}{path}",
+            data=json.dumps(body).encode() if body else None,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}"
+            },
+            method=method
+        )
 
-    res = urllib.request.urlopen(req)
-    return json.loads(res.read())
+        res = urllib.request.urlopen(req)
+        return json.loads(res.read())
+
+    except urllib.error.HTTPError as e:
+        error = e.read().decode()
+        raise HTTPException(500, f"Error PayPal: {error}")
 
 
 # =========================
@@ -120,6 +124,11 @@ def paypal_request(method, path, token, body=None):
 # =========================
 @router.post("/create-order")
 def create_order(payload: PayPalCreateOrderRequest, db: Session = Depends(get_db)):
+
+    user = db.query(models.User).get(payload.user_id)
+    if not user:
+        raise HTTPException(404, "Usuario no encontrado")
+
     token = get_token()
 
     body = {
@@ -139,13 +148,18 @@ def create_order(payload: PayPalCreateOrderRequest, db: Session = Depends(get_db
         order_id=payload.order_id,
         paypal_order_id=response["id"],
         amount=payload.amount,
+        currency=payload.currency,
         status="created"
     )
 
     db.add(payment)
     db.commit()
+    db.refresh(payment)
 
-    return response
+    return {
+        "paypal_order_id": response["id"],
+        "links": response.get("links", [])
+    }
 
 
 # =========================
@@ -153,6 +167,14 @@ def create_order(payload: PayPalCreateOrderRequest, db: Session = Depends(get_db
 # =========================
 @router.post("/capture-order")
 def capture(payload: PayPalCaptureOrderRequest, db: Session = Depends(get_db)):
+
+    payment = db.query(models.MembershipPayment).filter_by(
+        paypal_order_id=payload.paypal_order_id
+    ).first()
+
+    if not payment:
+        raise HTTPException(404, "Pago no encontrado")
+
     token = get_token()
 
     response = paypal_request(
@@ -161,28 +183,30 @@ def capture(payload: PayPalCaptureOrderRequest, db: Session = Depends(get_db)):
         token
     )
 
-    payment = db.query(models.MembershipPayment).filter_by(
-        paypal_order_id=payload.paypal_order_id
-    ).first()
-
     payment.status = "paid"
     payment.paid_at = datetime.utcnow()
 
     db.commit()
+    db.refresh(payment)
 
-    return response
+    return {
+        "message": "Pago capturado",
+        "payment_id": payment.id
+    }
 
 
 # =========================
-# VERIFY + CREAR ORDEN + LIBERAR LOGÍSTICA
+# VERIFY + ORDEN + LOGÍSTICA
 # =========================
 @router.put("/{payment_id}/verify")
-def verify(payment_id: int,
-           payload: AdminVerifyPaymentRequest,
-           db: Session = Depends(get_db),
-           current_user=Depends(get_current_user)):
+def verify(
+    payment_id: int,
+    payload: AdminVerifyPaymentRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
 
-    require_admin_or_superadmin(current_user)
+    require_admin(current_user)
 
     payment = db.query(models.MembershipPayment).get(payment_id)
 
@@ -191,15 +215,16 @@ def verify(payment_id: int,
 
     user = db.query(models.User).get(payment.user_id)
 
-    payment.status = "verified"
-    payment.admin_verified = True
-    payment.admin_verified_at = datetime.utcnow()
-    payment.admin_verified_by = current_user.id
-
     now = datetime.utcnow()
 
+    # actualizar pago
+    payment.status = "verified"
+    payment.admin_verified = True
+    payment.admin_verified_at = now
+    payment.admin_verified_by = current_user.id
+
     # =========================
-    # BUSCAR ORDEN EXISTENTE
+    # buscar orden
     # =========================
     order = None
 
@@ -214,16 +239,17 @@ def verify(payment_id: int,
         ).first()
 
     # =========================
-    # CREAR ORDEN SI NO EXISTE
+    # crear orden
     # =========================
     if not order:
+
         monthly = db.query(models.MonthlySelection).filter_by(
             user_id=user.id,
             month=now.month,
             year=now.year
         ).first()
 
-        if not monthly:
+        if not monthly or not monthly.items:
             raise HTTPException(400, "No hay selección mensual")
 
         order = models.Order(
@@ -231,8 +257,14 @@ def verify(payment_id: int,
             user_id=user.id,
             month=now.month,
             year=now.year,
-            status="approved_for_logistics",  # 🔥 DIRECTO A LOGÍSTICA
-            logistics_notes="Pago verificado - listo para despacho"
+            membership_level_snapshot=user.membership_level,
+            user_status_snapshot="active" if user.membership_active else "inactive",
+            city_snapshot=user.city,
+            address_snapshot=user.address,
+            reference_snapshot=user.reference,
+            delivery_notes_snapshot=user.delivery_notes,
+            status="approved_for_logistics",
+            logistics_notes="✔ Pago verificado - listo para despacho"
         )
 
         db.add(order)
@@ -248,17 +280,15 @@ def verify(payment_id: int,
 
         payment.order_id = order.id
 
-    # =========================
-    # SI YA EXISTE → LIBERAR
-    # =========================
     else:
+        # liberar orden existente
         order.status = "approved_for_logistics"
-        order.logistics_notes = "Pago verificado - listo para despacho"
+        order.logistics_notes = "✔ Pago verificado - listo para despacho"
 
     db.commit()
 
     return {
-        "message": "Pago verificado y orden lista para logística",
+        "message": "Pago verificado y orden lista",
         "order_status": order.status
     }
 
@@ -268,9 +298,11 @@ def verify(payment_id: int,
 # =========================
 @router.post("/webhook")
 async def webhook(request: Request, db: Session = Depends(get_db)):
+
     event = await request.json()
 
     if event.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
+
         order_id = event["resource"]["supplementary_data"]["related_ids"]["order_id"]
 
         payment = db.query(models.MembershipPayment).filter_by(
@@ -282,4 +314,4 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             payment.paid_at = datetime.utcnow()
             db.commit()
 
-    return {"ok": True}
+    return {"status": "ok"}
