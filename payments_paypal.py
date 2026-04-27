@@ -120,6 +120,32 @@ def paypal_request(method, path, token, body=None):
 
 
 # =========================
+# 🔥 LIST PAYMENTS (NUEVO)
+# =========================
+@router.get("")
+def list_payments(db: Session = Depends(get_db)):
+    payments = db.query(models.MembershipPayment).all()
+
+    return {
+        "items": [
+            {
+                "id": p.id,
+                "user_id": p.user_id,
+                "order_id": p.order_id,
+                "amount": p.amount,
+                "status": p.status,
+                "paypal_order_id": p.paypal_order_id,
+                "payer_email": p.payer_email,
+                "admin_verified": p.admin_verified,
+                "created_at": p.created_at,
+                "paid_at": p.paid_at
+            }
+            for p in payments
+        ]
+    }
+
+
+# =========================
 # CREATE ORDER
 # =========================
 @router.post("/create-order")
@@ -177,7 +203,7 @@ def capture(payload: PayPalCaptureOrderRequest, db: Session = Depends(get_db)):
 
     token = get_token()
 
-    response = paypal_request(
+    paypal_request(
         "POST",
         f"/v2/checkout/orders/{payload.paypal_order_id}/capture",
         token
@@ -196,7 +222,7 @@ def capture(payload: PayPalCaptureOrderRequest, db: Session = Depends(get_db)):
 
 
 # =========================
-# VERIFY + ORDEN + LOGÍSTICA
+# VERIFY + LOGÍSTICA
 # =========================
 @router.put("/{payment_id}/verify")
 def verify(
@@ -210,14 +236,14 @@ def verify(
 
     payment = db.query(models.MembershipPayment).get(payment_id)
 
-    if not payment or payment.status != "paid":
+    # 🔥 FIX CLAVE
+    if not payment or payment.status not in ["paid", "verified"]:
         raise HTTPException(400, "Pago inválido")
 
     user = db.query(models.User).get(payment.user_id)
 
     now = datetime.utcnow()
 
-    # actualizar pago
     payment.status = "verified"
     payment.admin_verified = True
     payment.admin_verified_at = now
@@ -230,7 +256,6 @@ def verify(
 
     if payment.order_id:
         order = db.query(models.Order).get(payment.order_id)
-
     else:
         order = db.query(models.Order).filter_by(
             user_id=user.id,
@@ -239,7 +264,7 @@ def verify(
         ).first()
 
     # =========================
-    # crear orden
+    # crear o liberar
     # =========================
     if not order:
 
@@ -281,7 +306,6 @@ def verify(
         payment.order_id = order.id
 
     else:
-        # liberar orden existente
         order.status = "approved_for_logistics"
         order.logistics_notes = "✔ Pago verificado - listo para despacho"
 
