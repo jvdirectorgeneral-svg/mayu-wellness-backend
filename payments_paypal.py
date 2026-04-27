@@ -29,25 +29,18 @@ def get_db():
 
 
 # =========================
-# CONFIG DINÁMICA
+# CONFIG
 # =========================
 def get_paypal_mode() -> str:
     return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
 
 
 def get_paypal_client_id() -> Optional[str]:
-    value = os.getenv("PAYPAL_CLIENT_ID")
-    return value.strip() if value else None
+    return os.getenv("PAYPAL_CLIENT_ID")
 
 
 def get_paypal_client_secret() -> Optional[str]:
-    value = os.getenv("PAYPAL_CLIENT_SECRET")
-    return value.strip() if value else None
-
-
-def get_paypal_webhook_id() -> Optional[str]:
-    value = os.getenv("PAYPAL_WEBHOOK_ID")
-    return value.strip() if value else None
+    return os.getenv("PAYPAL_CLIENT_SECRET")
 
 
 def get_paypal_base_url() -> str:
@@ -67,8 +60,6 @@ class PayPalCreateOrderRequest(BaseModel):
     currency: str = "USD"
     payment_type: str = "signup"
     order_id: Optional[int] = None
-    month: Optional[int] = None
-    year: Optional[int] = None
 
 
 class PayPalCaptureOrderRequest(BaseModel):
@@ -82,609 +73,213 @@ class AdminVerifyPaymentRequest(BaseModel):
 # =========================
 # HELPERS
 # =========================
-def require_admin_or_superadmin(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    if current_user.role not in {"admin", "superadmin"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para admin o superadmin"
-        )
+def require_admin_or_superadmin(user):
+    if not user or user.role not in {"admin", "superadmin"}:
+        raise HTTPException(403, "Solo admin")
 
 
-def require_team_access(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    if current_user.role not in {"admin", "superadmin", "supervisor", "logistics"}:
-        raise HTTPException(status_code=403, detail="Acceso no autorizado")
+def generate_order_code(user_id, month, year):
+    return f"MWC-{year}{month:02d}-U{user_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
 
-def require_paypal_config():
-    client_id = get_paypal_client_id()
-    client_secret = get_paypal_client_secret()
-
-    if not client_id or not client_secret:
-        raise HTTPException(
-            status_code=500,
-            detail="Faltan PAYPAL_CLIENT_ID o PAYPAL_CLIENT_SECRET en variables de entorno"
-        )
-
-
-def generate_order_code(user_id: int, month: int, year: int) -> str:
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-    return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
-
-
-def paypal_request(
-    method: str,
-    path: str,
-    token: str,
-    body: Optional[dict] = None,
-    extra_headers: Optional[dict] = None,
-):
-    url = f"{get_paypal_base_url()}{path}"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
-    }
-
-    if extra_headers:
-        headers.update(extra_headers)
-
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
+def get_token():
+    auth = base64.b64encode(
+        f"{get_paypal_client_id()}:{get_paypal_client_secret()}".encode()
+    ).decode()
 
     req = urllib.request.Request(
-        url=url,
-        data=data,
-        headers=headers,
-        method=method.upper(),
+        f"{get_paypal_base_url()}/v1/oauth2/token",
+        data="grant_type=client_credentials".encode(),
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
     )
 
-    try:
-        with urllib.request.urlopen(req) as response:
-            response_body = response.read().decode("utf-8")
-            return response.status, json.loads(response_body) if response_body else {}
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8") if e.fp else ""
-        try:
-            parsed = json.loads(raw) if raw else {}
-        except Exception:
-            parsed = {"detail": raw or "Error HTTP PayPal"}
-        return e.code, parsed
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al conectar con PayPal: {str(e)}"
-        )
+    res = urllib.request.urlopen(req)
+    return json.loads(res.read())["access_token"]
 
 
-def get_paypal_access_token() -> str:
-    require_paypal_config()
-
-    client_id = get_paypal_client_id()
-    client_secret = get_paypal_client_secret()
-
-    token_url = f"{get_paypal_base_url()}/v1/oauth2/token"
-    auth_bytes = f"{client_id}:{client_secret}".encode("utf-8")
-    auth_b64 = base64.b64encode(auth_bytes).decode("utf-8")
-
-    data = "grant_type=client_credentials".encode("utf-8")
-    headers = {
-        "Authorization": f"Basic {auth_b64}",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
+def paypal_request(method, path, token, body=None):
     req = urllib.request.Request(
-        url=token_url,
-        data=data,
-        headers=headers,
-        method="POST",
+        f"{get_paypal_base_url()}{path}",
+        data=json.dumps(body).encode() if body else None,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        },
+        method=method
     )
 
-    try:
-        with urllib.request.urlopen(req) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            access_token = payload.get("access_token")
-            if not access_token:
-                raise HTTPException(
-                    status_code=500,
-                    detail="No se pudo obtener access_token de PayPal"
-                )
-            return access_token
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8") if e.fp else ""
-        raise HTTPException(status_code=500, detail=f"Error OAuth PayPal: {raw}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error OAuth PayPal: {str(e)}")
-
-
-def extract_capture_data(capture_response: dict):
-    purchase_units = capture_response.get("purchase_units", [])
-    if not purchase_units:
-        return None, None, None
-
-    payments = purchase_units[0].get("payments", {})
-    captures = payments.get("captures", [])
-    if not captures:
-        return None, None, None
-
-    capture = captures[0]
-    capture_id = capture.get("id")
-    payer_email = capture_response.get("payer", {}).get("email_address")
-    amount = capture.get("amount", {}).get("value")
-
-    return capture_id, payer_email, amount
+    res = urllib.request.urlopen(req)
+    return json.loads(res.read())
 
 
 # =========================
-# DEBUG CONFIG
-# =========================
-@router.get("/debug-config")
-def debug_paypal_config():
-    client_id = get_paypal_client_id()
-    client_secret = get_paypal_client_secret()
-
-    return {
-        "paypal_mode": get_paypal_mode(),
-        "paypal_base_url": get_paypal_base_url(),
-        "has_client_id": bool(client_id),
-        "has_client_secret": bool(client_secret),
-        "client_id_prefix": client_id[:12] if client_id else None,
-        "client_secret_length": len(client_secret) if client_secret else 0,
-    }
-
-
-# =========================
-# CREATE PAYPAL ORDER
+# CREATE ORDER
 # =========================
 @router.post("/create-order")
-def create_paypal_order(
-    payload: PayPalCreateOrderRequest,
-    db: Session = Depends(get_db)
-):
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+def create_order(payload: PayPalCreateOrderRequest, db: Session = Depends(get_db)):
+    token = get_token()
 
-    linked_order = None
-    if payload.order_id is not None:
-        linked_order = db.query(models.Order).filter(
-            models.Order.id == payload.order_id
-        ).first()
-        if not linked_order:
-            raise HTTPException(status_code=404, detail="Orden interna no encontrada")
-
-    token = get_paypal_access_token()
-
-    paypal_body = {
+    body = {
         "intent": "CAPTURE",
-        "purchase_units": [
-            {
-                "reference_id": f"user-{payload.user_id}",
-                "amount": {
-                    "currency_code": payload.currency,
-                    "value": f"{payload.amount:.2f}",
-                },
-                "description": f"Mayu Wellness Club - {payload.payment_type}",
+        "purchase_units": [{
+            "amount": {
+                "currency_code": payload.currency,
+                "value": f"{payload.amount:.2f}"
             }
-        ],
-        "application_context": {
-            "brand_name": "Mayu Wellness Club",
-            "user_action": "PAY_NOW",
-            "return_url": "https://mayu-wellness-backend-v1.onrender.com/health",
-            "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/health",
-        }
+        }]
     }
 
-    status_code, paypal_response = paypal_request(
-        method="POST",
-        path="/v2/checkout/orders",
-        token=token,
-        body=paypal_body,
-    )
+    response = paypal_request("POST", "/v2/checkout/orders", token, body)
 
-    if status_code not in {200, 201}:
-        raise HTTPException(status_code=500, detail=paypal_response)
-
-    paypal_order_id = paypal_response.get("id")
-    if not paypal_order_id:
-        raise HTTPException(status_code=500, detail="PayPal no devolvió paypal_order_id")
-
-    new_payment = models.MembershipPayment(
-        user_id=user.id,
-        order_id=linked_order.id if linked_order else None,
-        payment_type=payload.payment_type,
-        provider="paypal",
-        paypal_order_id=paypal_order_id,
+    payment = models.MembershipPayment(
+        user_id=payload.user_id,
+        order_id=payload.order_id,
+        paypal_order_id=response["id"],
         amount=payload.amount,
-        currency=payload.currency,
-        status="created",
-        payment_reference=paypal_order_id,
-        raw_payload=json.dumps(paypal_response),
+        status="created"
     )
 
-    db.add(new_payment)
+    db.add(payment)
     db.commit()
-    db.refresh(new_payment)
 
-    approval_url = None
-    for link in paypal_response.get("links", []):
-        if link.get("rel") == "approve":
-            approval_url = link.get("href")
-            break
-
-    return {
-        "message": "Orden PayPal creada correctamente",
-        "payment": {
-            "id": new_payment.id,
-            "user_id": new_payment.user_id,
-            "order_id": new_payment.order_id,
-            "payment_type": new_payment.payment_type,
-            "provider": new_payment.provider,
-            "paypal_order_id": new_payment.paypal_order_id,
-            "amount": new_payment.amount,
-            "currency": new_payment.currency,
-            "status": new_payment.status,
-            "approval_url": approval_url,
-        }
-    }
+    return response
 
 
 # =========================
-# CAPTURE PAYPAL ORDER
+# CAPTURE
 # =========================
 @router.post("/capture-order")
-def capture_paypal_order(
-    payload: PayPalCaptureOrderRequest,
-    db: Session = Depends(get_db)
-):
-    payment = (
-        db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.paypal_order_id == payload.paypal_order_id)
-        .first()
+def capture(payload: PayPalCaptureOrderRequest, db: Session = Depends(get_db)):
+    token = get_token()
+
+    response = paypal_request(
+        "POST",
+        f"/v2/checkout/orders/{payload.paypal_order_id}/capture",
+        token
     )
 
-    if not payment:
-        raise HTTPException(status_code=404, detail="Pago no encontrado para ese paypal_order_id")
+    payment = db.query(models.MembershipPayment).filter_by(
+        paypal_order_id=payload.paypal_order_id
+    ).first()
 
-    token = get_paypal_access_token()
-
-    status_code, capture_response = paypal_request(
-        method="POST",
-        path=f"/v2/checkout/orders/{payload.paypal_order_id}/capture",
-        token=token,
-        body={}
-    )
-
-    if status_code not in {200, 201}:
-        payment.status = "failed"
-        payment.raw_payload = json.dumps(capture_response)
-        db.commit()
-        raise HTTPException(status_code=500, detail=capture_response)
-
-    capture_id, payer_email, captured_amount = extract_capture_data(capture_response)
-
-    payment.paypal_capture_id = capture_id
-    payment.payer_email = payer_email
     payment.status = "paid"
     payment.paid_at = datetime.utcnow()
-    payment.raw_payload = json.dumps(capture_response)
-    payment.receipt_url = payload.paypal_order_id
-
-    if captured_amount is not None:
-        try:
-            payment.amount = float(captured_amount)
-        except Exception:
-            pass
 
     db.commit()
-    db.refresh(payment)
 
-    return {
-        "message": "Pago PayPal capturado correctamente",
-        "payment": {
-            "id": payment.id,
-            "user_id": payment.user_id,
-            "order_id": payment.order_id,
-            "paypal_order_id": payment.paypal_order_id,
-            "paypal_capture_id": payment.paypal_capture_id,
-            "payer_email": payment.payer_email,
-            "amount": payment.amount,
-            "currency": payment.currency,
-            "status": payment.status,
-            "paid_at": payment.paid_at,
-        }
-    }
+    return response
 
 
 # =========================
-# LIST PAYMENTS
-# =========================
-@router.get("")
-def list_membership_payments(
-    status: Optional[str] = Query(default=None),
-    payment_type: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    require_team_access(current_user)
-
-    query = db.query(models.MembershipPayment)
-
-    if status:
-        query = query.filter(models.MembershipPayment.status == status)
-
-    if payment_type:
-        query = query.filter(models.MembershipPayment.payment_type == payment_type)
-
-    payments = query.order_by(models.MembershipPayment.created_at.desc()).all()
-
-    return {
-        "items": [
-            {
-                "id": payment.id,
-                "user_id": payment.user_id,
-                "user_name": payment.user.name if payment.user else None,
-                "order_id": payment.order_id,
-                "payment_type": payment.payment_type,
-                "provider": payment.provider,
-                "paypal_order_id": payment.paypal_order_id,
-                "paypal_capture_id": payment.paypal_capture_id,
-                "amount": payment.amount,
-                "currency": payment.currency,
-                "status": payment.status,
-                "payer_email": payment.payer_email,
-                "payment_reference": payment.payment_reference,
-                "receipt_url": payment.receipt_url,
-                "admin_verified": payment.admin_verified,
-                "admin_verified_at": payment.admin_verified_at,
-                "admin_verified_by": payment.admin_verified_by,
-                "created_at": payment.created_at,
-                "paid_at": payment.paid_at,
-            }
-            for payment in payments
-        ]
-    }
-
-
-# =========================
-# VERIFY PAYMENT BY ADMIN + CREAR ORDEN AUTOMÁTICA
+# VERIFY + CREAR ORDEN + LIBERAR LOGÍSTICA
 # =========================
 @router.put("/{payment_id}/verify")
-def verify_payment_by_admin(
-    payment_id: int,
-    payload: AdminVerifyPaymentRequest,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
+def verify(payment_id: int,
+           payload: AdminVerifyPaymentRequest,
+           db: Session = Depends(get_db),
+           current_user=Depends(get_current_user)):
+
     require_admin_or_superadmin(current_user)
 
-    payment = (
-        db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.id == payment_id)
-        .first()
-    )
+    payment = db.query(models.MembershipPayment).get(payment_id)
 
-    if not payment:
-        raise HTTPException(status_code=404, detail="Pago no encontrado")
+    if not payment or payment.status != "paid":
+        raise HTTPException(400, "Pago inválido")
 
-    if payment.status != "paid":
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se pueden verificar pagos que ya estén capturados como paid"
-        )
+    user = db.query(models.User).get(payment.user_id)
 
-    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario del pago no encontrado")
+    payment.status = "verified"
+    payment.admin_verified = True
+    payment.admin_verified_at = datetime.utcnow()
+    payment.admin_verified_by = current_user.id
 
     now = datetime.utcnow()
-    current_month = now.month
-    current_year = now.year
 
-    payment.admin_verified = True
-    payment.admin_verified_at = now
-    payment.admin_verified_by = current_user.id
-    payment.status = "verified"
+    # =========================
+    # BUSCAR ORDEN EXISTENTE
+    # =========================
+    order = None
 
-    created_order = None
-
-    if not payment.order_id:
-        monthly_selection = (
-            db.query(models.MonthlySelection)
-            .filter(
-                models.MonthlySelection.user_id == user.id,
-                models.MonthlySelection.month == current_month,
-                models.MonthlySelection.year == current_year
-            )
-            .first()
-        )
-
-        if not monthly_selection:
-            raise HTTPException(
-                status_code=400,
-                detail="No existe selección mensual para crear la orden automáticamente"
-            )
-
-        if not monthly_selection.items or len(monthly_selection.items) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="La selección mensual no tiene productos"
-            )
-
-        existing_order = (
-            db.query(models.Order)
-            .filter(
-                models.Order.user_id == user.id,
-                models.Order.month == current_month,
-                models.Order.year == current_year
-            )
-            .first()
-        )
-
-        if existing_order:
-            payment.order_id = existing_order.id
-            created_order = existing_order
-        else:
-            new_order = models.Order(
-                order_code=generate_order_code(user.id, current_month, current_year),
-                user_id=user.id,
-                month=current_month,
-                year=current_year,
-                membership_level_snapshot=user.membership_level,
-                user_status_snapshot="active" if user.membership_active else "inactive",
-                city_snapshot=user.city,
-                address_snapshot=user.address,
-                reference_snapshot=user.reference,
-                delivery_notes_snapshot=user.delivery_notes,
-                status="pending_payment_review",
-                logistics_notes=(
-                    payload.verification_notes.strip()
-                    if payload.verification_notes and payload.verification_notes.strip()
-                    else "Pago verificado - pendiente de liberación a despacho"
-                )
-            )
-
-            db.add(new_order)
-            db.flush()
-
-            for item in monthly_selection.items:
-                order_item = models.OrderItem(
-                    order_id=new_order.id,
-                    product_id=item.product_id,
-                    product_name_snapshot=item.product.name,
-                    quantity=item.quantity
-                )
-                db.add(order_item)
-
-            payment.order_id = new_order.id
-            created_order = new_order
+    if payment.order_id:
+        order = db.query(models.Order).get(payment.order_id)
 
     else:
-        existing_order = db.query(models.Order).filter(
-            models.Order.id == payment.order_id
+        order = db.query(models.Order).filter_by(
+            user_id=user.id,
+            month=now.month,
+            year=now.year
         ).first()
 
-        if existing_order:
-            existing_order.logistics_notes = (
-                payload.verification_notes.strip()
-                if payload.verification_notes and payload.verification_notes.strip()
-                else "Pago OK - pendiente de liberación a despacho"
-            )
-            created_order = existing_order
+    # =========================
+    # CREAR ORDEN SI NO EXISTE
+    # =========================
+    if not order:
+        monthly = db.query(models.MonthlySelection).filter_by(
+            user_id=user.id,
+            month=now.month,
+            year=now.year
+        ).first()
 
-    db.commit()
-    db.refresh(payment)
+        if not monthly:
+            raise HTTPException(400, "No hay selección mensual")
 
-    return {
-        "message": "Pago verificado correctamente por admin",
-        "payment": {
-            "id": payment.id,
-            "status": payment.status,
-            "admin_verified": payment.admin_verified,
-            "admin_verified_at": payment.admin_verified_at,
-            "admin_verified_by": payment.admin_verified_by,
-            "order_id": payment.order_id,
-        },
-        "order": {
-            "id": created_order.id,
-            "order_code": created_order.order_code,
-            "status": created_order.status,
-        } if created_order else None
-    }
-
-
-# =========================
-# PAYPAL WEBHOOK
-# =========================
-@router.post("/webhook")
-async def paypal_webhook_listener(
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    raw_body = await request.body()
-
-    try:
-        event = json.loads(raw_body.decode("utf-8"))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Payload inválido")
-
-    webhook_id = get_paypal_webhook_id()
-
-    if webhook_id:
-        token = get_paypal_access_token()
-
-        verification_body = {
-            "auth_algo": request.headers.get("PAYPAL-AUTH-ALGO"),
-            "cert_url": request.headers.get("PAYPAL-CERT-URL"),
-            "transmission_id": request.headers.get("PAYPAL-TRANSMISSION-ID"),
-            "transmission_sig": request.headers.get("PAYPAL-TRANSMISSION-SIG"),
-            "transmission_time": request.headers.get("PAYPAL-TRANSMISSION-TIME"),
-            "webhook_id": webhook_id,
-            "webhook_event": event,
-        }
-
-        status_code, verify_response = paypal_request(
-            method="POST",
-            path="/v1/notifications/verify-webhook-signature",
-            token=token,
-            body=verification_body,
+        order = models.Order(
+            order_code=generate_order_code(user.id, now.month, now.year),
+            user_id=user.id,
+            month=now.month,
+            year=now.year,
+            status="approved_for_logistics",  # 🔥 DIRECTO A LOGÍSTICA
+            logistics_notes="Pago verificado - listo para despacho"
         )
 
-        if status_code not in {200, 201}:
-            raise HTTPException(status_code=400, detail="No se pudo verificar webhook PayPal")
+        db.add(order)
+        db.flush()
 
-        verification_status = verify_response.get("verification_status")
-        if verification_status != "SUCCESS":
-            raise HTTPException(status_code=400, detail="Firma de webhook inválida")
+        for item in monthly.items:
+            db.add(models.OrderItem(
+                order_id=order.id,
+                product_id=item.product_id,
+                product_name_snapshot=item.product.name,
+                quantity=item.quantity
+            ))
 
-    event_type = event.get("event_type")
-    resource = event.get("resource", {})
+        payment.order_id = order.id
 
-    if event_type == "PAYMENT.CAPTURE.COMPLETED":
-        capture_id = resource.get("id")
-        supplementary = resource.get("supplementary_data", {})
-        related_ids = supplementary.get("related_ids", {})
-        paypal_order_id = related_ids.get("order_id")
+    # =========================
+    # SI YA EXISTE → LIBERAR
+    # =========================
+    else:
+        order.status = "approved_for_logistics"
+        order.logistics_notes = "Pago verificado - listo para despacho"
 
-        if paypal_order_id:
-            payment = (
-                db.query(models.MembershipPayment)
-                .filter(models.MembershipPayment.paypal_order_id == paypal_order_id)
-                .first()
-            )
-
-            if payment:
-                payment.paypal_capture_id = capture_id
-                payment.status = "paid"
-                payment.paid_at = datetime.utcnow()
-                payment.payer_email = (
-                    resource.get("payer", {}).get("email_address")
-                    if isinstance(resource.get("payer"), dict)
-                    else payment.payer_email
-                )
-                payment.raw_payload = json.dumps(event)
-
-                amount_info = resource.get("amount", {})
-                if amount_info.get("value"):
-                    try:
-                        payment.amount = float(amount_info["value"])
-                    except Exception:
-                        pass
-
-                db.commit()
+    db.commit()
 
     return {
-        "message": "Webhook recibido correctamente",
-        "event_type": event_type
+        "message": "Pago verificado y orden lista para logística",
+        "order_status": order.status
     }
+
+
+# =========================
+# WEBHOOK
+# =========================
+@router.post("/webhook")
+async def webhook(request: Request, db: Session = Depends(get_db)):
+    event = await request.json()
+
+    if event.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
+        order_id = event["resource"]["supplementary_data"]["related_ids"]["order_id"]
+
+        payment = db.query(models.MembershipPayment).filter_by(
+            paypal_order_id=order_id
+        ).first()
+
+        if payment:
+            payment.status = "paid"
+            payment.paid_at = datetime.utcnow()
+            db.commit()
+
+    return {"ok": True}
