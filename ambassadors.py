@@ -105,19 +105,23 @@ def register_ambassador(
     if existing_cedula:
         raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
-    user = models.User(
-        name=data.name,
-        email=data.email,
-        password=hash_password(data.password),
-        phone=data.phone,
-        cedula=data.national_id,
-        address=data.address,
-        status="registered",
-        membership_level=None,
-        membership_active=False,
-        role="ambassador",
-        is_active=True
-    )
+ user = models.User(
+    name=data.name,
+    email=data.email,
+    password=hash_password(data.password),
+    phone=data.phone,
+    cedula=data.national_id,
+    city="Quito",
+    address=data.address,
+    reference="Registro embajador",
+    delivery_notes="Registro embajador",
+    phone_secondary=data.phone,
+    status="registered",
+    membership_level=None,
+    membership_active=False,
+    role="ambassador",
+    is_active=True
+)
 
     db.add(user)
     db.commit()
