@@ -175,6 +175,33 @@ def list_payments(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/order/{paypal_order_id}")
+def get_payment_by_paypal_order_id(
+    paypal_order_id: str,
+    db: Session = Depends(get_db),
+):
+    payment = db.query(models.MembershipPayment).filter_by(
+        paypal_order_id=paypal_order_id
+    ).first()
+
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+    return {
+        "id": payment.id,
+        "user_id": payment.user_id,
+        "order_id": payment.order_id,
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "status": payment.status,
+        "paypal_order_id": payment.paypal_order_id,
+        "paypal_capture_id": payment.paypal_capture_id,
+        "payer_email": payment.payer_email,
+        "admin_verified": payment.admin_verified,
+        "paid_at": payment.paid_at,
+    }
+
+
 @router.post("/create-order")
 def create_order(
     payload: PayPalCreateOrderRequest,
@@ -200,8 +227,8 @@ def create_order(
         "application_context": {
             "brand_name": "Mayu Wellness Club",
             "user_action": "PAY_NOW",
-            "return_url": "https://mayu-wellness-backend-v1.onrender.com/health",
-            "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/health",
+            "return_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/success",
+            "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/cancel",
         },
     }
 
@@ -231,23 +258,22 @@ def create_order(
     }
 
 
-@router.post("/capture-order")
-def capture(
-    payload: PayPalCaptureOrderRequest,
-    db: Session = Depends(get_db),
-):
+def capture_payment_by_order_id(paypal_order_id: str, db: Session):
     payment = db.query(models.MembershipPayment).filter_by(
-        paypal_order_id=payload.paypal_order_id
+        paypal_order_id=paypal_order_id
     ).first()
 
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
+    if payment.status in ["paid", "verified"]:
+        return payment
+
     token = get_token()
 
     response = paypal_request(
         "POST",
-        f"/v2/checkout/orders/{payload.paypal_order_id}/capture",
+        f"/v2/checkout/orders/{paypal_order_id}/capture",
         token,
         body={},
     )
@@ -270,12 +296,46 @@ def capture(
     db.commit()
     db.refresh(payment)
 
+    return payment
+
+
+@router.post("/capture-order")
+def capture(
+    payload: PayPalCaptureOrderRequest,
+    db: Session = Depends(get_db),
+):
+    payment = capture_payment_by_order_id(payload.paypal_order_id, db)
+
     return {
         "message": "Pago capturado",
         "payment_id": payment.id,
         "status": payment.status,
         "paypal_capture_id": payment.paypal_capture_id,
         "payer_email": payment.payer_email,
+    }
+
+
+@router.get("/success")
+def paypal_success(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    payment = capture_payment_by_order_id(token, db)
+
+    return {
+        "status": "paid",
+        "message": "Pago PayPal capturado correctamente. Puedes volver a Mayu Wellness Club.",
+        "payment_id": payment.id,
+        "paypal_order_id": payment.paypal_order_id,
+        "payer_email": payment.payer_email,
+    }
+
+
+@router.get("/cancel")
+def paypal_cancel():
+    return {
+        "status": "cancelled",
+        "message": "Pago cancelado por el usuario",
     }
 
 
