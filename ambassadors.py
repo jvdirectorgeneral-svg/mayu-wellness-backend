@@ -77,12 +77,15 @@ def draw_spaced_text_with_shadow(
 
 def get_spaced_text_width(draw, text, font, spacing=1):
     total_width = 0
+
     for i, char in enumerate(text):
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
         total_width += char_width
+
         if i < len(text) - 1:
             total_width += spacing
+
     return total_width
 
 
@@ -105,23 +108,23 @@ def register_ambassador(
     if existing_cedula:
         raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
- user = models.User(
-    name=data.name,
-    email=data.email,
-    password=hash_password(data.password),
-    phone=data.phone,
-    cedula=data.national_id,
-    city="Quito",
-    address=data.address,
-    reference="Registro embajador",
-    delivery_notes="Registro embajador",
-    phone_secondary=data.phone,
-    status="registered",
-    membership_level=None,
-    membership_active=False,
-    role="ambassador",
-    is_active=True
-)
+    user = models.User(
+        name=data.name,
+        email=data.email,
+        password=hash_password(data.password),
+        phone=data.phone,
+        cedula=data.national_id,
+        city="Quito",
+        address=data.address,
+        reference="Registro embajador",
+        delivery_notes="Registro embajador",
+        phone_secondary=data.phone,
+        status="registered",
+        membership_level=None,
+        membership_active=False,
+        role="ambassador",
+        is_active=True
+    )
 
     db.add(user)
     db.commit()
