@@ -98,11 +98,20 @@ def register_ambassador(
     if existing_user:
         raise HTTPException(status_code=400, detail="El email ya está registrado")
 
+    existing_cedula = db.query(models.User).filter(
+        models.User.cedula == data.national_id
+    ).first()
+
+    if existing_cedula:
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
+
     user = models.User(
         name=data.name,
         email=data.email,
         password=hash_password(data.password),
         phone=data.phone,
+        cedula=data.national_id,
+        address=data.address,
         status="registered",
         membership_level=None,
         membership_active=False,
@@ -142,7 +151,10 @@ def register_ambassador(
             "name": user.name,
             "email": user.email,
             "phone": user.phone,
-            "role": user.role
+            "cedula": user.cedula,
+            "address": user.address,
+            "role": user.role,
+            "is_active": user.is_active
         },
         "ambassador": {
             "id": ambassador.id,
@@ -205,6 +217,7 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "phone": db_user.phone,
+            "cedula": db_user.cedula,
             "role": db_user.role
         },
         "ambassador": {
@@ -246,6 +259,7 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
             "name": user.name,
             "email": user.email,
             "phone": user.phone,
+            "cedula": user.cedula,
             "ambassador_code": ambassador.ambassador_code,
             "ambassador_token": ambassador.ambassador_token,
             "national_id": ambassador.national_id,
