@@ -152,6 +152,7 @@ Equipo Mayu Wellness Club
 @router.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
+
     return {
         "users": [
             {
@@ -476,7 +477,7 @@ def create_staff(
 
 
 # =========================
-# SUPERADMIN - LISTAR USUARIOS INTERNOS
+# SUPERADMIN - LISTAR USUARIOS CONTROL MAESTRO
 # =========================
 @router.get("/superadmin/internal-users")
 def list_staff(
@@ -485,11 +486,18 @@ def list_staff(
 ):
     require_superadmin(current_user)
 
-    staff_roles = ["superadmin", "admin", "supervisor", "logistics"]
+    visible_roles = [
+        "superadmin",
+        "admin",
+        "supervisor",
+        "logistics",
+        "ambassador",
+        "member",
+    ]
 
     users = (
         db.query(models.User)
-        .filter(models.User.role.in_(staff_roles))
+        .filter(models.User.role.in_(visible_roles))
         .order_by(models.User.created_at.desc())
         .all()
     )
@@ -504,6 +512,8 @@ def list_staff(
                 "cedula": u.cedula,
                 "role": u.role,
                 "status": u.status,
+                "membership_level": u.membership_level,
+                "membership_active": u.membership_active,
                 "is_active": getattr(u, "is_active", True),
                 "created_at": u.created_at,
             }
@@ -583,7 +593,7 @@ def update_staff(
 
 
 # =========================
-# SUPERADMIN - RESETEAR CLAVE USUARIO INTERNO
+# SUPERADMIN - RESETEAR CLAVE DESDE CONTROL MAESTRO
 # =========================
 @router.put("/superadmin/internal-users/{user_id}/reset-password")
 def reset_staff_password(
@@ -599,10 +609,12 @@ def reset_staff_password(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
+    allowed_roles = {"admin", "supervisor", "logistics", "superadmin", "ambassador", "member"}
+
+    if user.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
-            detail="Solo se puede resetear password de staff interno",
+            detail="No se puede resetear la contraseña de este usuario",
         )
 
     user.password = hash_password(payload.new_password)
@@ -654,7 +666,7 @@ def reset_any_user_password(
 
 
 # =========================
-# SUPERADMIN - ACTIVAR / DESACTIVAR USUARIO INTERNO
+# SUPERADMIN - ACTIVAR / DESACTIVAR DESDE CONTROL MAESTRO
 # =========================
 @router.put("/superadmin/internal-users/{user_id}/status")
 def update_staff_status(
@@ -670,10 +682,12 @@ def update_staff_status(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
+    allowed_roles = {"admin", "supervisor", "logistics", "superadmin", "ambassador", "member"}
+
+    if user.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
-            detail="Solo se puede activar o desactivar staff interno",
+            detail="No se puede activar o desactivar este usuario",
         )
 
     user.is_active = payload.is_active
