@@ -16,6 +16,8 @@ from admin_dashboard import router as admin_dashboard_router
 from supervisor_dashboard import router as supervisor_dashboard_router
 from orders import router as orders_router
 from payments_paypal import router as payments_paypal_router
+from paypal_subscriptions import router as paypal_subscriptions_router
+
 from dependencies import get_current_user
 import models
 
@@ -29,7 +31,7 @@ Base.metadata.create_all(bind=engine)
 # =========================
 app = FastAPI(
     title="Mayu Wellness API",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # =========================
@@ -64,6 +66,7 @@ app.include_router(admin_dashboard_router)
 app.include_router(supervisor_dashboard_router)
 app.include_router(orders_router)
 app.include_router(payments_paypal_router)
+app.include_router(paypal_subscriptions_router)
 
 # =========================
 # ROOT
@@ -99,5 +102,5 @@ def get_me(current_user: models.User = Depends(get_current_user)):
         "membership_active": current_user.membership_active,
         "role": current_user.role,
         "is_active": current_user.is_active,
-        "status": current_user.status
+        "status": current_user.status,
     }
