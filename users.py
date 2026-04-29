@@ -502,24 +502,38 @@ def list_staff(
         .all()
     )
 
-    return {
-        "items": [
-            {
-                "id": u.id,
-                "name": u.name,
-                "email": u.email,
-                "phone": u.phone,
-                "cedula": u.cedula,
-                "role": u.role,
-                "status": u.status,
-                "membership_level": u.membership_level,
-                "membership_active": u.membership_active,
-                "is_active": getattr(u, "is_active", True),
-                "created_at": u.created_at,
-            }
-            for u in users
-        ]
-    }
+    items = []
+
+    for u in users:
+        ambassador_code = None
+
+        # 🔥 SOLO SI ES EMBAJADOR
+        if u.role == "ambassador":
+            ambassador = (
+                db.query(models.Ambassador)
+                .filter(models.Ambassador.user_id == u.id)
+                .first()
+            )
+
+            if ambassador:
+                ambassador_code = ambassador.ambassador_code
+
+        items.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "phone": u.phone,
+            "cedula": u.cedula,
+            "role": u.role,
+            "status": u.status,
+            "membership_level": u.membership_level,
+            "membership_active": u.membership_active,
+            "is_active": getattr(u, "is_active", True),
+            "created_at": u.created_at,
+            "ambassador_code": ambassador_code,  # 🔥 AQUÍ ESTÁ LA MAGIA
+        })
+
+    return {"items": items}
 
 
 # =========================
