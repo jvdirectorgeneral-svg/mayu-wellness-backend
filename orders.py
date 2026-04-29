@@ -11,9 +11,6 @@ import models
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-# =========================
-# DB
-# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -22,9 +19,6 @@ def get_db():
         db.close()
 
 
-# =========================
-# SCHEMAS
-# =========================
 class OrderCreateManual(BaseModel):
     user_id: int
     month: int
@@ -40,9 +34,6 @@ class OrderApprovalUpdate(BaseModel):
     approval_notes: Optional[str] = None
 
 
-# =========================
-# HELPERS
-# =========================
 def generate_order_code(user_id: int, month: int, year: int) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
@@ -65,6 +56,53 @@ def payment_data(payment):
         "payer_email": payment.payer_email if payment else None,
         "admin_verified": payment.admin_verified if payment else False,
         "admin_verified_at": payment.admin_verified_at if payment else None,
+    }
+
+
+def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
+    selection = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+    if not selection:
+        return {
+            "monthly_selection_id": None,
+            "editable_product": None,
+            "monthly_selection_products": [],
+            "monthly_selection_status": None,
+        }
+
+    items = (
+        db.query(models.MonthlySelectionItem)
+        .filter(models.MonthlySelectionItem.monthly_selection_id == selection.id)
+        .all()
+    )
+
+    products = []
+
+    for item in items:
+        product = db.query(models.Product).filter(
+            models.Product.id == item.product_id
+        ).first()
+
+        if product:
+            products.append({
+                "product_id": product.id,
+                "name": product.name,
+                "quantity": item.quantity,
+            })
+
+    return {
+        "monthly_selection_id": selection.id,
+        "editable_product": products[0]["name"] if products else None,
+        "monthly_selection_products": products,
+        "monthly_selection_status": selection.status,
     }
 
 
@@ -91,7 +129,7 @@ def require_admin_or_superadmin(current_user: models.User):
     if current_user.role not in allowed_roles:
         raise HTTPException(
             status_code=403,
-            detail="Acceso solo para admin o superadmin"
+            detail="Acceso solo para admin o superadmin",
         )
 
 
@@ -107,14 +145,11 @@ def require_logistics_or_admin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Acceso no autorizado")
 
 
-# =========================
-# CREAR ORDEN MANUAL DESDE SELECCIÓN MENSUAL
-# =========================
 @router.post("/create-manual")
 def create_order_manual(
     payload: OrderCreateManual,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_admin_or_superadmin(current_user)
 
@@ -127,7 +162,7 @@ def create_order_manual(
         .filter(
             models.MonthlySelection.user_id == payload.user_id,
             models.MonthlySelection.month == payload.month,
-            models.MonthlySelection.year == payload.year
+            models.MonthlySelection.year == payload.year,
         )
         .first()
     )
@@ -135,7 +170,7 @@ def create_order_manual(
     if not monthly_selection:
         raise HTTPException(
             status_code=404,
-            detail="No existe selección mensual para ese usuario en ese ciclo"
+            detail="No existe selección mensual para ese usuario en ese ciclo",
         )
 
     existing_order = (
@@ -143,7 +178,7 @@ def create_order_manual(
         .filter(
             models.Order.user_id == payload.user_id,
             models.Order.month == payload.month,
-            models.Order.year == payload.year
+            models.Order.year == payload.year,
         )
         .first()
     )
@@ -151,13 +186,13 @@ def create_order_manual(
     if existing_order:
         raise HTTPException(
             status_code=400,
-            detail="Ya existe una orden para este usuario en ese ciclo"
+            detail="Ya existe una orden para este usuario en ese ciclo",
         )
 
     if not monthly_selection.items or len(monthly_selection.items) == 0:
         raise HTTPException(
             status_code=400,
-            detail="La selección mensual no tiene productos"
+            detail="La selección mensual no tiene productos",
         )
 
     new_order = models.Order(
@@ -172,7 +207,7 @@ def create_order_manual(
         reference_snapshot=user.reference,
         delivery_notes_snapshot=user.delivery_notes,
         status="pending_payment_review",
-        logistics_notes="Orden creada, pendiente de validación administrativa"
+        logistics_notes="Orden creada, pendiente de validación administrativa",
     )
 
     db.add(new_order)
@@ -183,12 +218,19 @@ def create_order_manual(
             order_id=new_order.id,
             product_id=item.product_id,
             product_name_snapshot=item.product.name,
-            quantity=item.quantity
+            quantity=item.quantity,
         )
         db.add(order_item)
 
     db.commit()
     db.refresh(new_order)
+
+    selection_info = get_monthly_selection_data(
+        db,
+        user.id,
+        payload.month,
+        payload.year,
+    )
 
     return {
         "message": "Orden creada correctamente y pendiente de aprobación administrativa",
@@ -206,19 +248,17 @@ def create_order_manual(
             "delivery_notes_snapshot": new_order.delivery_notes_snapshot,
             "created_at": new_order.created_at,
             "admin_verified": False,
-        }
+            **selection_info,
+        },
     }
 
 
-# =========================
-# APROBAR ORDEN PARA LOGÍSTICA
-# =========================
 @router.put("/{order_id}/approve")
 def approve_order_for_logistics(
     order_id: int,
     payload: OrderApprovalUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_admin_or_superadmin(current_user)
 
@@ -230,7 +270,7 @@ def approve_order_for_logistics(
     if order.status != "pending_payment_review":
         raise HTTPException(
             status_code=400,
-            detail="Solo se pueden aprobar órdenes en revisión de pago"
+            detail="Solo se pueden aprobar órdenes en revisión de pago",
         )
 
     payment = get_order_payment(db, order.id)
@@ -238,7 +278,7 @@ def approve_order_for_logistics(
     if not payment or payment.status != "verified" or not payment.admin_verified:
         raise HTTPException(
             status_code=400,
-            detail="La orden necesita un pago verificado por administración"
+            detail="La orden necesita un pago verificado por administración",
         )
 
     order.status = "approved_for_logistics"
@@ -252,6 +292,12 @@ def approve_order_for_logistics(
     db.refresh(order)
 
     payment_info = payment_data(payment)
+    selection_info = get_monthly_selection_data(
+        db,
+        order.user_id,
+        order.month,
+        order.year,
+    )
 
     return {
         "message": "Orden aprobada y liberada para logística",
@@ -261,13 +307,11 @@ def approve_order_for_logistics(
             "status": order.status,
             "logistics_notes": order.logistics_notes,
             **payment_info,
-        }
+            **selection_info,
+        },
     }
 
 
-# =========================
-# LISTAR ÓRDENES
-# =========================
 @router.get("")
 def list_orders(
     status: Optional[str] = Query(default=None),
@@ -275,7 +319,7 @@ def list_orders(
     month: Optional[int] = Query(default=None),
     year: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_team_access(current_user)
 
@@ -287,7 +331,7 @@ def list_orders(
                 "approved_for_logistics",
                 "preparing",
                 "shipped",
-                "delivered"
+                "delivered",
             ])
         )
 
@@ -310,6 +354,12 @@ def list_orders(
     for order in orders:
         payment = get_order_payment(db, order.id)
         payment_info = payment_data(payment)
+        selection_info = get_monthly_selection_data(
+            db,
+            order.user_id,
+            order.month,
+            order.year,
+        )
 
         items.append({
             "id": order.id,
@@ -333,19 +383,17 @@ def list_orders(
             "delivered_at": order.delivered_at,
             "items_count": len(order.items),
             **payment_info,
+            **selection_info,
         })
 
     return {"items": items}
 
 
-# =========================
-# DETALLE DE ORDEN
-# =========================
 @router.get("/{order_id}")
 def get_order_detail(
     order_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_team_access(current_user)
 
@@ -357,11 +405,17 @@ def get_order_detail(
     if current_user.role == "logistics" and order.status == "pending_payment_review":
         raise HTTPException(
             status_code=403,
-            detail="La orden aún no ha sido liberada para logística"
+            detail="La orden aún no ha sido liberada para logística",
         )
 
     payment = get_order_payment(db, order.id)
     payment_info = payment_data(payment)
+    selection_info = get_monthly_selection_data(
+        db,
+        order.user_id,
+        order.month,
+        order.year,
+    )
 
     return {
         "id": order.id,
@@ -374,7 +428,7 @@ def get_order_detail(
             "cedula": order.user.cedula,
             "membership_active": order.user.membership_active,
             "is_active": order.user.is_active,
-            "role": order.user.role
+            "role": order.user.role,
         },
         "membership_level_snapshot": order.membership_level_snapshot,
         "user_status_snapshot": order.user_status_snapshot,
@@ -395,23 +449,21 @@ def get_order_detail(
                 "id": item.id,
                 "product_id": item.product_id,
                 "product_name_snapshot": item.product_name_snapshot,
-                "quantity": item.quantity
+                "quantity": item.quantity,
             }
             for item in order.items
         ],
         **payment_info,
+        **selection_info,
     }
 
 
-# =========================
-# CAMBIAR ESTADO DE ORDEN
-# =========================
 @router.put("/{order_id}/status")
 def update_order_status(
     order_id: int,
     payload: OrderStatusUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
 ):
     require_logistics_or_admin(current_user)
 
@@ -421,21 +473,26 @@ def update_order_status(
         "preparing",
         "shipped",
         "delivered",
-        "cancelled"
+        "cancelled",
     }
 
     if payload.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail="Estado inválido")
 
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
+
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if current_user.role == "logistics":
-        if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
+        if order.status not in {
+            "approved_for_logistics",
+            "preparing",
+            "shipped",
+        }:
             raise HTTPException(
                 status_code=403,
-                detail="La orden no está liberada para logística"
+                detail="La orden no está liberada para logística",
             )
 
         allowed_logistics_transitions = {
@@ -445,10 +502,11 @@ def update_order_status(
         }
 
         next_allowed = allowed_logistics_transitions.get(order.status, set())
+
         if payload.status not in next_allowed:
             raise HTTPException(
                 status_code=400,
-                detail="Transición de estado no permitida para logística"
+                detail="Transición de estado no permitida para logística",
             )
 
     order.status = payload.status
@@ -472,6 +530,12 @@ def update_order_status(
 
     payment = get_order_payment(db, order.id)
     payment_info = payment_data(payment)
+    selection_info = get_monthly_selection_data(
+        db,
+        order.user_id,
+        order.month,
+        order.year,
+    )
 
     return {
         "message": "Estado de orden actualizado correctamente",
@@ -484,5 +548,6 @@ def update_order_status(
             "shipped_at": order.shipped_at,
             "delivered_at": order.delivered_at,
             **payment_info,
-        }
+            **selection_info,
+        },
     }
