@@ -480,3 +480,69 @@ async def subscription_webhook(
         "event": event_type,
         "subscription_id": subscription_id,
     }
+# =========================
+# SUBSCRIPTION STATUS
+# =========================
+@router.get("/status/{user_id}")
+def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    payment = (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.user_id == user_id)
+        .order_by(models.MembershipPayment.id.desc())
+        .first()
+    )
+
+    if not payment:
+        return {
+            "membership_active": user.membership_active,
+            "subscription_status": "NONE",
+            "next_billing_time": None,
+            "plan_level": user.membership_level,
+        }
+
+    subscription_id = payment.paypal_order_id
+
+    if not subscription_id:
+        return {
+            "membership_active": user.membership_active,
+            "subscription_status": payment.status,
+            "next_billing_time": None,
+            "plan_level": user.membership_level,
+        }
+
+    try:
+        token = get_token()
+
+        response = paypal_request(
+            "GET",
+            f"/v1/billing/subscriptions/{subscription_id}",
+            token,
+        )
+
+        next_billing_time = None
+
+        billing_info = response.get("billing_info", {})
+        if billing_info:
+            next_billing_time = billing_info.get("next_billing_time")
+
+        return {
+            "membership_active": user.membership_active,
+            "subscription_status": response.get("status"),
+            "next_billing_time": next_billing_time,
+            "plan_level": user.membership_level,
+            "paypal_subscription_id": subscription_id,
+        }
+
+    except Exception as e:
+        return {
+            "membership_active": user.membership_active,
+            "subscription_status": payment.status,
+            "next_billing_time": None,
+            "plan_level": user.membership_level,
+            "error": str(e),
+        }
