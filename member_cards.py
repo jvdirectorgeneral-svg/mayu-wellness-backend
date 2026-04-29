@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import uuid
-from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
 import os
@@ -12,6 +11,7 @@ import os
 router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
 
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
+CARD_VALIDITY_TEXT = "Indefinido"
 
 
 def generate_member_code(user_id: int, level: int):
@@ -45,9 +45,7 @@ def draw_spaced_text_with_shadow(
     for char in text:
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
-
         draw.text((current_x, y), char, fill=text_color, font=font)
-
         current_x += char_width + spacing
 
 
@@ -78,13 +76,12 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         models.MemberCard.user_id == user.id
     ).first()
 
-    expires_at = (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d")
     member_code = generate_member_code(user.id, user.membership_level)
 
     if existing:
         existing.level_snapshot = user.membership_level
         existing.status = "active" if user.membership_active else "inactive"
-        existing.expires_at = expires_at
+        existing.expires_at = CARD_VALIDITY_TEXT
         db.commit()
         db.refresh(existing)
 
@@ -107,7 +104,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         qr_token=str(uuid.uuid4()),
         level_snapshot=user.membership_level,
         status="active" if user.membership_active else "inactive",
-        expires_at=expires_at,
+        expires_at=CARD_VALIDITY_TEXT,
     )
 
     db.add(card)
@@ -144,7 +141,7 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
         "qr_token": card.qr_token,
         "level_snapshot": card.level_snapshot,
         "status": card.status,
-        "expires_at": card.expires_at,
+        "expires_at": card.expires_at or CARD_VALIDITY_TEXT,
     }
 
 
@@ -216,7 +213,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 <p style="font-size:20px; margin:14px 0;"><strong>Email:</strong> {user.email}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Nivel:</strong> {level_text}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Código:</strong> {card.member_code}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Válido hasta:</strong> {card.expires_at}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Válido hasta:</strong> {CARD_VALIDITY_TEXT}</p>
             </div>
         </body>
     </html>
@@ -320,7 +317,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {card.expires_at}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {CARD_VALIDITY_TEXT}", info_font, text_color, shadow_color)
     draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
