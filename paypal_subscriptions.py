@@ -22,9 +22,6 @@ router = APIRouter(
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
-# =========================
-# DB
-# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -33,9 +30,6 @@ def get_db():
         db.close()
 
 
-# =========================
-# CONFIG PAYPAL
-# =========================
 def get_paypal_mode():
     return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
 
@@ -67,9 +61,6 @@ def get_plan_id_by_level(level: int):
     return os.getenv(env_map.get(level, "") or "")
 
 
-# =========================
-# BUSINESS CONFIG
-# =========================
 MONTHLY_PRICES = {
     1: 38.50,
     2: 48.00,
@@ -83,9 +74,6 @@ PLAN_NAMES = {
 }
 
 
-# =========================
-# SCHEMAS
-# =========================
 class CreateSubscriptionRequest(BaseModel):
     user_id: int
     plan_level: int
@@ -103,9 +91,6 @@ class CreatePlanRequest(BaseModel):
     currency: str = "USD"
 
 
-# =========================
-# HELPERS
-# =========================
 def get_token():
     client_id = get_paypal_client_id()
     client_secret = get_paypal_client_secret()
@@ -178,7 +163,6 @@ def first_day_next_month_utc():
         year = now.year
         month = now.month + 1
 
-    # Ecuador 00h00 equivale aprox. 05h00 UTC
     return datetime(year, month, 1, 5, 0, 0, tzinfo=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
@@ -200,9 +184,6 @@ def safe_set(obj, attr, value):
         setattr(obj, attr, value)
 
 
-# =========================
-# DEBUG
-# =========================
 @router.get("/debug")
 def debug_subscriptions():
     return {
@@ -216,9 +197,6 @@ def debug_subscriptions():
     }
 
 
-# =========================
-# CREATE PRODUCT
-# =========================
 @router.post("/create-product")
 def create_product(payload: CreateProductRequest):
     token = get_token()
@@ -227,7 +205,7 @@ def create_product(payload: CreateProductRequest):
         "name": payload.name,
         "description": payload.description,
         "type": "SERVICE",
-        "category": "HEALTH_AND_BEAUTY",
+        "category": "SOFTWARE",
     }
 
     response = paypal_request("POST", "/v1/catalogs/products", token, body)
@@ -239,9 +217,6 @@ def create_product(payload: CreateProductRequest):
     }
 
 
-# =========================
-# CREATE PLAN
-# =========================
 @router.post("/create-plan")
 def create_plan(payload: CreatePlanRequest):
     if payload.plan_level not in MONTHLY_PRICES:
@@ -292,9 +267,6 @@ def create_plan(payload: CreatePlanRequest):
     }
 
 
-# =========================
-# CREATE SUBSCRIPTION
-# =========================
 @router.post("/create")
 def create_subscription(
     payload: CreateSubscriptionRequest,
@@ -319,7 +291,6 @@ def create_subscription(
         )
 
     token = get_token()
-
     start_time = payload.start_time or first_day_next_month_utc()
 
     body = {
@@ -382,9 +353,6 @@ def create_subscription(
     }
 
 
-# =========================
-# RETURN / CANCEL
-# =========================
 @router.get("/return", response_class=HTMLResponse)
 def subscription_return():
     return HTMLResponse(
@@ -421,9 +389,6 @@ def subscription_cancel():
     )
 
 
-# =========================
-# WEBHOOK
-# =========================
 @router.post("/webhook")
 async def subscription_webhook(
     request: Request,
