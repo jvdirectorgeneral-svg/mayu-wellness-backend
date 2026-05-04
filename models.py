@@ -35,11 +35,9 @@ class User(Base):
 
     status = Column(String, default="registered", nullable=False)
 
-    # Solo aplica al club / membresías
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False, nullable=False)
 
-    # Control general de acceso al sistema
     is_active = Column(Boolean, default=True, nullable=False)
 
     # member / ambassador / admin / supervisor / logistics / superadmin
@@ -47,7 +45,6 @@ class User(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Relaciones
     ambassador_profile = relationship(
         "Ambassador",
         back_populates="user",
@@ -294,7 +291,12 @@ class MonthlySelection(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "month", "year", name="uq_monthly_selection_user_cycle"),
+        UniqueConstraint(
+            "user_id",
+            "month",
+            "year",
+            name="uq_monthly_selection_user_cycle"
+        ),
     )
 
 
@@ -451,7 +453,7 @@ class Commission(Base):
 
 
 # =========================
-# 📦 ORDENES
+# 📦 ÓRDENES
 # =========================
 class Order(Base):
     __tablename__ = "orders"
@@ -479,6 +481,10 @@ class Order(Base):
     prepared_at = Column(DateTime, nullable=True)
     shipped_at = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
+
+    # NUEVO: agrupa órdenes que salen en el despacho semanal de logística.
+    # Ejemplo: todos los viernes se marca al enviar.
+    shipping_batch_date = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="orders")
 
