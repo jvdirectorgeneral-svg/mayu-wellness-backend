@@ -465,16 +465,10 @@ def verify(
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    if payment.status not in ["paid", "verified"]:
+    if payment.status not in ["paid", "verified", "created", "pending"]:
         raise HTTPException(
             status_code=400,
-            detail="Pago inválido. Solo se puede verificar un pago pagado o ya verificado.",
-        )
-
-    if payment.payment_type == "subscription":
-        raise HTTPException(
-            status_code=400,
-            detail="Este pago es de suscripción mensual. No genera orden directa de logística.",
+            detail="Pago inválido. Solo se puede verificar un pago pagado, creado, pendiente o ya verificado.",
         )
 
     user = db.query(models.User).filter(models.User.id == payment.user_id).first()
@@ -491,6 +485,9 @@ def verify(
     payment.admin_verified_at = now
     payment.admin_verified_by = current_user.id
 
+    if not payment.paid_at:
+        payment.paid_at = now
+
     order = get_or_create_order_for_payment(db, user, payment)
 
     order.status = "approved_for_logistics"
@@ -506,6 +503,7 @@ def verify(
         "message": "Pago verificado y orden lista para logística",
         "payment_id": payment.id,
         "payment_status": payment.status,
+        "payment_type": payment.payment_type,
         "order_id": order.id,
         "order_status": order.status,
         "visible_in_logistics": True,
