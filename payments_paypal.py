@@ -67,23 +67,13 @@ def require_admin(user):
         raise HTTPException(status_code=403, detail="Acceso solo admin")
 
 
-def generate_order_code(user_id, month, year):
+def generate_order_code(user_id: int, month: int, year: int):
     return f"MWC-{year}{month:02d}-U{user_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
 
-@router.get("/debug-config")
-def debug_config():
-    client_id = get_paypal_client_id()
-    client_secret = get_paypal_client_secret()
-
-    return {
-        "paypal_mode": get_paypal_mode(),
-        "paypal_base_url": get_base_url(),
-        "has_client_id": bool(client_id),
-        "has_client_secret": bool(client_secret),
-        "client_id_prefix": client_id[:12] if client_id else None,
-        "client_secret_length": len(client_secret) if client_secret else 0,
-    }
+def safe_set(obj, attr, value):
+    if hasattr(obj, attr):
+        setattr(obj, attr, value)
 
 
 def get_token():
@@ -121,11 +111,6 @@ def get_token():
             status_code=500,
             detail=f"Error obteniendo token PayPal: HTTP Error {e.code}: {error}",
         )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo token PayPal: {str(e)}",
-        )
 
 
 def paypal_request(method, path, token, body=None):
@@ -152,21 +137,138 @@ def paypal_request(method, path, token, body=None):
         )
 
 
+def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
+    return (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+
+def get_or_create_order_for_payment(
+    db: Session,
+    user: models.User,
+    payment: models.MembershipPayment,
+):
+    now = datetime.utcnow()
+    month = now.month
+    year = now.year
+
+    if payment.order_id:
+        order = db.query(models.Order).filter(models.Order.id == payment.order_id).first()
+        if order:
+            return order
+
+    existing_order = (
+        db.query(models.Order)
+        .filter(
+            models.Order.user_id == user.id,
+            models.Order.month == month,
+            models.Order.year == year,
+        )
+        .first()
+    )
+
+    if existing_order:
+        payment.order_id = existing_order.id
+        return existing_order
+
+    monthly = get_monthly_selection(db, user.id, month, year)
+
+    if not monthly:
+        raise HTTPException(
+            status_code=400,
+            detail="No existe selección mensual para este socio. Primero debe activarse el plan y guardar el producto editable.",
+        )
+
+    if not monthly.items or len(monthly.items) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="La selección mensual no tiene productos. No se puede crear orden para logística.",
+        )
+
+    order = models.Order(
+        order_code=generate_order_code(user.id, month, year),
+        user_id=user.id,
+        month=month,
+        year=year,
+        membership_level_snapshot=user.membership_level,
+        user_status_snapshot="active" if user.membership_active else "inactive",
+        city_snapshot=user.city,
+        address_snapshot=user.address,
+        reference_snapshot=user.reference,
+        delivery_notes_snapshot=user.delivery_notes,
+        status="approved_for_logistics",
+        logistics_notes="✔ Pago verificado - listo para despacho",
+    )
+
+    safe_set(order, "shipping_batch_date", None)
+
+    db.add(order)
+    db.flush()
+
+    for item in monthly.items:
+        product = db.query(models.Product).filter(
+            models.Product.id == item.product_id
+        ).first()
+
+        if product:
+            order_item = models.OrderItem(
+                order_id=order.id,
+                product_id=product.id,
+                product_name_snapshot=product.name,
+                quantity=item.quantity,
+            )
+            db.add(order_item)
+
+    payment.order_id = order.id
+    return order
+
+
+@router.get("/debug-config")
+def debug_config():
+    client_id = get_paypal_client_id()
+    client_secret = get_paypal_client_secret()
+
+    return {
+        "paypal_mode": get_paypal_mode(),
+        "paypal_base_url": get_base_url(),
+        "has_client_id": bool(client_id),
+        "has_client_secret": bool(client_secret),
+        "client_id_prefix": client_id[:12] if client_id else None,
+        "client_secret_length": len(client_secret) if client_secret else 0,
+    }
+
+
 @router.get("")
 def list_payments(db: Session = Depends(get_db)):
-    payments = db.query(models.MembershipPayment).all()
+    payments = (
+        db.query(models.MembershipPayment)
+        .order_by(models.MembershipPayment.created_at.desc())
+        .all()
+    )
 
     return {
         "items": [
             {
                 "id": p.id,
                 "user_id": p.user_id,
+                "user_name": p.user.name if p.user else None,
                 "order_id": p.order_id,
-                "amount": p.amount,
-                "status": p.status,
+                "payment_type": p.payment_type,
+                "provider": p.provider,
                 "paypal_order_id": p.paypal_order_id,
+                "paypal_capture_id": p.paypal_capture_id,
+                "amount": p.amount,
+                "currency": p.currency,
+                "status": p.status,
                 "payer_email": p.payer_email,
                 "admin_verified": p.admin_verified,
+                "admin_verified_at": p.admin_verified_at,
                 "created_at": p.created_at,
                 "paid_at": p.paid_at,
             }
@@ -207,7 +309,8 @@ def create_order(
     payload: PayPalCreateOrderRequest,
     db: Session = Depends(get_db),
 ):
-    user = db.query(models.User).get(payload.user_id)
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -221,7 +324,7 @@ def create_order(
                     "currency_code": payload.currency,
                     "value": f"{payload.amount:.2f}",
                 },
-                "description": "Mayu Wellness Club - Membresía",
+                "description": "Mayu Wellness Club - Pago inicial de afiliación",
             }
         ],
         "application_context": {
@@ -235,7 +338,7 @@ def create_order(
     response = paypal_request("POST", "/v2/checkout/orders", token, body)
 
     payment = models.MembershipPayment(
-        user_id=payload.user_id,
+        user_id=user.id,
         order_id=payload.order_id,
         paypal_order_id=response["id"],
         amount=payload.amount,
@@ -293,6 +396,12 @@ def capture_payment_by_order_id(paypal_order_id: str, db: Session):
     payment.payer_email = payer_email
     payment.raw_payload = json.dumps(response)
 
+    if not payment.provider:
+        payment.provider = "paypal"
+
+    if not payment.payment_type:
+        payment.payment_type = "signup"
+
     db.commit()
     db.refresh(payment)
 
@@ -312,6 +421,7 @@ def capture(
         "status": payment.status,
         "paypal_capture_id": payment.paypal_capture_id,
         "payer_email": payment.payer_email,
+        "order_id": payment.order_id,
     }
 
 
@@ -348,83 +458,57 @@ def verify(
 ):
     require_admin(current_user)
 
-    payment = db.query(models.MembershipPayment).get(payment_id)
+    payment = db.query(models.MembershipPayment).filter(
+        models.MembershipPayment.id == payment_id
+    ).first()
 
-    if not payment or payment.status not in ["paid", "verified"]:
-        raise HTTPException(status_code=400, detail="Pago inválido")
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    user = db.query(models.User).get(payment.user_id)
+    if payment.status not in ["paid", "verified"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Pago inválido. Solo se puede verificar un pago pagado o ya verificado.",
+        )
+
+    if payment.payment_type == "subscription":
+        raise HTTPException(
+            status_code=400,
+            detail="Este pago es de suscripción mensual. No genera orden directa de logística.",
+        )
+
+    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     now = datetime.utcnow()
+
+    user.membership_active = True
 
     payment.status = "verified"
     payment.admin_verified = True
     payment.admin_verified_at = now
     payment.admin_verified_by = current_user.id
 
-    order = None
+    order = get_or_create_order_for_payment(db, user, payment)
 
-    if payment.order_id:
-        order = db.query(models.Order).get(payment.order_id)
-    else:
-        order = db.query(models.Order).filter_by(
-            user_id=user.id,
-            month=now.month,
-            year=now.year,
-        ).first()
-
-    if not order:
-        monthly = db.query(models.MonthlySelection).filter_by(
-            user_id=user.id,
-            month=now.month,
-            year=now.year,
-        ).first()
-
-        if not monthly or not monthly.items:
-            raise HTTPException(status_code=400, detail="No hay selección mensual")
-
-        order = models.Order(
-            order_code=generate_order_code(user.id, now.month, now.year),
-            user_id=user.id,
-            month=now.month,
-            year=now.year,
-            membership_level_snapshot=user.membership_level,
-            user_status_snapshot="active" if user.membership_active else "inactive",
-            city_snapshot=user.city,
-            address_snapshot=user.address,
-            reference_snapshot=user.reference,
-            delivery_notes_snapshot=user.delivery_notes,
-            status="approved_for_logistics",
-            logistics_notes="✔ Pago verificado - listo para despacho",
-        )
-
-        db.add(order)
-        db.flush()
-
-        for item in monthly.items:
-            db.add(
-                models.OrderItem(
-                    order_id=order.id,
-                    product_id=item.product_id,
-                    product_name_snapshot=item.product.name,
-                    quantity=item.quantity,
-                )
-            )
-
-        payment.order_id = order.id
-    else:
-        order.status = "approved_for_logistics"
-        order.logistics_notes = "✔ Pago verificado - listo para despacho"
+    order.status = "approved_for_logistics"
+    order.user_status_snapshot = "active" if user.membership_active else "inactive"
+    order.membership_level_snapshot = user.membership_level
+    order.logistics_notes = payload.verification_notes or "✔ Pago verificado - listo para despacho"
 
     db.commit()
+    db.refresh(payment)
+    db.refresh(order)
 
     return {
-        "message": "Pago verificado y orden lista",
+        "message": "Pago verificado y orden lista para logística",
         "payment_id": payment.id,
+        "payment_status": payment.status,
         "order_id": order.id,
         "order_status": order.status,
+        "visible_in_logistics": True,
     }
 
 
@@ -445,9 +529,10 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
                 paypal_order_id=order_id
             ).first()
 
-            if payment:
+            if payment and payment.status not in ["verified"]:
                 payment.status = "paid"
                 payment.paid_at = datetime.utcnow()
+                payment.raw_payload = json.dumps(event)
                 db.commit()
 
     return {"status": "ok"}
