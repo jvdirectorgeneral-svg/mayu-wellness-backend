@@ -26,16 +26,12 @@ class MonthlySelectionSaveRequest(BaseModel):
 # LÓGICA DE SELECCIÓN Y OPERACIÓN
 # =========================
 def is_edit_window_open():
-    day = datetime.now().day
-    return day >= 21 or day <= 5
+    return True
 
 
 def current_cycle_status():
     today = datetime.now()
     weekday = today.weekday()  # lunes=0, viernes=4, domingo=6
-
-    if is_edit_window_open():
-        return "editable"
 
     if weekday in [0, 1, 2, 3]:
         return "admin_review"
@@ -43,19 +39,19 @@ def current_cycle_status():
     if weekday == 4:
         return "weekly_shipping"
 
-    return "closed"
+    return "editable"
 
 
 def get_cycle_status_label():
     status = current_cycle_status()
 
     if status == "editable":
-        return "Ventana editable de producto"
+        return "Producto editable disponible"
     if status == "admin_review":
         return "Revisión administrativa de pagos y suscripciones"
     if status == "weekly_shipping":
         return "Despacho semanal de logística"
-    return "Ciclo cerrado / seguimiento interno"
+    return "Producto editable disponible"
 
 
 def get_fixed_products_by_level(level: int):
@@ -175,7 +171,7 @@ def init_monthly_selection(
             "status": existing.status,
             "cycle_status": current_cycle_status(),
             "cycle_status_label": get_cycle_status_label(),
-            "edit_window": "21 al 5 de cada mes",
+            "edit_window": "Disponible durante todo el mes",
             "admin_review_window": "lunes a jueves",
             "shipping_window": "viernes",
         }
@@ -200,7 +196,7 @@ def init_monthly_selection(
         "status": selection.status,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "21 al 5 de cada mes",
+        "edit_window": "Disponible durante todo el mes",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
     }
@@ -267,7 +263,7 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
         "products": products,
         "editable_product": editable_product,
         "available_editable_products": get_available_editable_products(),
-        "edit_window": "21 al 5 de cada mes",
+        "edit_window": "Disponible durante todo el mes",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
     }
@@ -287,13 +283,6 @@ def save_monthly_selection_items(
         raise HTTPException(status_code=404, detail="Selección no encontrada")
 
     editable_now = is_edit_window_open()
-
-    if not payload.force_save and not editable_now:
-        raise HTTPException(
-            status_code=400,
-            detail="La ventana de edición está cerrada. Solo se permite del 21 al 5.",
-        )
-
     selection.editable = editable_now
 
     db.query(models.MonthlySelectionItem).filter(
@@ -334,6 +323,7 @@ def save_monthly_selection_items(
         "editable": editable_now,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
+        "edit_window": "Disponible durante todo el mes",
         "shipping_window": "viernes",
     }
 
@@ -399,6 +389,7 @@ def get_user_monthly_selection_history(
                 )
             ) else "Procesado",
             "shippingWindow": "viernes",
+            "editWindow": "Disponible durante todo el mes",
         }
 
         is_upcoming_candidate = (
@@ -426,8 +417,8 @@ def get_cycle_info():
         "editable": is_edit_window_open(),
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "21 al 5 de cada mes",
+        "edit_window": "Disponible durante todo el mes",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        "business_rule": "Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
+        "business_rule": "El socio puede cambiar su producto editable durante todo el mes. Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
     }
