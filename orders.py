@@ -106,6 +106,16 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
     }
 
 
+def order_date_data(order):
+    return {
+        "created_at": order.created_at,
+        "prepared_at": order.prepared_at,
+        "shipped_at": order.shipped_at,
+        "delivered_at": order.delivered_at,
+        "shipping_batch_date": getattr(order, "shipping_batch_date", None),
+    }
+
+
 def require_team_access(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -246,8 +256,8 @@ def create_order_manual(
             "address_snapshot": new_order.address_snapshot,
             "reference_snapshot": new_order.reference_snapshot,
             "delivery_notes_snapshot": new_order.delivery_notes_snapshot,
-            "created_at": new_order.created_at,
             "admin_verified": False,
+            **order_date_data(new_order),
             **selection_info,
         },
     }
@@ -306,6 +316,7 @@ def approve_order_for_logistics(
             "order_code": order.order_code,
             "status": order.status,
             "logistics_notes": order.logistics_notes,
+            **order_date_data(order),
             **payment_info,
             **selection_info,
         },
@@ -377,11 +388,8 @@ def list_orders(
             "logistics_notes": order.logistics_notes,
             "month": order.month,
             "year": order.year,
-            "created_at": order.created_at,
-            "prepared_at": order.prepared_at,
-            "shipped_at": order.shipped_at,
-            "delivered_at": order.delivered_at,
             "items_count": len(order.items),
+            **order_date_data(order),
             **payment_info,
             **selection_info,
         })
@@ -440,10 +448,7 @@ def get_order_detail(
         "logistics_notes": order.logistics_notes,
         "month": order.month,
         "year": order.year,
-        "created_at": order.created_at,
-        "prepared_at": order.prepared_at,
-        "shipped_at": order.shipped_at,
-        "delivered_at": order.delivered_at,
+        **order_date_data(order),
         "items": [
             {
                 "id": item.id,
@@ -519,8 +524,12 @@ def update_order_status(
     if payload.status == "preparing" and order.prepared_at is None:
         order.prepared_at = now
 
-    if payload.status == "shipped" and order.shipped_at is None:
-        order.shipped_at = now
+    if payload.status == "shipped":
+        if order.shipped_at is None:
+            order.shipped_at = now
+
+        if getattr(order, "shipping_batch_date", None) is None:
+            order.shipping_batch_date = now
 
     if payload.status == "delivered" and order.delivered_at is None:
         order.delivered_at = now
@@ -544,9 +553,7 @@ def update_order_status(
             "order_code": order.order_code,
             "status": order.status,
             "logistics_notes": order.logistics_notes,
-            "prepared_at": order.prepared_at,
-            "shipped_at": order.shipped_at,
-            "delivered_at": order.delivered_at,
+            **order_date_data(order),
             **payment_info,
             **selection_info,
         },
