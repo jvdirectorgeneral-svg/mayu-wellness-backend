@@ -22,20 +22,40 @@ class MonthlySelectionSaveRequest(BaseModel):
     force_save: bool = False
 
 
+# =========================
+# LÓGICA DE SELECCIÓN Y OPERACIÓN
+# =========================
 def is_edit_window_open():
     day = datetime.now().day
     return day >= 21 or day <= 5
 
 
 def current_cycle_status():
-    day = datetime.now().day
-    if day >= 21 or day <= 5:
+    today = datetime.now()
+    weekday = today.weekday()  # lunes=0, viernes=4, domingo=6
+
+    if is_edit_window_open():
         return "editable"
-    if 6 <= day <= 8:
-        return "preparing"
-    if day in [9, 10]:
-        return "shipping"
+
+    if weekday in [0, 1, 2, 3]:
+        return "admin_review"
+
+    if weekday == 4:
+        return "weekly_shipping"
+
     return "closed"
+
+
+def get_cycle_status_label():
+    status = current_cycle_status()
+
+    if status == "editable":
+        return "Ventana editable de producto"
+    if status == "admin_review":
+        return "Revisión administrativa de pagos y suscripciones"
+    if status == "weekly_shipping":
+        return "Despacho semanal de logística"
+    return "Ciclo cerrado / seguimiento interno"
 
 
 def get_fixed_products_by_level(level: int):
@@ -154,6 +174,10 @@ def init_monthly_selection(
             "editable": editable_now,
             "status": existing.status,
             "cycle_status": current_cycle_status(),
+            "cycle_status_label": get_cycle_status_label(),
+            "edit_window": "21 al 5 de cada mes",
+            "admin_review_window": "lunes a jueves",
+            "shipping_window": "viernes",
         }
 
     selection = models.MonthlySelection(
@@ -175,6 +199,10 @@ def init_monthly_selection(
         "editable": editable_now,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
+        "cycle_status_label": get_cycle_status_label(),
+        "edit_window": "21 al 5 de cada mes",
+        "admin_review_window": "lunes a jueves",
+        "shipping_window": "viernes",
     }
 
 
@@ -235,9 +263,13 @@ def get_user_monthly_selection(user_id: int, db: Session = Depends(get_db)):
         "editable": editable_now,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
+        "cycle_status_label": get_cycle_status_label(),
         "products": products,
         "editable_product": editable_product,
         "available_editable_products": get_available_editable_products(),
+        "edit_window": "21 al 5 de cada mes",
+        "admin_review_window": "lunes a jueves",
+        "shipping_window": "viernes",
     }
 
 
@@ -301,6 +333,8 @@ def save_monthly_selection_items(
         "saved_products": saved_products,
         "editable": editable_now,
         "cycle_status": current_cycle_status(),
+        "cycle_status_label": get_cycle_status_label(),
+        "shipping_window": "viernes",
     }
 
 
@@ -357,13 +391,14 @@ def get_user_monthly_selection_history(
                 user.membership_level or 0
             ),
             "editableProduct": editable_product_name or "No seleccionado",
-            "status": "Próximo envío" if (
+            "status": "Pendiente para próximo despacho semanal" if (
                 selection.year > current_year
                 or (
                     selection.year == current_year
                     and selection.month >= current_month
                 )
-            ) else "Entregado",
+            ) else "Procesado",
+            "shippingWindow": "viernes",
         }
 
         is_upcoming_candidate = (
@@ -390,6 +425,9 @@ def get_cycle_info():
     return {
         "editable": is_edit_window_open(),
         "cycle_status": current_cycle_status(),
-        "edit_window": "21 al 5",
-        "shipping_window": "9 o 10 de cada mes",
+        "cycle_status_label": get_cycle_status_label(),
+        "edit_window": "21 al 5 de cada mes",
+        "admin_review_window": "lunes a jueves",
+        "shipping_window": "viernes",
+        "business_rule": "Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
     }
