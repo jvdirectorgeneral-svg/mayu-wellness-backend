@@ -408,7 +408,8 @@ async def subscription_webhook(
         return {"status": "ignored", "reason": "No subscription id"}
 
     payment = db.query(models.MembershipPayment).filter(
-        models.MembershipPayment.paypal_order_id == subscription_id
+        models.MembershipPayment.paypal_order_id == subscription_id,
+        models.MembershipPayment.payment_type == "subscription",
     ).first()
 
     user = None
@@ -421,6 +422,8 @@ async def subscription_webhook(
     if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
         if payment:
             payment.status = "subscription_active"
+            safe_set(payment, "admin_verified", True)
+            safe_set(payment, "admin_verified_at", datetime.utcnow())
             safe_set(payment, "raw_payload", json.dumps(event))
 
         if user:
@@ -441,6 +444,8 @@ async def subscription_webhook(
         if payment:
             payment.status = "subscription_paid"
             payment.paid_at = datetime.utcnow()
+            safe_set(payment, "admin_verified", True)
+            safe_set(payment, "admin_verified_at", datetime.utcnow())
             safe_set(payment, "raw_payload", json.dumps(event))
 
         if user:
@@ -480,9 +485,8 @@ async def subscription_webhook(
         "event": event_type,
         "subscription_id": subscription_id,
     }
-# =========================
-# SUBSCRIPTION STATUS
-# =========================
+
+
 @router.get("/status/{user_id}")
 def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -492,7 +496,10 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
 
     payment = (
         db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.user_id == user_id)
+        .filter(
+            models.MembershipPayment.user_id == user_id,
+            models.MembershipPayment.payment_type == "subscription",
+        )
         .order_by(models.MembershipPayment.id.desc())
         .first()
     )
@@ -501,8 +508,10 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
         return {
             "membership_active": user.membership_active,
             "subscription_status": "NONE",
+            "local_payment_status": "NONE",
             "next_billing_time": None,
             "plan_level": user.membership_level,
+            "paypal_subscription_id": None,
         }
 
     subscription_id = payment.paypal_order_id
@@ -511,8 +520,10 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
         return {
             "membership_active": user.membership_active,
             "subscription_status": payment.status,
+            "local_payment_status": payment.status,
             "next_billing_time": None,
             "plan_level": user.membership_level,
+            "paypal_subscription_id": None,
         }
 
     try:
@@ -524,25 +535,44 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
             token,
         )
 
-        next_billing_time = None
-
+        paypal_status = response.get("status")
         billing_info = response.get("billing_info", {})
-        if billing_info:
-            next_billing_time = billing_info.get("next_billing_time")
+        next_billing_time = billing_info.get("next_billing_time") if billing_info else None
+
+        if paypal_status == "ACTIVE":
+            payment.status = "subscription_active"
+            safe_set(payment, "admin_verified", True)
+            safe_set(payment, "admin_verified_at", datetime.utcnow())
+            user.membership_active = True
+            db.commit()
+
+        elif paypal_status in ["SUSPENDED", "CANCELLED", "EXPIRED"]:
+            payment.status = "subscription_inactive"
+            user.membership_active = False
+            db.commit()
 
         return {
             "membership_active": user.membership_active,
-            "subscription_status": response.get("status"),
+            "subscription_status": paypal_status,
+            "local_payment_status": payment.status,
             "next_billing_time": next_billing_time,
             "plan_level": user.membership_level,
             "paypal_subscription_id": subscription_id,
+            "payment_id": payment.id,
+            "admin_verified": payment.admin_verified,
+            "admin_verified_at": payment.admin_verified_at,
         }
 
     except Exception as e:
         return {
             "membership_active": user.membership_active,
             "subscription_status": payment.status,
+            "local_payment_status": payment.status,
             "next_billing_time": None,
             "plan_level": user.membership_level,
+            "paypal_subscription_id": subscription_id,
+            "payment_id": payment.id,
+            "admin_verified": payment.admin_verified,
+            "admin_verified_at": payment.admin_verified_at,
             "error": str(e),
         }
