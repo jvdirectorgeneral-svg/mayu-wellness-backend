@@ -11,6 +11,7 @@ from models import (
     Commission,
     MembershipPayment,
     Order,
+    OrderItem,
     MonthlySelection,
     MonthlySelectionItem,
     Product,
@@ -325,10 +326,17 @@ def verify_payment(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    now = datetime.utcnow()
+    month = now.month
+    year = now.year
+
     payment.status = "verified"
     payment.admin_verified = True
-    payment.admin_verified_at = datetime.utcnow()
+    payment.admin_verified_at = now
     payment.admin_verified_by = current_user.id
+
+    if not payment.paid_at:
+        payment.paid_at = now
 
     user.membership_active = True
     user.is_active = True
@@ -345,8 +353,81 @@ def verify_payment(
                 order.status = "approved_for_logistics"
                 order.logistics_notes = "✔ Pago verificado - listo para despacho"
 
+    if not order:
+        order = (
+            db.query(Order)
+            .filter(
+                Order.user_id == user.id,
+                Order.month == month,
+                Order.year == year,
+            )
+            .first()
+        )
+
+        if order:
+            payment.order_id = order.id
+
+    if not order:
+        selection = (
+            db.query(MonthlySelection)
+            .filter(
+                MonthlySelection.user_id == user.id,
+                MonthlySelection.month == month,
+                MonthlySelection.year == year,
+            )
+            .first()
+        )
+
+        if selection:
+            items = (
+                db.query(MonthlySelectionItem)
+                .filter(MonthlySelectionItem.monthly_selection_id == selection.id)
+                .all()
+            )
+
+            if items:
+                order = Order(
+                    order_code=f"MWC-{year}{month:02d}-U{user.id}-{now.strftime('%Y%m%d%H%M%S')}",
+                    user_id=user.id,
+                    month=month,
+                    year=year,
+                    membership_level_snapshot=user.membership_level,
+                    user_status_snapshot="active",
+                    city_snapshot=user.city,
+                    address_snapshot=user.address,
+                    reference_snapshot=user.reference,
+                    delivery_notes_snapshot=user.delivery_notes,
+                    status="approved_for_logistics",
+                    logistics_notes="✔ Pago verificado - listo para despacho",
+                )
+
+                db.add(order)
+                db.flush()
+
+                for item in items:
+                    product = db.query(Product).filter(Product.id == item.product_id).first()
+
+                    if product:
+                        order_item = OrderItem(
+                            order_id=order.id,
+                            product_id=product.id,
+                            product_name_snapshot=product.name,
+                            quantity=item.quantity,
+                        )
+                        db.add(order_item)
+
+                payment.order_id = order.id
+
+    if order:
+        order.user_status_snapshot = "active"
+        order.status = "approved_for_logistics"
+        order.logistics_notes = "✔ Pago verificado - listo para despacho"
+
     db.commit()
     db.refresh(payment)
+
+    if order:
+        db.refresh(order)
 
     return {
         "message": "Pago verificado, suscripción activa y orden liberada a logística",
