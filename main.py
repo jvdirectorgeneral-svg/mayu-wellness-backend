@@ -1,24 +1,47 @@
 from fastapi import FastAPI, Depends
+
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base
+
+# Routers existentes
+
 from users import router as users_router
+
 from products import router as products_router
+
 from plans import router as plans_router
+
 from plan_products import router as plan_products_router
+
 from plan_selection import router as plan_selection_router
+
 from monthly_selection import router as monthly_selection_router
+
 from plan_change import router as plan_change_router
+
 from member_cards import router as member_cards_router
+
 from ambassadors import router as ambassadors_router
+
 from commissions import router as commissions_router
+
 from admin_dashboard import router as admin_dashboard_router
+
 from supervisor_dashboard import router as supervisor_dashboard_router
+
 from orders import router as orders_router
+
 from payments_paypal import router as payments_paypal_router
+
 from paypal_subscriptions import router as paypal_subscriptions_router
 
+# 🔥 NUEVO SUPERADMIN
+
+from superadmin import router as superadmin_router
+
 from dependencies import get_current_user
+
 import models
 
 # =========================
