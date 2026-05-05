@@ -528,3 +528,49 @@ def get_pending_commissions(
             for c in commissions
         ]
     }
+from pydantic import BaseModel
+from auth import hash_password
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str
+
+
+@router.put("/users/{user_id}/reset-password")
+def admin_reset_user_password(
+    user_id: int,
+    payload: AdminResetPasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin solo puede resetear socios o embajadores",
+        )
+
+    if not payload.new_password or payload.new_password.strip() == "":
+        raise HTTPException(
+            status_code=400,
+            detail="La nueva contraseña es obligatoria",
+        )
+
+    user.password = hash_password(payload.new_password.strip())
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Contraseña reseteada correctamente",
+        "user_id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "role": user.role,
+    }
