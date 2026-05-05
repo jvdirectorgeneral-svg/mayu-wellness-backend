@@ -201,7 +201,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="La referencia es obligatoria")
 
     if not payload.delivery_notes.strip():
-        raise HTTPException(status_code=400, detail="Las notas de entrega son obligatorias")
+        raise HTTPException(status_code=400, detail="Los datos de facturación son obligatorios")
 
     existing_user = db.query(models.User).filter(
         models.User.email == email
@@ -389,10 +389,6 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     temporary_password = generate_temporary_password()
-    db_user.password = hash_password(temporary_password)
-
-    db.commit()
-    db.refresh(db_user)
 
     try:
         send_reset_email(db_user.email, temporary_password)
@@ -401,6 +397,11 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
             status_code=500,
             detail=f"No se pudo enviar el correo: {str(e)}",
         )
+
+    db_user.password = hash_password(temporary_password)
+
+    db.commit()
+    db.refresh(db_user)
 
     return {
         "message": "Se envió una contraseña temporal al correo registrado"
@@ -507,7 +508,6 @@ def list_staff(
     for u in users:
         ambassador_code = None
 
-        # 🔥 SOLO SI ES EMBAJADOR
         if u.role == "ambassador":
             ambassador = (
                 db.query(models.Ambassador)
@@ -530,7 +530,7 @@ def list_staff(
             "membership_active": u.membership_active,
             "is_active": getattr(u, "is_active", True),
             "created_at": u.created_at,
-            "ambassador_code": ambassador_code,  # 🔥 AQUÍ ESTÁ LA MAGIA
+            "ambassador_code": ambassador_code,
         })
 
     return {"items": items}
@@ -754,7 +754,7 @@ def update_any_user_status(
 
 
 # =========================
-# SUPERADMIN - ELIMINAR USUARIO
+# SUPERADMIN - ELIMINAR USUARIO SIMPLE
 # =========================
 @router.delete("/superadmin/users/{user_id}")
 def delete_user(
@@ -769,10 +769,100 @@ def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar usuarios del sistema Mayu Team",
+        )
+
     db.delete(user)
     db.commit()
 
     return {
         "message": "Usuario eliminado correctamente",
+        "user_id": user_id,
+    }
+
+
+# =========================
+# SUPERADMIN - ELIMINAR USUARIO COMPLETO
+# =========================
+@router.delete("/superadmin/users/{user_id}/full-delete")
+def delete_user_full(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar usuarios del sistema Mayu Team",
+        )
+
+    orders = db.query(models.Order).filter(models.Order.user_id == user_id).all()
+
+    for order in orders:
+        db.query(models.OrderItem).filter(
+            models.OrderItem.order_id == order.id
+        ).delete(synchronize_session=False)
+
+    db.query(models.Order).filter(
+        models.Order.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.MembershipPayment).filter(
+        models.MembershipPayment.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    selections = db.query(models.MonthlySelection).filter(
+        models.MonthlySelection.user_id == user_id
+    ).all()
+
+    for selection in selections:
+        db.query(models.MonthlySelectionItem).filter(
+            models.MonthlySelectionItem.monthly_selection_id == selection.id
+        ).delete(synchronize_session=False)
+
+    db.query(models.MonthlySelection).filter(
+        models.MonthlySelection.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.MemberCard).filter(
+        models.MemberCard.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.AmbassadorReferral).filter(
+        models.AmbassadorReferral.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    ambassador = db.query(models.Ambassador).filter(
+        models.Ambassador.user_id == user_id
+    ).first()
+
+    if ambassador:
+        db.query(models.AmbassadorReferral).filter(
+            models.AmbassadorReferral.ambassador_id == ambassador.id
+        ).delete(synchronize_session=False)
+
+        db.query(models.Commission).filter(
+            models.Commission.ambassador_id == ambassador.id
+        ).delete(synchronize_session=False)
+
+        db.query(models.Ambassador).filter(
+            models.Ambassador.id == ambassador.id
+        ).delete(synchronize_session=False)
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "message": "Usuario eliminado completamente",
         "user_id": user_id,
     }
