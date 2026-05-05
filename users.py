@@ -115,7 +115,7 @@ def send_reset_email(to_email: str, temporary_password: str):
     smtp_email = os.getenv("SMTP_EMAIL")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
     if not smtp_email or not smtp_password:
         raise Exception("Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor")
@@ -141,7 +141,8 @@ Equipo Mayu Wellness Club
 
     context = ssl.create_default_context()
 
-    with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+        server.starttls(context=context)
         server.login(smtp_email, smtp_password)
         server.send_message(msg)
 
