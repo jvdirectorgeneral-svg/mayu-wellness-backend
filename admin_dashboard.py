@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
+from pydantic import BaseModel
 
 from database import SessionLocal
 from dependencies import get_current_user
+from auth import hash_password
 from models import (
     User,
     Ambassador,
@@ -18,6 +20,14 @@ from models import (
 )
 
 router = APIRouter(prefix="/admin-dashboard", tags=["admin-dashboard"])
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str
+
+
+class AdminUpdatePhoneRequest(BaseModel):
+    phone: str
 
 
 def get_db():
@@ -288,6 +298,51 @@ def get_ambassadors(
     }
 
 
+@router.put("/users/{user_id}/phone")
+def admin_update_user_phone(
+    user_id: int,
+    payload: AdminUpdatePhoneRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin solo puede modificar teléfono de socios o embajadores",
+        )
+
+    clean_phone = payload.phone.strip()
+
+    if not clean_phone:
+        raise HTTPException(
+            status_code=400,
+            detail="El número de celular es obligatorio",
+        )
+
+    user.phone = clean_phone
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Teléfono actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "role": user.role,
+        },
+    }
+
+
 @router.get("/payments")
 def get_payments(
     db: Session = Depends(get_db),
@@ -528,12 +583,6 @@ def get_pending_commissions(
             for c in commissions
         ]
     }
-from pydantic import BaseModel
-from auth import hash_password
-
-
-class AdminResetPasswordRequest(BaseModel):
-    new_password: str
 
 
 @router.put("/users/{user_id}/reset-password")
