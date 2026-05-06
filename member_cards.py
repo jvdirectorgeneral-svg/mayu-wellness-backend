@@ -18,6 +18,10 @@ def generate_member_code(user_id: int, level: int):
     return f"MAYU-{level}-{user_id:06d}"
 
 
+def generate_ambassador_code(user_id: int):
+    return f"MAYU-AMB-{user_id:06d}"
+
+
 def draw_text_with_shadow(
     draw,
     position,
@@ -60,28 +64,72 @@ def get_spaced_text_width(draw, text, font, spacing=1):
     return total_width
 
 
+def get_user_card_type(user):
+    if user.role == "ambassador":
+        return "ambassador"
+    return "member"
+
+
+def get_card_level_snapshot(user):
+    if user.role == "ambassador":
+        return 9
+
+    if user.membership_level:
+        return user.membership_level
+
+    return None
+
+
+def get_card_status(user):
+    if user.role == "ambassador":
+        return "active" if user.is_active else "inactive"
+
+    return "active" if user.membership_active else "inactive"
+
+
+def get_card_code(user):
+    if user.role == "ambassador":
+        ambassador = getattr(user, "ambassador_profile", None)
+        if ambassador and ambassador.ambassador_code:
+            return ambassador.ambassador_code
+        return generate_ambassador_code(user.id)
+
+    return generate_member_code(user.id, user.membership_level)
+
+
 @router.post("/generate/{user_id}")
 def generate_member_card(user_id: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if not user.membership_level:
+    if user.role not in ["member", "ambassador"]:
         raise HTTPException(
             status_code=400,
-            detail="El usuario no tiene membresía asignada",
+            detail="Solo se puede generar tarjeta para socios o embajadores",
         )
+
+    if user.role == "member" and not user.membership_level:
+        raise HTTPException(
+            status_code=400,
+            detail="El socio no tiene membresía asignada",
+        )
+
+    level_snapshot = get_card_level_snapshot(user)
+    member_code = get_card_code(user)
+    card_status = get_card_status(user)
 
     existing = db.query(models.MemberCard).filter(
         models.MemberCard.user_id == user.id
     ).first()
 
-    member_code = generate_member_code(user.id, user.membership_level)
-
     if existing:
-        existing.level_snapshot = user.membership_level
-        existing.status = "active" if user.membership_active else "inactive"
+        existing.member_code = member_code
+        existing.level_snapshot = level_snapshot
+        existing.status = card_status
         existing.expires_at = CARD_VALIDITY_TEXT
+
         db.commit()
         db.refresh(existing)
 
@@ -95,6 +143,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
                 "level_snapshot": existing.level_snapshot,
                 "status": existing.status,
                 "expires_at": existing.expires_at,
+                "card_type": get_user_card_type(user),
             },
         }
 
@@ -102,8 +151,8 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         user_id=user.id,
         member_code=member_code,
         qr_token=str(uuid.uuid4()),
-        level_snapshot=user.membership_level,
-        status="active" if user.membership_active else "inactive",
+        level_snapshot=level_snapshot,
+        status=card_status,
         expires_at=CARD_VALIDITY_TEXT,
     )
 
@@ -121,6 +170,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
             "level_snapshot": card.level_snapshot,
             "status": card.status,
             "expires_at": card.expires_at,
+            "card_type": get_user_card_type(user),
         },
     }
 
@@ -134,6 +184,8 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
     if not card:
         raise HTTPException(status_code=404, detail="Tarjeta no encontrada")
 
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
     return {
         "id": card.id,
         "user_id": card.user_id,
@@ -142,6 +194,7 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
         "level_snapshot": card.level_snapshot,
         "status": card.status,
         "expires_at": card.expires_at or CARD_VALIDITY_TEXT,
+        "card_type": get_user_card_type(user) if user else "member",
     }
 
 
@@ -169,6 +222,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
         )
 
     user = db.query(models.User).filter(models.User.id == card.user_id).first()
+
     if not user:
         return HTMLResponse(
             content="""
@@ -185,15 +239,19 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
             status_code=404,
         )
 
-    status_text = "ACTIVA" if user.membership_active else "INACTIVA"
-    status_color = "#22c55e" if user.membership_active else "#ef4444"
+    if user.role == "ambassador":
+        status_text = "EMBAJADOR ACTIVO" if user.is_active else "EMBAJADOR INACTIVO"
+        level_text = "Embajador Mayu Wellness Club"
+    else:
+        status_text = "ACTIVA" if user.membership_active else "INACTIVA"
+        level_map = {
+            1: "Nivel 1 - Cobre",
+            2: "Nivel 2 - Plata",
+            3: "Nivel 3 - Oro",
+        }
+        level_text = level_map.get(user.membership_level, "Sin nivel")
 
-    level_map = {
-        1: "Nivel 1 - Cobre",
-        2: "Nivel 2 - Plata",
-        3: "Nivel 3 - Oro",
-    }
-    level_text = level_map.get(user.membership_level, "Sin nivel")
+    status_color = "#22c55e" if card.status == "active" else "#ef4444"
 
     html_content = f"""
     <html>
@@ -211,7 +269,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 </div>
                 <p style="font-size:20px; margin:14px 0;"><strong>Nombre:</strong> {user.name}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Email:</strong> {user.email}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Nivel:</strong> {level_text}</p>
+                <p style="font-size:20px; margin:14px 0;"><strong>Tipo:</strong> {level_text}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Código:</strong> {card.member_code}</p>
                 <p style="font-size:20px; margin:14px 0;"><strong>Válido hasta:</strong> {CARD_VALIDITY_TEXT}</p>
             </div>
@@ -232,13 +290,18 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Tarjeta no encontrada")
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     width, height = 950, 560
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    if card.level_snapshot == 1:
+    if user.role == "ambassador":
+        level_text = "Embajador Mayu Wellness Club"
+        bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
+        accent_color = (255, 236, 170)
+    elif card.level_snapshot == 1:
         level_text = "Nivel 1 - Cobre"
         bg_path = os.path.join(base_dir, "assets", "card_cobre.jpg")
         accent_color = (236, 210, 190)
@@ -262,11 +325,12 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             1: (176, 111, 79),
             2: (205, 210, 214),
             3: (212, 175, 55),
+            9: (212, 175, 55),
         }
         image = Image.new(
             "RGB",
             (width, height),
-            fallback_colors.get(card.level_snapshot, (220, 220, 220)),
+            fallback_colors.get(card.level_snapshot, (212, 175, 55)),
         )
 
     draw = ImageDraw.Draw(image)
@@ -288,6 +352,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     )
 
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+
     if os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert("RGBA")
