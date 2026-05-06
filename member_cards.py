@@ -18,8 +18,8 @@ def generate_member_code(user_id: int, level: int):
     return f"MAYU-{level}-{user_id:06d}"
 
 
-def generate_ambassador_code(user_id: int):
-    return f"MAYU-AMB-{user_id:06d}"
+def generate_ambassador_code(ambassador_id: int):
+    return f"EMB-{ambassador_id:06d}"
 
 
 def draw_text_with_shadow(
@@ -55,18 +55,28 @@ def draw_spaced_text_with_shadow(
 
 def get_spaced_text_width(draw, text, font, spacing=1):
     total_width = 0
+
     for i, char in enumerate(text):
         bbox = draw.textbbox((0, 0), char, font=font)
         char_width = bbox[2] - bbox[0]
         total_width += char_width
+
         if i < len(text) - 1:
             total_width += spacing
+
     return total_width
 
 
+def get_ambassador_by_user(db: Session, user_id: int):
+    return db.query(models.Ambassador).filter(
+        models.Ambassador.user_id == user_id
+    ).first()
+
+
 def get_user_card_type(user):
-    if user.role == "ambassador":
+    if user and user.role == "ambassador":
         return "ambassador"
+
     return "member"
 
 
@@ -74,27 +84,81 @@ def get_card_level_snapshot(user):
     if user.role == "ambassador":
         return 9
 
-    if user.membership_level:
-        return user.membership_level
-
-    return None
+    return user.membership_level
 
 
 def get_card_status(user):
     if user.role == "ambassador":
-        return "active" if user.is_active else "inactive"
+        return "active" if getattr(user, "is_active", True) else "inactive"
 
     return "active" if user.membership_active else "inactive"
 
 
-def get_card_code(user):
+def get_card_code(db: Session, user):
     if user.role == "ambassador":
-        ambassador = getattr(user, "ambassador_profile", None)
-        if ambassador and ambassador.ambassador_code:
-            return ambassador.ambassador_code
-        return generate_ambassador_code(user.id)
+        ambassador = get_ambassador_by_user(db, user.id)
+
+        if ambassador:
+            correct_code = generate_ambassador_code(ambassador.id)
+
+            if ambassador.ambassador_code != correct_code:
+                ambassador.ambassador_code = correct_code
+                db.commit()
+                db.refresh(ambassador)
+
+            return correct_code
+
+        return f"EMB-{user.id:06d}"
 
     return generate_member_code(user.id, user.membership_level)
+
+
+def get_card_visual_data(db: Session, user, card):
+    if user.role == "ambassador":
+        ambassador = get_ambassador_by_user(db, user.id)
+        ambassador_id = ambassador.id if ambassador else user.id
+
+        return {
+            "card_type": "ambassador",
+            "display_name": user.name,
+            "level_text": "Embajador Mayu",
+            "member_code": generate_ambassador_code(ambassador_id),
+            "bg_file": "card_oro.jpg",
+            "fallback_color": (0, 120, 110),
+            "accent_color": (255, 236, 170),
+        }
+
+    if card.level_snapshot == 1:
+        return {
+            "card_type": "member",
+            "display_name": user.name,
+            "level_text": "Nivel 1 - Cobre",
+            "member_code": card.member_code,
+            "bg_file": "card_cobre.jpg",
+            "fallback_color": (176, 111, 79),
+            "accent_color": (236, 210, 190),
+        }
+
+    if card.level_snapshot == 2:
+        return {
+            "card_type": "member",
+            "display_name": user.name,
+            "level_text": "Nivel 2 - Plata",
+            "member_code": card.member_code,
+            "bg_file": "card_plata.jpg",
+            "fallback_color": (205, 210, 214),
+            "accent_color": (245, 245, 245),
+        }
+
+    return {
+        "card_type": "member",
+        "display_name": user.name,
+        "level_text": "Nivel 3 - Oro",
+        "member_code": card.member_code,
+        "bg_file": "card_oro.jpg",
+        "fallback_color": (212, 175, 55),
+        "accent_color": (255, 236, 170),
+    }
 
 
 @router.post("/generate/{user_id}")
@@ -117,7 +181,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
         )
 
     level_snapshot = get_card_level_snapshot(user)
-    member_code = get_card_code(user)
+    member_code = get_card_code(db, user)
     card_status = get_card_status(user)
 
     existing = db.query(models.MemberCard).filter(
@@ -186,6 +250,17 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
+    if user and user.role == "ambassador":
+        correct_code = get_card_code(db, user)
+
+        if card.member_code != correct_code or card.level_snapshot != 9:
+            card.member_code = correct_code
+            card.level_snapshot = 9
+            card.status = get_card_status(user)
+            card.expires_at = CARD_VALIDITY_TEXT
+            db.commit()
+            db.refresh(card)
+
     return {
         "id": card.id,
         "user_id": card.user_id,
@@ -242,6 +317,14 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     if user.role == "ambassador":
         status_text = "EMBAJADOR ACTIVO" if user.is_active else "EMBAJADOR INACTIVO"
         level_text = "Embajador Mayu Wellness Club"
+        correct_code = get_card_code(db, user)
+
+        if card.member_code != correct_code or card.level_snapshot != 9:
+            card.member_code = correct_code
+            card.level_snapshot = 9
+            card.status = get_card_status(user)
+            db.commit()
+            db.refresh(card)
     else:
         status_text = "ACTIVA" if user.membership_active else "INACTIVA"
         level_map = {
@@ -294,25 +377,25 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    if user.role == "ambassador":
+        correct_code = get_card_code(db, user)
+
+        if card.member_code != correct_code or card.level_snapshot != 9:
+            card.member_code = correct_code
+            card.level_snapshot = 9
+            card.status = get_card_status(user)
+            card.expires_at = CARD_VALIDITY_TEXT
+            db.commit()
+            db.refresh(card)
+
+    visual = get_card_visual_data(db, user, card)
+
     width, height = 950, 560
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    if user.role == "ambassador":
-        level_text = "Embajador Mayu Wellness Club"
-        bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
-        accent_color = (255, 236, 170)
-    elif card.level_snapshot == 1:
-        level_text = "Nivel 1 - Cobre"
-        bg_path = os.path.join(base_dir, "assets", "card_cobre.jpg")
-        accent_color = (236, 210, 190)
-    elif card.level_snapshot == 2:
-        level_text = "Nivel 2 - Plata"
-        bg_path = os.path.join(base_dir, "assets", "card_plata.jpg")
-        accent_color = (245, 245, 245)
-    else:
-        level_text = "Nivel 3 - Oro"
-        bg_path = os.path.join(base_dir, "assets", "card_oro.jpg")
-        accent_color = (255, 236, 170)
+    bg_path = os.path.join(base_dir, "assets", visual["bg_file"])
+    accent_color = visual["accent_color"]
+    fallback_color = visual["fallback_color"]
 
     text_color = (255, 255, 255)
     shadow_color = (0, 0, 0)
@@ -321,17 +404,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         image = Image.open(bg_path).convert("RGB")
         image = image.resize((width, height))
     else:
-        fallback_colors = {
-            1: (176, 111, 79),
-            2: (205, 210, 214),
-            3: (212, 175, 55),
-            9: (212, 175, 55),
-        }
-        image = Image.new(
-            "RGB",
-            (width, height),
-            fallback_colors.get(card.level_snapshot, (212, 175, 55)),
-        )
+        image = Image.new("RGB", (width, height), fallback_color)
 
     draw = ImageDraw.Draw(image)
 
@@ -379,11 +452,50 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         shadow_color=shadow_color,
     )
 
-    draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 355), level_text, info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 400), f"Código: {card.member_code}", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {CARD_VALIDITY_TEXT}", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(
+        draw,
+        (60, 305),
+        visual["display_name"],
+        name_font,
+        text_color,
+        shadow_color,
+    )
+
+    draw_text_with_shadow(
+        draw,
+        (60, 355),
+        visual["level_text"],
+        info_font,
+        text_color,
+        shadow_color,
+    )
+
+    draw_text_with_shadow(
+        draw,
+        (60, 400),
+        f"Código: {visual['member_code']}",
+        info_font,
+        text_color,
+        shadow_color,
+    )
+
+    draw_text_with_shadow(
+        draw,
+        (60, 440),
+        f"Válido hasta: {CARD_VALIDITY_TEXT}",
+        info_font,
+        text_color,
+        shadow_color,
+    )
+
+    draw_text_with_shadow(
+        draw,
+        (60, 480),
+        f"Estado: {card.status}",
+        info_font,
+        text_color,
+        shadow_color,
+    )
 
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     qr = qrcode.make(validation_url)
