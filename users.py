@@ -796,74 +796,167 @@ def delete_user_full(
 ):
     require_superadmin(current_user)
 
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
-        raise HTTPException(
-            status_code=403,
-            detail="No puedes eliminar usuarios del sistema Mayu Team",
-        )
-
-    orders = db.query(models.Order).filter(models.Order.user_id == user_id).all()
-
-    for order in orders:
-        db.query(models.OrderItem).filter(
-            models.OrderItem.order_id == order.id
-        ).delete(synchronize_session=False)
-
-    db.query(models.Order).filter(
-        models.Order.user_id == user_id
-    ).delete(synchronize_session=False)
-
-    db.query(models.MembershipPayment).filter(
-        models.MembershipPayment.user_id == user_id
-    ).delete(synchronize_session=False)
-
-    selections = db.query(models.MonthlySelection).filter(
-        models.MonthlySelection.user_id == user_id
-    ).all()
-
-    for selection in selections:
-        db.query(models.MonthlySelectionItem).filter(
-            models.MonthlySelectionItem.monthly_selection_id == selection.id
-        ).delete(synchronize_session=False)
-
-    db.query(models.MonthlySelection).filter(
-        models.MonthlySelection.user_id == user_id
-    ).delete(synchronize_session=False)
-
-    db.query(models.MemberCard).filter(
-        models.MemberCard.user_id == user_id
-    ).delete(synchronize_session=False)
-
-    db.query(models.AmbassadorReferral).filter(
-        models.AmbassadorReferral.user_id == user_id
-    ).delete(synchronize_session=False)
-
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.user_id == user_id
+    user = db.query(models.User).filter(
+        models.User.id == user_id
     ).first()
 
-    if ambassador:
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
+
+    # =========================================
+    # PROTEGER STAFF INTERNO
+    # =========================================
+    if user.role in [
+        "admin",
+        "superadmin",
+        "supervisor",
+        "logistics",
+    ]:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar usuarios internos del sistema",
+        )
+
+    try:
+
+        # =========================================
+        # ORDERS
+        # =========================================
+        orders = db.query(models.Order).filter(
+            models.Order.user_id == user_id
+        ).all()
+
+        for order in orders:
+            db.query(models.OrderItem).filter(
+                models.OrderItem.order_id == order.id
+            ).delete(synchronize_session=False)
+
+        db.query(models.Order).filter(
+            models.Order.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # =========================================
+        # MEMBERSHIP PAYMENTS
+        # =========================================
+        db.query(models.MembershipPayment).filter(
+            models.MembershipPayment.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # =========================================
+        # LIMPIAR admin_verified_by
+        # =========================================
+        db.query(models.MembershipPayment).filter(
+            models.MembershipPayment.admin_verified_by == user_id
+        ).update(
+            {
+                "admin_verified_by": None
+            },
+            synchronize_session=False,
+        )
+
+        # =========================================
+        # MONTHLY SELECTIONS
+        # =========================================
+        selections = db.query(models.MonthlySelection).filter(
+            models.MonthlySelection.user_id == user_id
+        ).all()
+
+        for selection in selections:
+            db.query(models.MonthlySelectionItem).filter(
+                models.MonthlySelectionItem.monthly_selection_id == selection.id
+            ).delete(synchronize_session=False)
+
+        db.query(models.MonthlySelection).filter(
+            models.MonthlySelection.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # =========================================
+        # USER PLAN SELECTIONS
+        # =========================================
+        try:
+            selections = db.query(models.UserPlanSelection).filter(
+                models.UserPlanSelection.user_id == user_id
+            ).all()
+
+            for selection in selections:
+                db.query(models.UserPlanSelectionItem).filter(
+                    models.UserPlanSelectionItem.selection_id == selection.id
+                ).delete(synchronize_session=False)
+
+            db.query(models.UserPlanSelection).filter(
+                models.UserPlanSelection.user_id == user_id
+            ).delete(synchronize_session=False)
+
+        except Exception:
+            pass
+
+        # =========================================
+        # MEMBER CARDS
+        # =========================================
+        db.query(models.MemberCard).filter(
+            models.MemberCard.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # =========================================
+        # REFERIDOS DONDE ES USUARIO
+        # =========================================
         db.query(models.AmbassadorReferral).filter(
-            models.AmbassadorReferral.ambassador_id == ambassador.id
+            models.AmbassadorReferral.user_id == user_id
         ).delete(synchronize_session=False)
 
-        db.query(models.Commission).filter(
-            models.Commission.ambassador_id == ambassador.id
-        ).delete(synchronize_session=False)
+        # =========================================
+        # SI ES EMBAJADOR
+        # =========================================
+        ambassador = db.query(models.Ambassador).filter(
+            models.Ambassador.user_id == user_id
+        ).first()
 
-        db.query(models.Ambassador).filter(
-            models.Ambassador.id == ambassador.id
-        ).delete(synchronize_session=False)
+        if ambassador:
 
-    db.delete(user)
-    db.commit()
+            # -------------------------------------
+            # REFERIDOS DEL EMBAJADOR
+            # -------------------------------------
+            db.query(models.AmbassadorReferral).filter(
+                models.AmbassadorReferral.ambassador_id == ambassador.id
+            ).delete(synchronize_session=False)
 
-    return {
-        "message": "Usuario eliminado completamente",
-        "user_id": user_id,
-    }
+            # -------------------------------------
+            # COMISIONES
+            # -------------------------------------
+            db.query(models.Commission).filter(
+                models.Commission.ambassador_id == ambassador.id
+            ).delete(synchronize_session=False)
+
+            # -------------------------------------
+            # ELIMINAR EMBAJADOR
+            # -------------------------------------
+            db.query(models.Ambassador).filter(
+                models.Ambassador.id == ambassador.id
+            ).delete(synchronize_session=False)
+
+        # =========================================
+        # ELIMINAR USER FINAL
+        # =========================================
+        db.delete(user)
+
+        # =========================================
+        # COMMIT
+        # =========================================
+        db.commit()
+
+        return {
+            "message": "Usuario eliminado completamente",
+            "user_id": user_id,
+        }
+
+    except Exception as e:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error eliminando usuario: {str(e)}",
+        )
