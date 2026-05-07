@@ -113,6 +113,59 @@ def get_card_code(db: Session, user):
     return generate_member_code(user.id, user.membership_level)
 
 
+def get_or_create_card(db: Session, user_id: int):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role not in ["member", "ambassador"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo socios o embajadores pueden tener tarjeta",
+        )
+
+    if user.role == "member" and not user.membership_level:
+        raise HTTPException(
+            status_code=400,
+            detail="El socio no tiene membresía asignada",
+        )
+
+    level_snapshot = get_card_level_snapshot(user)
+    member_code = get_card_code(db, user)
+    card_status = get_card_status(user)
+
+    card = db.query(models.MemberCard).filter(
+        models.MemberCard.user_id == user.id
+    ).first()
+
+    if card:
+        card.member_code = member_code
+        card.level_snapshot = level_snapshot
+        card.status = card_status
+        card.expires_at = CARD_VALIDITY_TEXT
+
+        db.commit()
+        db.refresh(card)
+
+        return user, card
+
+    card = models.MemberCard(
+        user_id=user.id,
+        member_code=member_code,
+        qr_token=str(uuid.uuid4()),
+        level_snapshot=level_snapshot,
+        status=card_status,
+        expires_at=CARD_VALIDITY_TEXT,
+    )
+
+    db.add(card)
+    db.commit()
+    db.refresh(card)
+
+    return user, card
+
+
 def get_card_visual_data(db: Session, user, card):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id)
@@ -163,66 +216,7 @@ def get_card_visual_data(db: Session, user, card):
 
 @router.post("/generate/{user_id}")
 def generate_member_card(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if user.role not in ["member", "ambassador"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se puede generar tarjeta para socios o embajadores",
-        )
-
-    if user.role == "member" and not user.membership_level:
-        raise HTTPException(
-            status_code=400,
-            detail="El socio no tiene membresía asignada",
-        )
-
-    level_snapshot = get_card_level_snapshot(user)
-    member_code = get_card_code(db, user)
-    card_status = get_card_status(user)
-
-    existing = db.query(models.MemberCard).filter(
-        models.MemberCard.user_id == user.id
-    ).first()
-
-    if existing:
-        existing.member_code = member_code
-        existing.level_snapshot = level_snapshot
-        existing.status = card_status
-        existing.expires_at = CARD_VALIDITY_TEXT
-
-        db.commit()
-        db.refresh(existing)
-
-        return {
-            "message": "Tarjeta actualizada correctamente",
-            "card": {
-                "id": existing.id,
-                "user_id": existing.user_id,
-                "member_code": existing.member_code,
-                "qr_token": existing.qr_token,
-                "level_snapshot": existing.level_snapshot,
-                "status": existing.status,
-                "expires_at": existing.expires_at,
-                "card_type": get_user_card_type(user),
-            },
-        }
-
-    card = models.MemberCard(
-        user_id=user.id,
-        member_code=member_code,
-        qr_token=str(uuid.uuid4()),
-        level_snapshot=level_snapshot,
-        status=card_status,
-        expires_at=CARD_VALIDITY_TEXT,
-    )
-
-    db.add(card)
-    db.commit()
-    db.refresh(card)
+    user, card = get_or_create_card(db, user_id)
 
     return {
         "message": "Tarjeta generada correctamente",
@@ -241,25 +235,7 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
 
 @router.get("/user/{user_id}")
 def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
-    card = db.query(models.MemberCard).filter(
-        models.MemberCard.user_id == user_id
-    ).first()
-
-    if not card:
-        raise HTTPException(status_code=404, detail="Tarjeta no encontrada")
-
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-
-    if user and user.role == "ambassador":
-        correct_code = get_card_code(db, user)
-
-        if card.member_code != correct_code or card.level_snapshot != 9:
-            card.member_code = correct_code
-            card.level_snapshot = 9
-            card.status = get_card_status(user)
-            card.expires_at = CARD_VALIDITY_TEXT
-            db.commit()
-            db.refresh(card)
+    user, card = get_or_create_card(db, user_id)
 
     return {
         "id": card.id,
@@ -365,28 +341,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
 
 @router.get("/user/{user_id}/image")
 def generate_card_image(user_id: int, db: Session = Depends(get_db)):
-    card = db.query(models.MemberCard).filter(
-        models.MemberCard.user_id == user_id
-    ).first()
-
-    if not card:
-        raise HTTPException(status_code=404, detail="Tarjeta no encontrada")
-
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if user.role == "ambassador":
-        correct_code = get_card_code(db, user)
-
-        if card.member_code != correct_code or card.level_snapshot != 9:
-            card.member_code = correct_code
-            card.level_snapshot = 9
-            card.status = get_card_status(user)
-            card.expires_at = CARD_VALIDITY_TEXT
-            db.commit()
-            db.refresh(card)
+    user, card = get_or_create_card(db, user_id)
 
     visual = get_card_visual_data(db, user, card)
 
