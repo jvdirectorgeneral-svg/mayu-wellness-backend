@@ -81,6 +81,17 @@ class UserStatusUpdate(BaseModel):
     is_active: bool
 
 
+class SuperAdminProfileUpdate(BaseModel):
+    name: str
+    email: EmailStr
+    phone: str
+    cedula: str
+
+
+class SuperAdminPasswordUpdate(BaseModel):
+    new_password: str
+
+
 # =========================
 # DB
 # =========================
@@ -148,6 +159,113 @@ Equipo Mayu Wellness Club
 
 
 # =========================
+# SUPERADMIN - MI PERFIL
+# =========================
+@router.get("/superadmin/me")
+def get_superadmin_profile(
+    current_user: models.User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "email": current_user.email,
+        "phone": current_user.phone,
+        "cedula": current_user.cedula,
+        "role": current_user.role,
+        "is_active": getattr(current_user, "is_active", True),
+    }
+
+
+@router.put("/superadmin/me")
+def update_superadmin_profile(
+    payload: SuperAdminProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    email = payload.email.strip().lower()
+    cedula = payload.cedula.strip()
+
+    existing_email = db.query(models.User).filter(
+        models.User.email == email,
+        models.User.id != user.id,
+    ).first()
+
+    if existing_email:
+        raise HTTPException(
+            status_code=400,
+            detail="El correo ya está registrado por otro usuario",
+        )
+
+    existing_cedula = db.query(models.User).filter(
+        models.User.cedula == cedula,
+        models.User.id != user.id,
+    ).first()
+
+    if existing_cedula:
+        raise HTTPException(
+            status_code=400,
+            detail="La cédula ya está registrada por otro usuario",
+        )
+
+    user.name = payload.name.strip()
+    user.email = email
+    user.phone = payload.phone.strip()
+    user.cedula = cedula
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Perfil superadmin actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "cedula": user.cedula,
+            "role": user.role,
+            "is_active": getattr(user, "is_active", True),
+        },
+    }
+
+
+@router.put("/superadmin/me/password")
+def update_superadmin_password(
+    payload: SuperAdminPasswordUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not payload.new_password or payload.new_password.strip() == "":
+        raise HTTPException(status_code=400, detail="La nueva contraseña es obligatoria")
+
+    user.password = hash_password(payload.new_password.strip())
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Contraseña superadmin actualizada correctamente",
+        "user_id": user.id,
+    }
+
+
+# =========================
 # USUARIOS GENERALES
 # =========================
 @router.get("/users")
@@ -204,16 +322,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     if not payload.delivery_notes.strip():
         raise HTTPException(status_code=400, detail="Los datos de facturación son obligatorios")
 
-    existing_user = db.query(models.User).filter(
-        models.User.email == email
-    ).first()
+    existing_user = db.query(models.User).filter(models.User.email == email).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
 
-    existing_cedula = db.query(models.User).filter(
-        models.User.cedula == cedula
-    ).first()
+    existing_cedula = db.query(models.User).filter(models.User.cedula == cedula).first()
 
     if existing_cedula:
         raise HTTPException(status_code=400, detail="La cédula ya está registrada")
@@ -323,9 +437,7 @@ def update_membership(
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
 
-    db_user = db.query(models.User).filter(
-        models.User.email == email
-    ).first()
+    db_user = db.query(models.User).filter(models.User.email == email).first()
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -336,10 +448,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     try:
         password_ok = verify_password(payload.password, db_user.password)
     except Exception:
-        raise HTTPException(
-            status_code=401,
-            detail="Contraseña inválida o hash dañado",
-        )
+        raise HTTPException(status_code=401, detail="Contraseña inválida o hash dañado")
 
     if not password_ok:
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
@@ -379,9 +488,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     email = payload.email.strip().lower()
 
-    db_user = db.query(models.User).filter(
-        models.User.email == email
-    ).first()
+    db_user = db.query(models.User).filter(models.User.email == email).first()
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -394,19 +501,14 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     try:
         send_reset_email(db_user.email, temporary_password)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo enviar el correo: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"No se pudo enviar el correo: {str(e)}")
 
     db_user.password = hash_password(temporary_password)
 
     db.commit()
     db.refresh(db_user)
 
-    return {
-        "message": "Se envió una contraseña temporal al correo registrado"
-    }
+    return {"message": "Se envió una contraseña temporal al correo registrado"}
 
 
 # =========================
@@ -421,6 +523,7 @@ def create_staff(
     require_superadmin(current_user)
 
     allowed_roles = {"admin", "supervisor", "logistics"}
+
     if payload.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
@@ -510,11 +613,9 @@ def list_staff(
         ambassador_code = None
 
         if u.role == "ambassador":
-            ambassador = (
-                db.query(models.Ambassador)
-                .filter(models.Ambassador.user_id == u.id)
-                .first()
-            )
+            ambassador = db.query(models.Ambassador).filter(
+                models.Ambassador.user_id == u.id
+            ).first()
 
             if ambassador:
                 ambassador_code = ambassador.ambassador_code
@@ -550,6 +651,7 @@ def update_staff(
     require_superadmin(current_user)
 
     allowed_roles = {"admin", "supervisor", "logistics"}
+
     if payload.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
@@ -561,11 +663,8 @@ def update_staff(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role not in {"admin", "supervisor", "logistics", "superadmin"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se puede editar usuarios internos",
-        )
+    if user.role not in {"admin", "supervisor", "logistics"}:
+        raise HTTPException(status_code=400, detail="Solo se puede editar usuarios internos")
 
     existing_user = db.query(models.User).filter(
         models.User.email == payload.email.strip().lower(),
@@ -624,15 +723,16 @@ def reset_staff_password(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "superadmin", "ambassador", "member"}
+    allowed_roles = {"admin", "supervisor", "logistics", "ambassador", "member"}
 
     if user.role not in allowed_roles:
         raise HTTPException(
             status_code=400,
-            detail="No se puede resetear la contraseña de este usuario",
+            detail="No se puede resetear la contraseña de este usuario desde aquí",
         )
 
-    user.password = hash_password(payload.new_password)
+    user.password = hash_password(payload.new_password.strip())
+
     db.commit()
     db.refresh(user)
 
@@ -661,10 +761,17 @@ def reset_any_user_password(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    if user.role == "superadmin":
+        raise HTTPException(
+            status_code=403,
+            detail="La clave del superadmin se cambia desde /superadmin/me/password",
+        )
+
     if not payload.new_password or payload.new_password.strip() == "":
         raise HTTPException(status_code=400, detail="La nueva contraseña es obligatoria")
 
     user.password = hash_password(payload.new_password.strip())
+
     db.commit()
     db.refresh(user)
 
@@ -697,15 +804,19 @@ def update_staff_status(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "superadmin", "ambassador", "member"}
-
-    if user.role not in allowed_roles:
+    if user.role == "superadmin":
         raise HTTPException(
-            status_code=400,
-            detail="No se puede activar o desactivar este usuario",
+            status_code=403,
+            detail="No se puede desactivar el superadmin desde Control Maestro",
         )
 
+    allowed_roles = {"admin", "supervisor", "logistics", "ambassador", "member"}
+
+    if user.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail="No se puede activar o desactivar este usuario")
+
     user.is_active = payload.is_active
+
     db.commit()
     db.refresh(user)
 
@@ -738,7 +849,14 @@ def update_any_user_status(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    if user.role == "superadmin":
+        raise HTTPException(
+            status_code=403,
+            detail="No se puede desactivar el superadmin",
+        )
+
     user.is_active = payload.is_active
+
     db.commit()
     db.refresh(user)
 
@@ -796,70 +914,46 @@ def delete_user_full(
 ):
     require_superadmin(current_user)
 
-    user = db.query(models.User).filter(
-        models.User.id == user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    # =========================================
-    # PROTEGER STAFF INTERNO
-    # =========================================
-    if user.role in [
-        "admin",
-        "superadmin",
-        "supervisor",
-        "logistics",
-    ]:
+    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
         raise HTTPException(
             status_code=403,
             detail="No puedes eliminar usuarios internos del sistema",
         )
 
     try:
-
-        # =========================================
-        # ORDERS
-        # =========================================
-        orders = db.query(models.Order).filter(
-            models.Order.user_id == user_id
-        ).all()
+        orders = db.query(models.Order).filter(models.Order.user_id == user_id).all()
 
         for order in orders:
             db.query(models.OrderItem).filter(
                 models.OrderItem.order_id == order.id
             ).delete(synchronize_session=False)
 
+        db.query(models.MembershipPayment).filter(
+            models.MembershipPayment.order_id.in_(
+                db.query(models.Order.id).filter(models.Order.user_id == user_id)
+            )
+        ).delete(synchronize_session=False)
+
         db.query(models.Order).filter(
             models.Order.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================================
-        # MEMBERSHIP PAYMENTS
-        # =========================================
         db.query(models.MembershipPayment).filter(
             models.MembershipPayment.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================================
-        # LIMPIAR admin_verified_by
-        # =========================================
         db.query(models.MembershipPayment).filter(
             models.MembershipPayment.admin_verified_by == user_id
         ).update(
-            {
-                "admin_verified_by": None
-            },
+            {"admin_verified_by": None},
             synchronize_session=False,
         )
 
-        # =========================================
-        # MONTHLY SELECTIONS
-        # =========================================
         selections = db.query(models.MonthlySelection).filter(
             models.MonthlySelection.user_id == user_id
         ).all()
@@ -873,15 +967,12 @@ def delete_user_full(
             models.MonthlySelection.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================================
-        # USER PLAN SELECTIONS
-        # =========================================
         try:
-            selections = db.query(models.UserPlanSelection).filter(
+            selections_plan = db.query(models.UserPlanSelection).filter(
                 models.UserPlanSelection.user_id == user_id
             ).all()
 
-            for selection in selections:
+            for selection in selections_plan:
                 db.query(models.UserPlanSelectionItem).filter(
                     models.UserPlanSelectionItem.selection_id == selection.id
                 ).delete(synchronize_session=False)
@@ -889,62 +980,35 @@ def delete_user_full(
             db.query(models.UserPlanSelection).filter(
                 models.UserPlanSelection.user_id == user_id
             ).delete(synchronize_session=False)
-
         except Exception:
             pass
 
-        # =========================================
-        # MEMBER CARDS
-        # =========================================
         db.query(models.MemberCard).filter(
             models.MemberCard.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================================
-        # REFERIDOS DONDE ES USUARIO
-        # =========================================
         db.query(models.AmbassadorReferral).filter(
             models.AmbassadorReferral.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================================
-        # SI ES EMBAJADOR
-        # =========================================
         ambassador = db.query(models.Ambassador).filter(
             models.Ambassador.user_id == user_id
         ).first()
 
         if ambassador:
-
-            # -------------------------------------
-            # REFERIDOS DEL EMBAJADOR
-            # -------------------------------------
             db.query(models.AmbassadorReferral).filter(
                 models.AmbassadorReferral.ambassador_id == ambassador.id
             ).delete(synchronize_session=False)
 
-            # -------------------------------------
-            # COMISIONES
-            # -------------------------------------
             db.query(models.Commission).filter(
                 models.Commission.ambassador_id == ambassador.id
             ).delete(synchronize_session=False)
 
-            # -------------------------------------
-            # ELIMINAR EMBAJADOR
-            # -------------------------------------
             db.query(models.Ambassador).filter(
                 models.Ambassador.id == ambassador.id
             ).delete(synchronize_session=False)
 
-        # =========================================
-        # ELIMINAR USER FINAL
-        # =========================================
         db.delete(user)
-
-        # =========================================
-        # COMMIT
-        # =========================================
         db.commit()
 
         return {
@@ -953,13 +1017,16 @@ def delete_user_full(
         }
 
     except Exception as e:
-
         db.rollback()
-
         raise HTTPException(
             status_code=500,
             detail=f"Error eliminando usuario: {str(e)}",
         )
+
+
+# =========================
+# RECOVERY TEMPORAL
+# =========================
 @router.post("/recovery/reset-admin")
 def recovery_reset_admin(db: Session = Depends(get_db)):
     admin = db.query(models.User).filter(
