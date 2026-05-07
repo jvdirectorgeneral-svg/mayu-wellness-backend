@@ -960,3 +960,24 @@ def delete_user_full(
             status_code=500,
             detail=f"Error eliminando usuario: {str(e)}",
         )
+@router.post("/recovery/reset-admin")
+def recovery_reset_admin(db: Session = Depends(get_db)):
+    admin = db.query(models.User).filter(
+        models.User.email == "admin@mayu.com"
+    ).first()
+
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin no encontrado")
+
+    admin.password = hash_password("Mayu2026")
+    admin.role = "superadmin"
+    admin.is_active = True
+
+    db.commit()
+    db.refresh(admin)
+
+    return {
+        "message": "Admin recuperado",
+        "email": admin.email,
+        "password": "Mayu2026",
+    }
