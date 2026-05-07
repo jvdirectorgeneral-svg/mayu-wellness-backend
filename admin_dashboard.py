@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 from database import SessionLocal
 from dependencies import get_current_user
@@ -30,6 +31,23 @@ class AdminUpdatePhoneRequest(BaseModel):
     phone: str
 
 
+class AdminUpdateAmbassadorRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    cedula: Optional[str] = None
+    ambassador_code: Optional[str] = None
+    status: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    bank_name: Optional[str] = None
+    bank_account_type: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_account_holder: Optional[str] = None
+    bank_identification: Optional[str] = None
+    payment_notes: Optional[str] = None
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -50,6 +68,36 @@ def require_admin_or_superadmin(current_user: User):
             status_code=403,
             detail="Acceso solo para admin o superadmin",
         )
+
+
+def set_if_exists(obj, field: str, value):
+    if value is not None and hasattr(obj, field):
+        setattr(obj, field, value)
+
+
+def ambassador_to_dict(a: Ambassador):
+    user = a.user
+
+    return {
+        "id": a.id,
+        "user_id": a.user_id,
+        "name": user.name if user else None,
+        "email": user.email if user else None,
+        "phone": user.phone if user else None,
+        "cedula": user.cedula if user else None,
+        "code": a.ambassador_code,
+        "ambassador_code": a.ambassador_code,
+        "status": a.status,
+        "is_active": a.is_active,
+        "created_at": a.created_at,
+
+        "bank_name": getattr(a, "bank_name", None),
+        "bank_account_type": getattr(a, "bank_account_type", None),
+        "bank_account_number": getattr(a, "bank_account_number", None),
+        "bank_account_holder": getattr(a, "bank_account_holder", None),
+        "bank_identification": getattr(a, "bank_identification", None),
+        "payment_notes": getattr(a, "payment_notes", None),
+    }
 
 
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
@@ -280,21 +328,106 @@ def get_ambassadors(
     ambassadors = db.query(Ambassador).order_by(Ambassador.id.desc()).all()
 
     return {
-        "items": [
-            {
-                "id": a.id,
-                "user_id": a.user_id,
-                "name": a.user.name if a.user else None,
-                "email": a.user.email if a.user else None,
-                "phone": a.user.phone if a.user else None,
-                "code": a.ambassador_code,
-                "ambassador_code": a.ambassador_code,
-                "status": a.status,
-                "is_active": a.is_active,
-                "created_at": a.created_at,
-            }
-            for a in ambassadors
-        ]
+        "items": [ambassador_to_dict(a) for a in ambassadors]
+    }
+
+
+@router.put("/ambassadors/{ambassador_id}")
+def update_ambassador(
+    ambassador_id: int,
+    payload: AdminUpdateAmbassadorRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    ambassador = db.query(Ambassador).filter(
+        Ambassador.id == ambassador_id
+    ).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    user = db.query(User).filter(User.id == ambassador.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
+
+    if payload.email is not None:
+        clean_email = payload.email.strip().lower()
+
+        existing_email = db.query(User).filter(
+            User.email == clean_email,
+            User.id != user.id,
+        ).first()
+
+        if existing_email:
+            raise HTTPException(
+                status_code=400,
+                detail="El correo ya está registrado por otro usuario",
+            )
+
+        user.email = clean_email
+
+    if payload.cedula is not None:
+        clean_cedula = payload.cedula.strip()
+
+        existing_cedula = db.query(User).filter(
+            User.cedula == clean_cedula,
+            User.id != user.id,
+        ).first()
+
+        if existing_cedula:
+            raise HTTPException(
+                status_code=400,
+                detail="La cédula ya está registrada por otro usuario",
+            )
+
+        user.cedula = clean_cedula
+
+    if payload.name is not None:
+        user.name = payload.name.strip()
+
+    if payload.phone is not None:
+        user.phone = payload.phone.strip()
+
+    if payload.ambassador_code is not None:
+        clean_code = payload.ambassador_code.strip()
+
+        existing_code = db.query(Ambassador).filter(
+            Ambassador.ambassador_code == clean_code,
+            Ambassador.id != ambassador.id,
+        ).first()
+
+        if existing_code:
+            raise HTTPException(
+                status_code=400,
+                detail="El código de embajador ya existe",
+            )
+
+        ambassador.ambassador_code = clean_code
+
+    if payload.status is not None:
+        ambassador.status = payload.status.strip()
+
+    if payload.is_active is not None:
+        ambassador.is_active = payload.is_active
+        user.is_active = payload.is_active
+
+    set_if_exists(ambassador, "bank_name", payload.bank_name.strip() if payload.bank_name else None)
+    set_if_exists(ambassador, "bank_account_type", payload.bank_account_type.strip() if payload.bank_account_type else None)
+    set_if_exists(ambassador, "bank_account_number", payload.bank_account_number.strip() if payload.bank_account_number else None)
+    set_if_exists(ambassador, "bank_account_holder", payload.bank_account_holder.strip() if payload.bank_account_holder else None)
+    set_if_exists(ambassador, "bank_identification", payload.bank_identification.strip() if payload.bank_identification else None)
+    set_if_exists(ambassador, "payment_notes", payload.payment_notes.strip() if payload.payment_notes else None)
+
+    db.commit()
+    db.refresh(ambassador)
+    db.refresh(user)
+
+    return {
+        "message": "Embajador actualizado correctamente",
+        "ambassador": ambassador_to_dict(ambassador),
     }
 
 
