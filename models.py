@@ -33,6 +33,17 @@ class User(Base):
     delivery_notes = Column(Text, nullable=False)
     phone_secondary = Column(String, nullable=True)
 
+    # =========================
+    # 📜 POLÍTICAS Y CONSENTIMIENTOS
+    # =========================
+    accepted_terms = Column(Boolean, default=False, nullable=False)
+    accepted_privacy_policy = Column(Boolean, default=False, nullable=False)
+    accepted_digital_policy = Column(Boolean, default=False, nullable=False)
+
+    accepted_terms_at = Column(DateTime, nullable=True)
+    accepted_privacy_policy_at = Column(DateTime, nullable=True)
+    accepted_digital_policy_at = Column(DateTime, nullable=True)
+
     status = Column(String, default="registered", nullable=False)
 
     membership_level = Column(Integer, nullable=True)
