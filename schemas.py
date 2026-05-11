@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from datetime import datetime
 
 
 # =========================
@@ -20,6 +21,11 @@ class UserRegister(BaseModel):
     phone_secondary: Optional[str] = None
 
     ambassador_code: Optional[str] = None
+
+    # Políticas obligatorias
+    accepted_terms: bool = False
+    accepted_privacy_policy: bool = False
+    accepted_digital_policy: bool = False
 
 
 # =========================
@@ -73,6 +79,14 @@ class UserResponse(BaseModel):
 
     membership_level: Optional[int]
     membership_active: bool
+
+    accepted_terms: bool
+    accepted_privacy_policy: bool
+    accepted_digital_policy: bool
+
+    accepted_terms_at: Optional[datetime]
+    accepted_privacy_policy_at: Optional[datetime]
+    accepted_digital_policy_at: Optional[datetime]
 
     class Config:
         from_attributes = True
