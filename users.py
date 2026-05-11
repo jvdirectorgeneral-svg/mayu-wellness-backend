@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from datetime import datetime
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
 from dependencies import get_current_user
@@ -32,6 +33,10 @@ class UserCreate(BaseModel):
     delivery_notes: str
     phone_secondary: Optional[str] = None
     ambassador_code: Optional[str] = None
+
+    accepted_terms: bool = False
+    accepted_privacy_policy: bool = False
+    accepted_digital_policy: bool = False
 
 
 class MembershipUpdate(BaseModel):
@@ -290,6 +295,12 @@ def get_users(db: Session = Depends(get_db)):
                 "membership_active": u.membership_active,
                 "is_active": getattr(u, "is_active", True),
                 "role": u.role,
+                "accepted_terms": getattr(u, "accepted_terms", False),
+                "accepted_privacy_policy": getattr(u, "accepted_privacy_policy", False),
+                "accepted_digital_policy": getattr(u, "accepted_digital_policy", False),
+                "accepted_terms_at": getattr(u, "accepted_terms_at", None),
+                "accepted_privacy_policy_at": getattr(u, "accepted_privacy_policy_at", None),
+                "accepted_digital_policy_at": getattr(u, "accepted_digital_policy_at", None),
             }
             for u in users
         ]
@@ -322,6 +333,15 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     if not payload.delivery_notes.strip():
         raise HTTPException(status_code=400, detail="Los datos de facturación son obligatorios")
 
+    if not payload.accepted_terms:
+        raise HTTPException(status_code=400, detail="Debes aceptar los términos y condiciones")
+
+    if not payload.accepted_privacy_policy:
+        raise HTTPException(status_code=400, detail="Debes aceptar el tratamiento de datos personales")
+
+    if not payload.accepted_digital_policy:
+        raise HTTPException(status_code=400, detail="Debes aceptar la política digital y notificaciones")
+
     existing_user = db.query(models.User).filter(models.User.email == email).first()
 
     if existing_user:
@@ -345,6 +365,8 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         if not ambassador:
             raise HTTPException(status_code=400, detail="Código de embajador inválido")
 
+    now = datetime.utcnow()
+
     new_user = models.User(
         name=payload.name.strip(),
         email=email,
@@ -358,6 +380,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         phone_secondary=payload.phone_secondary.strip() if payload.phone_secondary else None,
         role="member",
         is_active=True,
+        accepted_terms=True,
+        accepted_privacy_policy=True,
+        accepted_digital_policy=True,
+        accepted_terms_at=now,
+        accepted_privacy_policy_at=now,
+        accepted_digital_policy_at=now,
     )
 
     db.add(new_user)
@@ -391,6 +419,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         "is_active": new_user.is_active,
         "role": new_user.role,
         "ambassador_code": cleaned_ambassador_code,
+        "accepted_terms": new_user.accepted_terms,
+        "accepted_privacy_policy": new_user.accepted_privacy_policy,
+        "accepted_digital_policy": new_user.accepted_digital_policy,
+        "accepted_terms_at": new_user.accepted_terms_at,
+        "accepted_privacy_policy_at": new_user.accepted_privacy_policy_at,
+        "accepted_digital_policy_at": new_user.accepted_digital_policy_at,
     }
 
 
@@ -427,6 +461,9 @@ def update_membership(
         "membership_active": user.membership_active,
         "is_active": getattr(user, "is_active", True),
         "role": user.role,
+        "accepted_terms": getattr(user, "accepted_terms", False),
+        "accepted_privacy_policy": getattr(user, "accepted_privacy_policy", False),
+        "accepted_digital_policy": getattr(user, "accepted_digital_policy", False),
     }
 
 
@@ -477,6 +514,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             "membership_active": db_user.membership_active,
             "is_active": getattr(db_user, "is_active", True),
             "role": db_user.role,
+            "accepted_terms": getattr(db_user, "accepted_terms", False),
+            "accepted_privacy_policy": getattr(db_user, "accepted_privacy_policy", False),
+            "accepted_digital_policy": getattr(db_user, "accepted_digital_policy", False),
         },
     }
 
@@ -544,6 +584,8 @@ def create_staff(
     if existing_cedula:
         raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
+    now = datetime.utcnow()
+
     new_staff = models.User(
         name=payload.name.strip(),
         email=payload.email.strip().lower(),
@@ -560,6 +602,12 @@ def create_staff(
         membership_level=None,
         membership_active=False,
         is_active=True,
+        accepted_terms=True,
+        accepted_privacy_policy=True,
+        accepted_digital_policy=True,
+        accepted_terms_at=now,
+        accepted_privacy_policy_at=now,
+        accepted_digital_policy_at=now,
     )
 
     db.add(new_staff)
@@ -633,6 +681,9 @@ def list_staff(
             "is_active": getattr(u, "is_active", True),
             "created_at": u.created_at,
             "ambassador_code": ambassador_code,
+            "accepted_terms": getattr(u, "accepted_terms", False),
+            "accepted_privacy_policy": getattr(u, "accepted_privacy_policy", False),
+            "accepted_digital_policy": getattr(u, "accepted_digital_policy", False),
         })
 
     return {"items": items}
