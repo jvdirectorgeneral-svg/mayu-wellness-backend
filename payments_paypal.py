@@ -49,9 +49,10 @@ def get_base_url():
 
 class PayPalCreateOrderRequest(BaseModel):
     user_id: int
-    amount: float
+    amount: Optional[float] = None
     currency: str = "USD"
     order_id: Optional[int] = None
+    plan_level: Optional[int] = None
 
 
 class PayPalCaptureOrderRequest(BaseModel):
@@ -69,6 +70,59 @@ def require_admin(user):
 
 def generate_order_code(user_id: int, month: int, year: int):
     return f"MWC-{year}{month:02d}-U{user_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+
+
+def get_monthly_amount_by_level(level: int) -> float:
+    prices = {
+        1: 40.00,
+        2: 50.00,
+        3: 60.00,
+    }
+
+    if level not in prices:
+        raise HTTPException(status_code=400, detail="Nivel de plan inválido")
+
+    return prices[level]
+
+
+def get_signup_amount_by_level(level: int) -> float:
+    return get_monthly_amount_by_level(level) + 5.00
+
+
+def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
+    if amount is None:
+        return None
+
+    rounded = round(float(amount), 2)
+
+    if rounded in [45.00, 45.50, 40.00]:
+        return 1
+
+    if rounded in [55.00, 50.00]:
+        return 2
+
+    if rounded in [65.00, 67.00, 60.00]:
+        return 3
+
+    return None
+
+
+def resolve_plan_level(payload: PayPalCreateOrderRequest, user: models.User) -> int:
+    if payload.plan_level is not None:
+        return int(payload.plan_level)
+
+    if user.membership_level is not None:
+        return int(user.membership_level)
+
+    inferred = infer_level_from_amount(payload.amount)
+
+    if inferred is not None:
+        return inferred
+
+    raise HTTPException(
+        status_code=400,
+        detail="Debe enviarse plan_level para calcular el primer pago",
+    )
 
 
 def safe_set(obj, attr, value):
@@ -314,6 +368,11 @@ def create_order(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    plan_level = resolve_plan_level(payload, user)
+    signup_amount = get_signup_amount_by_level(plan_level)
+
+    user.membership_level = plan_level
+
     token = get_token()
 
     body = {
@@ -322,9 +381,12 @@ def create_order(
             {
                 "amount": {
                     "currency_code": payload.currency,
-                    "value": f"{payload.amount:.2f}",
+                    "value": f"{signup_amount:.2f}",
                 },
-                "description": "Mayu Wellness Club - Pago inicial de afiliación",
+                "description": (
+                    f"Mayu Wellness Club - Primer pago Nivel {plan_level} "
+                    f"incluye mensualidad + inscripción inicial"
+                ),
             }
         ],
         "application_context": {
@@ -341,7 +403,7 @@ def create_order(
         user_id=user.id,
         order_id=payload.order_id,
         paypal_order_id=response["id"],
-        amount=payload.amount,
+        amount=signup_amount,
         currency=payload.currency,
         status="created",
         provider="paypal",
@@ -357,6 +419,10 @@ def create_order(
     return {
         "payment_id": payment.id,
         "paypal_order_id": response["id"],
+        "amount": signup_amount,
+        "plan_level": plan_level,
+        "monthly_amount": get_monthly_amount_by_level(plan_level),
+        "signup_fee": 5.00,
         "links": response.get("links", []),
     }
 
