@@ -61,11 +61,15 @@ def get_plan_id_by_level(level: int):
     return os.getenv(env_map.get(level, "") or "")
 
 
+# =========================
+# PRECIOS MENSUALES RECURRENTES
+# =========================
 MONTHLY_PRICES = {
-    1: 38.50,
-    2: 48.00,
+    1: 40.00,
+    2: 50.00,
     3: 60.00,
 }
+
 
 PLAN_NAMES = {
     1: "Mayu Wellness Club - Nivel 1 Cobre",
@@ -194,6 +198,7 @@ def debug_subscriptions():
         "plan_level_1": bool(get_plan_id_by_level(1)),
         "plan_level_2": bool(get_plan_id_by_level(2)),
         "plan_level_3": bool(get_plan_id_by_level(3)),
+        "monthly_prices": MONTHLY_PRICES,
     }
 
 
@@ -276,6 +281,7 @@ def create_subscription(
         raise HTTPException(status_code=400, detail="Nivel inválido")
 
     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -321,12 +327,15 @@ def create_subscription(
 
     subscription_id = response.get("id")
     approve_url = extract_approve_url(response.get("links", []))
+    monthly_amount = MONTHLY_PRICES[payload.plan_level]
+
+    user.membership_level = payload.plan_level
 
     payment = models.MembershipPayment(
         user_id=user.id,
         order_id=None,
         paypal_order_id=subscription_id,
-        amount=MONTHLY_PRICES[payload.plan_level],
+        amount=monthly_amount,
         currency="USD",
         status="subscription_created",
     )
@@ -345,7 +354,7 @@ def create_subscription(
         "payment_id": payment.id,
         "user_id": user.id,
         "plan_level": payload.plan_level,
-        "monthly_amount": MONTHLY_PRICES[payload.plan_level],
+        "monthly_amount": monthly_amount,
         "start_time": start_time,
         "paypal_subscription_id": subscription_id,
         "approve_url": approve_url,
