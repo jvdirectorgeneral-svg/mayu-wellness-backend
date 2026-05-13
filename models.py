@@ -33,9 +33,6 @@ class User(Base):
     delivery_notes = Column(Text, nullable=False)
     phone_secondary = Column(String, nullable=True)
 
-    # =========================
-    # 📜 POLÍTICAS Y CONSENTIMIENTOS
-    # =========================
     accepted_terms = Column(Boolean, default=False, nullable=False)
     accepted_privacy_policy = Column(Boolean, default=False, nullable=False)
     accepted_digital_policy = Column(Boolean, default=False, nullable=False)
@@ -51,7 +48,6 @@ class User(Base):
 
     is_active = Column(Boolean, default=True, nullable=False)
 
-    # member / ambassador / admin / supervisor / logistics / superadmin
     role = Column(String, default="member", nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -60,51 +56,51 @@ class User(Base):
         "Ambassador",
         back_populates="user",
         uselist=False,
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     referrals_as_user = relationship(
         "AmbassadorReferral",
         foreign_keys="AmbassadorReferral.user_id",
-        back_populates="referred_user"
+        back_populates="referred_user",
     )
 
     monthly_selections = relationship(
         "MonthlySelection",
         back_populates="user",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     plan_change_requests = relationship(
         "PlanChangeRequest",
         back_populates="user",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     member_card = relationship(
         "MemberCard",
         back_populates="user",
         uselist=False,
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     commissions_as_referred = relationship(
         "Commission",
         foreign_keys="Commission.referred_user_id",
-        back_populates="referred_user"
+        back_populates="referred_user",
     )
 
     orders = relationship(
         "Order",
         back_populates="user",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     payments = relationship(
         "MembershipPayment",
         foreign_keys="MembershipPayment.user_id",
         back_populates="user",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
 
@@ -122,9 +118,13 @@ class Ambassador(Base):
 
     national_id = Column(String, nullable=False)
     address = Column(String, nullable=False)
-    bank_name = Column(String, nullable=False)
-    account_type = Column(String, nullable=False)
-    bank_account_number = Column(String, nullable=False)
+
+    bank_name = Column(String, nullable=True)
+    bank_account_type = Column(String, nullable=True)
+    bank_account_number = Column(String, nullable=True)
+    bank_account_holder = Column(String, nullable=True)
+    bank_identification = Column(String, nullable=True)
+    payment_notes = Column(Text, nullable=True)
 
     status = Column(String, default="active", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -136,13 +136,13 @@ class Ambassador(Base):
     referrals = relationship(
         "AmbassadorReferral",
         back_populates="ambassador",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     commissions = relationship(
         "Commission",
         back_populates="ambassador",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
 
@@ -157,14 +157,14 @@ class AmbassadorReferral(Base):
     ambassador_id = Column(
         Integer,
         ForeignKey("ambassadors.id"),
-        nullable=False
+        nullable=False,
     )
 
     user_id = Column(
         Integer,
         ForeignKey("users.id"),
         nullable=False,
-        unique=True
+        unique=True,
     )
 
     referral_code = Column(String, nullable=False)
@@ -172,15 +172,12 @@ class AmbassadorReferral(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    ambassador = relationship(
-        "Ambassador",
-        back_populates="referrals"
-    )
+    ambassador = relationship("Ambassador", back_populates="referrals")
 
     referred_user = relationship(
         "User",
         foreign_keys=[user_id],
-        back_populates="referrals_as_user"
+        back_populates="referrals_as_user",
     )
 
 
@@ -200,30 +197,24 @@ class Plan(Base):
     plan_products = relationship(
         "PlanProduct",
         back_populates="plan",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
-    monthly_selections = relationship(
-        "MonthlySelection",
-        back_populates="plan"
-    )
+    monthly_selections = relationship("MonthlySelection", back_populates="plan")
 
     change_requests_current = relationship(
         "PlanChangeRequest",
         foreign_keys="PlanChangeRequest.current_plan_id",
-        back_populates="current_plan"
+        back_populates="current_plan",
     )
 
     change_requests_requested = relationship(
         "PlanChangeRequest",
         foreign_keys="PlanChangeRequest.requested_plan_id",
-        back_populates="requested_plan"
+        back_populates="requested_plan",
     )
 
-    commissions = relationship(
-        "Commission",
-        back_populates="plan"
-    )
+    commissions = relationship("Commission", back_populates="plan")
 
 
 # =========================
@@ -242,18 +233,15 @@ class Product(Base):
     plan_products = relationship(
         "PlanProduct",
         back_populates="product",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     monthly_selection_items = relationship(
         "MonthlySelectionItem",
-        back_populates="product"
+        back_populates="product",
     )
 
-    order_items = relationship(
-        "OrderItem",
-        back_populates="product"
-    )
+    order_items = relationship("OrderItem", back_populates="product")
 
 
 # =========================
@@ -298,7 +286,7 @@ class MonthlySelection(Base):
     items = relationship(
         "MonthlySelectionItem",
         back_populates="monthly_selection",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -306,7 +294,7 @@ class MonthlySelection(Base):
             "user_id",
             "month",
             "year",
-            name="uq_monthly_selection_user_cycle"
+            name="uq_monthly_selection_user_cycle",
         ),
     )
 
@@ -318,29 +306,31 @@ class MonthlySelectionItem(Base):
     __tablename__ = "monthly_selection_items"
 
     id = Column(Integer, primary_key=True, index=True)
+
     monthly_selection_id = Column(
         Integer,
         ForeignKey("monthly_selections.id"),
-        nullable=False
+        nullable=False,
     )
+
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1, nullable=False)
 
     monthly_selection = relationship(
         "MonthlySelection",
-        back_populates="items"
+        back_populates="items",
     )
 
     product = relationship(
         "Product",
-        back_populates="monthly_selection_items"
+        back_populates="monthly_selection_items",
     )
 
     __table_args__ = (
         UniqueConstraint(
             "monthly_selection_id",
             "product_id",
-            name="uq_monthly_selection_item_product"
+            name="uq_monthly_selection_item_product",
         ),
     )
 
@@ -365,13 +355,13 @@ class PlanChangeRequest(Base):
     current_plan = relationship(
         "Plan",
         foreign_keys=[current_plan_id],
-        back_populates="change_requests_current"
+        back_populates="change_requests_current",
     )
 
     requested_plan = relationship(
         "Plan",
         foreign_keys=[requested_plan_id],
-        back_populates="change_requests_requested"
+        back_populates="change_requests_requested",
     )
 
 
@@ -402,23 +392,9 @@ class Commission(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    ambassador_id = Column(
-        Integer,
-        ForeignKey("ambassadors.id"),
-        nullable=False
-    )
-
-    referred_user_id = Column(
-        Integer,
-        ForeignKey("users.id"),
-        nullable=False
-    )
-
-    plan_id = Column(
-        Integer,
-        ForeignKey("plans.id"),
-        nullable=False
-    )
+    ambassador_id = Column(Integer, ForeignKey("ambassadors.id"), nullable=False)
+    referred_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=False)
 
     month = Column(Integer, nullable=False)
     year = Column(Integer, nullable=False)
@@ -436,21 +412,15 @@ class Commission(Base):
     paid_at = Column(DateTime, nullable=True)
     notes = Column(String, nullable=True)
 
-    ambassador = relationship(
-        "Ambassador",
-        back_populates="commissions"
-    )
+    ambassador = relationship("Ambassador", back_populates="commissions")
 
     referred_user = relationship(
         "User",
         foreign_keys=[referred_user_id],
-        back_populates="commissions_as_referred"
+        back_populates="commissions_as_referred",
     )
 
-    plan = relationship(
-        "Plan",
-        back_populates="commissions"
-    )
+    plan = relationship("Plan", back_populates="commissions")
 
     __table_args__ = (
         UniqueConstraint(
@@ -458,7 +428,7 @@ class Commission(Base):
             "referred_user_id",
             "month",
             "year",
-            name="uq_commission_monthly"
+            name="uq_commission_monthly",
         ),
     )
 
@@ -492,9 +462,6 @@ class Order(Base):
     prepared_at = Column(DateTime, nullable=True)
     shipped_at = Column(DateTime, nullable=True)
     delivered_at = Column(DateTime, nullable=True)
-
-    # NUEVO: agrupa órdenes que salen en el despacho semanal de logística.
-    # Ejemplo: todos los viernes se marca al enviar.
     shipping_batch_date = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="orders")
@@ -502,13 +469,10 @@ class Order(Base):
     items = relationship(
         "OrderItem",
         back_populates="order",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
     )
 
-    payments = relationship(
-        "MembershipPayment",
-        back_populates="order"
-    )
+    payments = relationship("MembershipPayment", back_populates="order")
 
     __table_args__ = (
         UniqueConstraint("user_id", "month", "year", name="uq_order_user_cycle"),
@@ -569,15 +533,12 @@ class MembershipPayment(Base):
     user = relationship(
         "User",
         foreign_keys=[user_id],
-        back_populates="payments"
+        back_populates="payments",
     )
 
-    order = relationship(
-        "Order",
-        back_populates="payments"
-    )
+    order = relationship("Order", back_populates="payments")
 
     admin_verifier = relationship(
         "User",
-        foreign_keys=[admin_verified_by]
+        foreign_keys=[admin_verified_by],
     )
