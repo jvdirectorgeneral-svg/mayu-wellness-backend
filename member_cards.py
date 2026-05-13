@@ -24,6 +24,7 @@ router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
 
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 CARD_VALIDITY_TEXT = "Indefinido"
+CLUB_NAME = "Mayu Wellness Club"
 
 
 def generate_member_code(user_id: int, level: int):
@@ -57,13 +58,17 @@ def get_card_status(user):
 def get_card_code(db: Session, user):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id)
+
         if ambassador:
             correct_code = generate_ambassador_code(ambassador.id)
+
             if ambassador.ambassador_code != correct_code:
                 ambassador.ambassador_code = correct_code
                 db.commit()
                 db.refresh(ambassador)
+
             return correct_code
+
         return f"EMB-{user.id:06d}"
 
     return generate_member_code(user.id, user.membership_level)
@@ -76,16 +81,24 @@ def get_or_create_card(db: Session, user_id: int):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role not in ["member", "ambassador"]:
-        raise HTTPException(status_code=400, detail="Solo socios o embajadores pueden tener tarjeta")
+        raise HTTPException(
+            status_code=400,
+            detail="Solo socios o embajadores pueden tener tarjeta",
+        )
 
     if user.role == "member" and not user.membership_level:
-        raise HTTPException(status_code=400, detail="El socio no tiene membresía asignada")
+        raise HTTPException(
+            status_code=400,
+            detail="El socio no tiene membresía asignada",
+        )
 
     level_snapshot = get_card_level_snapshot(user)
     member_code = get_card_code(db, user)
     card_status = get_card_status(user)
 
-    card = db.query(models.MemberCard).filter(models.MemberCard.user_id == user.id).first()
+    card = db.query(models.MemberCard).filter(
+        models.MemberCard.user_id == user.id
+    ).first()
 
     if card:
         card.member_code = member_code
@@ -108,6 +121,7 @@ def get_or_create_card(db: Session, user_id: int):
     db.add(card)
     db.commit()
     db.refresh(card)
+
     return user, card
 
 
@@ -120,6 +134,7 @@ def level_text(user, card):
         2: "Nivel 2 - Plata",
         3: "Nivel 3 - Oro",
     }
+
     return levels.get(card.level_snapshot, "Socio Mayu")
 
 
@@ -127,6 +142,7 @@ def get_card_visual_data(db: Session, user, card):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id) if db else None
         ambassador_id = ambassador.id if ambassador else user.id
+
         return {
             "display_name": user.name,
             "level_text": "Embajador Mayu",
@@ -186,7 +202,10 @@ def card_response(user, card):
 @router.post("/generate/{user_id}")
 def generate_member_card(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
-    return {"message": "Tarjeta generada correctamente", "card": card_response(user, card)}
+    return {
+        "message": "Tarjeta generada correctamente",
+        "card": card_response(user, card),
+    }
 
 
 @router.get("/user/{user_id}")
@@ -206,23 +225,27 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
     html = f"""
     <html>
         <head>
-            <title>Tarjeta Mayu Wellness Club</title>
+            <title>{CLUB_NAME}</title>
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
         </head>
         <body style="margin:0; font-family:Arial,sans-serif; background:#0f172a; color:white; padding:24px;">
             <div style="max-width:720px; margin:auto;">
-                <h1 style="text-align:center;">MAYU WELLNESS CLUB</h1>
+                <h1 style="text-align:center;">{CLUB_NAME}</h1>
                 <div style="background:#1e293b; border-radius:24px; padding:20px; text-align:center;">
                     <img src="{image_url}" style="max-width:100%; border-radius:18px;" />
                     <h2>{user.name}</h2>
+                    <p><strong>Club:</strong> {CLUB_NAME}</p>
                     <p><strong>Tipo:</strong> {level_text(user, card)}</p>
                     <p><strong>Código:</strong> {card.member_code}</p>
                     <p><strong>Estado:</strong> {card.status}</p>
                     <p><strong>Vigencia:</strong> {CARD_VALIDITY_TEXT}</p>
+
                     <a href="{validate_url}" style="display:inline-block; margin-top:16px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">
                         Validar tarjeta
                     </a>
+
                     <br/>
+
                     <a href="{apple_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#000; color:white; text-decoration:none; border-radius:999px;">
                         Agregar a Apple Wallet
                     </a>
@@ -231,12 +254,15 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
         </body>
     </html>
     """
+
     return HTMLResponse(content=html)
 
 
 @router.get("/validate/{qr_token}", response_class=HTMLResponse)
 def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
-    card = db.query(models.MemberCard).filter(models.MemberCard.qr_token == qr_token).first()
+    card = db.query(models.MemberCard).filter(
+        models.MemberCard.qr_token == qr_token
+    ).first()
 
     if not card:
         return HTMLResponse("<h1>Tarjeta inválida</h1>", status_code=404)
@@ -251,8 +277,13 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
     db.refresh(card)
 
     status_text = "ACTIVA" if card.status == "active" else "INACTIVA"
+
     if user.role == "ambassador":
-        status_text = "EMBAJADOR ACTIVO" if card.status == "active" else "EMBAJADOR INACTIVO"
+        status_text = (
+            "EMBAJADOR ACTIVO"
+            if card.status == "active"
+            else "EMBAJADOR INACTIVO"
+        )
 
     status_color = "#22c55e" if card.status == "active" else "#ef4444"
 
@@ -264,13 +295,14 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
         </head>
         <body style="background:#0f172a; color:white; font-family:Arial; padding:40px;">
             <div style="max-width:520px; margin:auto; background:#1e293b; border-radius:24px; padding:32px;">
-                <h1 style="text-align:center;">MAYU WELLNESS CLUB</h1>
+                <h1 style="text-align:center;">{CLUB_NAME}</h1>
                 <div style="text-align:center; margin:20px 0;">
                     <span style="padding:12px 24px; border-radius:999px; background:{status_color}; color:white;">
                         {status_text}
                     </span>
                 </div>
                 <p><strong>Nombre:</strong> {user.name}</p>
+                <p><strong>Club:</strong> {CLUB_NAME}</p>
                 <p><strong>Email:</strong> {user.email}</p>
                 <p><strong>Tipo:</strong> {level_text(user, card)}</p>
                 <p><strong>Código:</strong> {card.member_code}</p>
@@ -279,6 +311,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
         </body>
     </html>
     """
+
     return HTMLResponse(content=html_content)
 
 
@@ -305,11 +338,11 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     draw = ImageDraw.Draw(image)
 
     try:
-        title_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 64)
+        club_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 44)
         name_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 42)
         info_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 30)
     except Exception:
-        title_font = ImageFont.load_default()
+        club_font = ImageFont.load_default()
         name_font = ImageFont.load_default()
         info_font = ImageFont.load_default()
 
@@ -322,10 +355,14 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     if os.path.exists(logo_path):
         try:
-            logo = Image.open(logo_path).convert("RGBA").resize((170, 170))
-            image.paste(logo, ((width - 170) // 2, 25), logo)
+            logo = Image.open(logo_path).convert("RGBA").resize((145, 145))
+            image.paste(logo, ((width - 145) // 2, 25), logo)
         except Exception:
             pass
+
+    bbox = draw.textbbox((0, 0), CLUB_NAME.upper(), font=club_font)
+    club_width = bbox[2] - bbox[0]
+    draw_text(draw, ((width - club_width) // 2, 180), CLUB_NAME.upper(), club_font)
 
     draw_text(draw, (60, 305), visual["display_name"], name_font)
     draw_text(draw, (60, 355), visual["level_text"], info_font)
@@ -340,7 +377,11 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     file_path = f"/tmp/card_{user_id}.png"
     image.save(file_path)
 
-    return FileResponse(path=file_path, media_type="image/png", content_disposition_type="inline")
+    return FileResponse(
+        path=file_path,
+        media_type="image/png",
+        content_disposition_type="inline",
+    )
 
 
 def create_wallet_icon(output_path: str):
@@ -348,11 +389,11 @@ def create_wallet_icon(output_path: str):
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 56)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 46)
     except Exception:
         font = ImageFont.load_default()
 
-    draw.text((35, 58), "MAYU", fill=(255, 255, 255), font=font)
+    draw.text((18, 65), "MAYU", fill=(255, 255, 255), font=font)
     img.save(output_path)
 
 
@@ -382,7 +423,11 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
                 img = Image.open(logo_path).convert("RGBA")
                 img.thumbnail(size)
                 canvas = Image.new("RGBA", size, (0, 0, 0, 0))
-                canvas.paste(img, ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2), img)
+                canvas.paste(
+                    img,
+                    ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2),
+                    img,
+                )
                 canvas.save(target)
             except Exception:
                 create_wallet_icon(target)
@@ -431,7 +476,9 @@ def sign_manifest(pass_dir: str, certs_dir: str):
     p12_path = os.path.join(certs_dir, "mayu_wallet.p12")
     wwdr_path = os.path.join(certs_dir, "AppleWWDRCAG3.cer")
 
-    password = os.getenv("APPLE_WALLET_P12_PASSWORD") or os.getenv("APPLE_WALLET_CERT_PASSWORD")
+    password = os.getenv("APPLE_WALLET_P12_PASSWORD") or os.getenv(
+        "APPLE_WALLET_CERT_PASSWORD"
+    )
 
     if not os.path.exists(p12_path):
         raise HTTPException(status_code=500, detail="No existe certs/mayu_wallet.p12")
@@ -440,10 +487,16 @@ def sign_manifest(pass_dir: str, certs_dir: str):
         raise HTTPException(status_code=500, detail="Falta APPLE_WALLET_P12_PASSWORD en Render")
 
     with open(p12_path, "rb") as f:
-        private_key, certificate, _ = pkcs12.load_key_and_certificates(f.read(), password.encode())
+        private_key, certificate, _ = pkcs12.load_key_and_certificates(
+            f.read(),
+            password.encode(),
+        )
 
     if private_key is None or certificate is None:
-        raise HTTPException(status_code=500, detail="El .p12 no contiene certificado y clave privada")
+        raise HTTPException(
+            status_code=500,
+            detail="El .p12 no contiene certificado y clave privada",
+        )
 
     with open(os.path.join(pass_dir, "manifest.json"), "rb") as f:
         manifest_data = f.read()
@@ -454,7 +507,10 @@ def sign_manifest(pass_dir: str, certs_dir: str):
     if os.path.exists(wwdr_path):
         builder = builder.add_certificate(load_wwdr_certificate(wwdr_path))
 
-    signature = builder.sign(Encoding.DER, [PKCS7Options.DetachedSignature, PKCS7Options.Binary])
+    signature = builder.sign(
+        Encoding.DER,
+        [PKCS7Options.DetachedSignature, PKCS7Options.Binary],
+    )
 
     with open(os.path.join(pass_dir, "signature"), "wb") as f:
         f.write(signature)
@@ -474,7 +530,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
 
     pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
     team_id = os.getenv("APPLE_TEAM_ID")
-    organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Mayu Wellness Club")
+    organization_name = os.getenv("APPLE_ORGANIZATION_NAME", CLUB_NAME)
 
     if not pass_type_id:
         raise HTTPException(status_code=500, detail="Falta APPLE_PASS_TYPE_ID")
@@ -502,27 +558,64 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "serialNumber": card.member_code,
             "teamIdentifier": team_id,
             "organizationName": organization_name,
-            "description": "Tarjeta Mayu Wellness Club",
-            "logoText": "MAYU",
+            "description": CLUB_NAME,
+            "logoText": CLUB_NAME,
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(0,0,0)",
             "labelColor": "rgb(255,255,255)",
             "storeCard": {
                 "primaryFields": [
-                    {"key": "name", "label": "SOCIO", "value": user.name}
+                    {
+                        "key": "club",
+                        "label": "CLUB",
+                        "value": CLUB_NAME,
+                    }
                 ],
                 "secondaryFields": [
-                    {"key": "level", "label": "TIPO", "value": level_text(user, card)},
-                    {"key": "status", "label": "ESTADO", "value": "Activo" if card.status == "active" else "Inactivo"},
+                    {
+                        "key": "name",
+                        "label": "SOCIO",
+                        "value": user.name,
+                    },
+                    {
+                        "key": "level",
+                        "label": "TIPO",
+                        "value": level_text(user, card),
+                    },
                 ],
                 "auxiliaryFields": [
-                    {"key": "code", "label": "CÓDIGO", "value": card.member_code},
-                    {"key": "valid", "label": "VIGENCIA", "value": CARD_VALIDITY_TEXT},
+                    {
+                        "key": "status",
+                        "label": "ESTADO",
+                        "value": "Activo" if card.status == "active" else "Inactivo",
+                    },
+                    {
+                        "key": "code",
+                        "label": "CÓDIGO",
+                        "value": card.member_code,
+                    },
                 ],
                 "backFields": [
-                    {"key": "email", "label": "Email", "value": user.email},
-                    {"key": "phone", "label": "Celular", "value": user.phone or "-"},
-                    {"key": "web", "label": "Tarjeta web", "value": card_web_url},
+                    {
+                        "key": "valid",
+                        "label": "Vigencia",
+                        "value": CARD_VALIDITY_TEXT,
+                    },
+                    {
+                        "key": "email",
+                        "label": "Email",
+                        "value": user.email,
+                    },
+                    {
+                        "key": "phone",
+                        "label": "Celular",
+                        "value": user.phone or "-",
+                    },
+                    {
+                        "key": "web",
+                        "label": "Tarjeta web",
+                        "value": card_web_url,
+                    },
                 ],
             },
             "barcode": {
@@ -552,7 +645,10 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generando Apple Wallet: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando Apple Wallet: {str(e)}",
+        )
 
 
 @router.get("/google-wallet/{user_id}")
