@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -34,9 +35,53 @@ class OrderApprovalUpdate(BaseModel):
     approval_notes: Optional[str] = None
 
 
+class OrderTrackingUpdate(BaseModel):
+    carrier: Optional[str] = None
+    tracking_number: Optional[str] = None
+    tracking_url: Optional[str] = None
+    shipping_notes: Optional[str] = None
+    note: Optional[str] = None
+
+
 def generate_order_code(user_id: int, month: int, year: int) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
+
+
+def require_team_access(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {"superadmin", "admin", "supervisor", "logistics"}:
+        raise HTTPException(status_code=403, detail="Acceso no autorizado")
+
+
+def require_admin_or_superadmin(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {"superadmin", "admin"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para admin o superadmin",
+        )
+
+
+def require_logistics_or_admin(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {"superadmin", "admin", "logistics"}:
+        raise HTTPException(status_code=403, detail="Acceso no autorizado")
 
 
 def get_order_payment(db: Session, order_id: int):
@@ -73,6 +118,66 @@ def order_items_data(order):
     }
 
 
+def order_date_data(order):
+    return {
+        "created_at": order.created_at,
+        "prepared_at": order.prepared_at,
+        "shipped_at": order.shipped_at,
+        "delivered_at": order.delivered_at,
+        "shipping_batch_date": getattr(order, "shipping_batch_date", None),
+    }
+
+
+def tracking_data(order):
+    return {
+        "carrier": getattr(order, "carrier", None),
+        "tracking_number": getattr(order, "tracking_number", None),
+        "tracking_url": getattr(order, "tracking_url", None),
+        "shipping_notes": getattr(order, "shipping_notes", None),
+    }
+
+
+def tracking_history_data(order):
+    history = getattr(order, "tracking_history", []) or []
+
+    return {
+        "tracking_history": [
+            {
+                "id": h.id,
+                "order_id": h.order_id,
+                "status": h.status,
+                "note": h.note,
+                "carrier": h.carrier,
+                "tracking_number": h.tracking_number,
+                "tracking_url": h.tracking_url,
+                "created_by": h.created_by,
+                "created_at": h.created_at,
+            }
+            for h in sorted(history, key=lambda x: x.created_at or datetime.utcnow(), reverse=True)
+        ]
+    }
+
+
+def add_tracking_history(
+    db: Session,
+    order: models.Order,
+    current_user: models.User,
+    status: str,
+    note: Optional[str] = None,
+):
+    history = models.OrderTrackingHistory(
+        order_id=order.id,
+        status=status,
+        note=note,
+        carrier=getattr(order, "carrier", None),
+        tracking_number=getattr(order, "tracking_number", None),
+        tracking_url=getattr(order, "tracking_url", None),
+        created_by=current_user.id if current_user else None,
+    )
+
+    db.add(history)
+
+
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
     selection = (
         db.query(models.MonthlySelection)
@@ -106,11 +211,13 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
         ).first()
 
         if product:
-            products.append({
-                "product_id": product.id,
-                "name": product.name,
-                "quantity": item.quantity,
-            })
+            products.append(
+                {
+                    "product_id": product.id,
+                    "name": product.name,
+                    "quantity": item.quantity,
+                }
+            )
 
     return {
         "monthly_selection_id": selection.id,
@@ -120,53 +227,37 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
     }
 
 
-def order_date_data(order):
-    return {
-        "created_at": order.created_at,
-        "prepared_at": order.prepared_at,
-        "shipped_at": order.shipped_at,
-        "delivered_at": order.delivered_at,
-        "shipping_batch_date": getattr(order, "shipping_batch_date", None),
+def order_to_dict(db: Session, order: models.Order, include_history: bool = False):
+    payment = get_order_payment(db, order.id)
+
+    data = {
+        "id": order.id,
+        "order_code": order.order_code,
+        "user_id": order.user_id,
+        "user_name": order.user.name if order.user else None,
+        "user_phone": order.user.phone if order.user else None,
+        "membership_level_snapshot": order.membership_level_snapshot,
+        "user_status_snapshot": order.user_status_snapshot,
+        "city_snapshot": order.city_snapshot,
+        "address_snapshot": order.address_snapshot,
+        "reference_snapshot": order.reference_snapshot,
+        "delivery_notes_snapshot": order.delivery_notes_snapshot,
+        "status": order.status,
+        "logistics_notes": order.logistics_notes,
+        "month": order.month,
+        "year": order.year,
+        "items_count": len(order.items),
+        **order_items_data(order),
+        **order_date_data(order),
+        **tracking_data(order),
+        **payment_data(payment),
+        **get_monthly_selection_data(db, order.user_id, order.month, order.year),
     }
 
+    if include_history:
+        data.update(tracking_history_data(order))
 
-def require_team_access(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    allowed_roles = {"superadmin", "admin", "supervisor", "logistics"}
-    if current_user.role not in allowed_roles:
-        raise HTTPException(status_code=403, detail="Acceso no autorizado")
-
-
-def require_admin_or_superadmin(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    allowed_roles = {"superadmin", "admin"}
-    if current_user.role not in allowed_roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para admin o superadmin",
-        )
-
-
-def require_logistics_or_admin(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    allowed_roles = {"superadmin", "admin", "logistics"}
-    if current_user.role not in allowed_roles:
-        raise HTTPException(status_code=403, detail="Acceso no autorizado")
+    return data
 
 
 @router.post("/create-manual")
@@ -178,6 +269,7 @@ def create_order_manual(
     require_admin_or_superadmin(current_user)
 
     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -213,7 +305,7 @@ def create_order_manual(
             detail="Ya existe una orden para este usuario en ese ciclo",
         )
 
-    if not monthly_selection.items or len(monthly_selection.items) == 0:
+    if not monthly_selection.items:
         raise HTTPException(
             status_code=400,
             detail="La selección mensual no tiene productos",
@@ -248,36 +340,20 @@ def create_order_manual(
         )
         db.add(order_item)
 
+    add_tracking_history(
+        db=db,
+        order=new_order,
+        current_user=current_user,
+        status="pending_payment_review",
+        note="Orden creada manualmente por administración",
+    )
+
     db.commit()
     db.refresh(new_order)
 
-    selection_info = get_monthly_selection_data(
-        db,
-        user.id,
-        payload.month,
-        payload.year,
-    )
-
     return {
         "message": "Orden creada correctamente y pendiente de aprobación administrativa",
-        "order": {
-            "id": new_order.id,
-            "order_code": new_order.order_code,
-            "user_id": new_order.user_id,
-            "month": new_order.month,
-            "year": new_order.year,
-            "status": new_order.status,
-            "user_status_snapshot": new_order.user_status_snapshot,
-            "city_snapshot": new_order.city_snapshot,
-            "address_snapshot": new_order.address_snapshot,
-            "reference_snapshot": new_order.reference_snapshot,
-            "delivery_notes_snapshot": new_order.delivery_notes_snapshot,
-            "admin_verified": False,
-            "items_count": len(new_order.items),
-            **order_items_data(new_order),
-            **order_date_data(new_order),
-            **selection_info,
-        },
+        "order": order_to_dict(db, new_order, include_history=True),
     }
 
 
@@ -310,36 +386,26 @@ def approve_order_for_logistics(
         )
 
     order.status = "approved_for_logistics"
+    order.logistics_notes = (
+        payload.approval_notes.strip()
+        if payload.approval_notes and payload.approval_notes.strip()
+        else "Pagos OK - orden liberada a logística"
+    )
 
-    if payload.approval_notes and payload.approval_notes.strip():
-        order.logistics_notes = payload.approval_notes.strip()
-    else:
-        order.logistics_notes = "Pagos OK - orden liberada a logística"
+    add_tracking_history(
+        db=db,
+        order=order,
+        current_user=current_user,
+        status="approved_for_logistics",
+        note=order.logistics_notes,
+    )
 
     db.commit()
     db.refresh(order)
 
-    payment_info = payment_data(payment)
-    selection_info = get_monthly_selection_data(
-        db,
-        order.user_id,
-        order.month,
-        order.year,
-    )
-
     return {
         "message": "Orden aprobada y liberada para logística",
-        "order": {
-            "id": order.id,
-            "order_code": order.order_code,
-            "status": order.status,
-            "logistics_notes": order.logistics_notes,
-            "items_count": len(order.items),
-            **order_items_data(order),
-            **order_date_data(order),
-            **payment_info,
-            **selection_info,
-        },
+        "order": order_to_dict(db, order, include_history=True),
     }
 
 
@@ -349,21 +415,24 @@ def list_orders(
     city: Optional[str] = Query(default=None),
     month: Optional[int] = Query(default=None),
     year: Optional[int] = Query(default=None),
+    search: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
     require_team_access(current_user)
 
-    query = db.query(models.Order)
+    query = db.query(models.Order).join(models.User)
 
     if current_user.role == "logistics":
         query = query.filter(
-            models.Order.status.in_([
-                "approved_for_logistics",
-                "preparing",
-                "shipped",
-                "delivered",
-            ])
+            models.Order.status.in_(
+                [
+                    "approved_for_logistics",
+                    "preparing",
+                    "shipped",
+                    "delivered",
+                ]
+            )
         )
 
     if status:
@@ -378,44 +447,31 @@ def list_orders(
     if year is not None:
         query = query.filter(models.Order.year == year)
 
-    orders = query.order_by(models.Order.created_at.desc()).all()
+    if search and search.strip():
+        clean = f"%{search.strip()}%"
 
-    items = []
-
-    for order in orders:
-        payment = get_order_payment(db, order.id)
-        payment_info = payment_data(payment)
-        selection_info = get_monthly_selection_data(
-            db,
-            order.user_id,
-            order.month,
-            order.year,
+        query = query.filter(
+            or_(
+                models.Order.order_code.ilike(clean),
+                models.Order.tracking_number.ilike(clean),
+                models.Order.carrier.ilike(clean),
+                models.Order.city_snapshot.ilike(clean),
+                models.Order.address_snapshot.ilike(clean),
+                models.User.name.ilike(clean),
+                models.User.phone.ilike(clean),
+                models.User.email.ilike(clean),
+                models.User.cedula.ilike(clean),
+            )
         )
 
-        items.append({
-            "id": order.id,
-            "order_code": order.order_code,
-            "user_id": order.user_id,
-            "user_name": order.user.name,
-            "user_phone": order.user.phone,
-            "membership_level_snapshot": order.membership_level_snapshot,
-            "user_status_snapshot": order.user_status_snapshot,
-            "city_snapshot": order.city_snapshot,
-            "address_snapshot": order.address_snapshot,
-            "reference_snapshot": order.reference_snapshot,
-            "delivery_notes_snapshot": order.delivery_notes_snapshot,
-            "status": order.status,
-            "logistics_notes": order.logistics_notes,
-            "month": order.month,
-            "year": order.year,
-            "items_count": len(order.items),
-            **order_items_data(order),
-            **order_date_data(order),
-            **payment_info,
-            **selection_info,
-        })
+    orders = query.order_by(models.Order.created_at.desc()).all()
 
-    return {"items": items}
+    return {
+        "items": [
+            order_to_dict(db, order, include_history=False)
+            for order in orders
+        ]
+    }
 
 
 @router.get("/{order_id}")
@@ -437,43 +493,68 @@ def get_order_detail(
             detail="La orden aún no ha sido liberada para logística",
         )
 
-    payment = get_order_payment(db, order.id)
-    payment_info = payment_data(payment)
-    selection_info = get_monthly_selection_data(
-        db,
-        order.user_id,
-        order.month,
-        order.year,
+    data = order_to_dict(db, order, include_history=True)
+
+    data["user"] = {
+        "id": order.user.id,
+        "name": order.user.name,
+        "email": order.user.email,
+        "phone": order.user.phone,
+        "cedula": order.user.cedula,
+        "membership_active": order.user.membership_active,
+        "is_active": order.user.is_active,
+        "role": order.user.role,
+    }
+
+    return data
+
+
+@router.put("/{order_id}/tracking")
+def update_order_tracking(
+    order_id: int,
+    payload: OrderTrackingUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_logistics_or_admin(current_user)
+
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if payload.carrier is not None:
+        order.carrier = payload.carrier.strip() if payload.carrier else None
+
+    if payload.tracking_number is not None:
+        order.tracking_number = (
+            payload.tracking_number.strip() if payload.tracking_number else None
+        )
+
+    if payload.tracking_url is not None:
+        order.tracking_url = payload.tracking_url.strip() if payload.tracking_url else None
+
+    if payload.shipping_notes is not None:
+        order.shipping_notes = (
+            payload.shipping_notes.strip() if payload.shipping_notes else None
+        )
+
+    note = payload.note or "Datos de guía / tracking actualizados"
+
+    add_tracking_history(
+        db=db,
+        order=order,
+        current_user=current_user,
+        status=order.status,
+        note=note,
     )
 
+    db.commit()
+    db.refresh(order)
+
     return {
-        "id": order.id,
-        "order_code": order.order_code,
-        "user": {
-            "id": order.user.id,
-            "name": order.user.name,
-            "email": order.user.email,
-            "phone": order.user.phone,
-            "cedula": order.user.cedula,
-            "membership_active": order.user.membership_active,
-            "is_active": order.user.is_active,
-            "role": order.user.role,
-        },
-        "membership_level_snapshot": order.membership_level_snapshot,
-        "user_status_snapshot": order.user_status_snapshot,
-        "city_snapshot": order.city_snapshot,
-        "address_snapshot": order.address_snapshot,
-        "reference_snapshot": order.reference_snapshot,
-        "delivery_notes_snapshot": order.delivery_notes_snapshot,
-        "status": order.status,
-        "logistics_notes": order.logistics_notes,
-        "month": order.month,
-        "year": order.year,
-        "items_count": len(order.items),
-        **order_items_data(order),
-        **order_date_data(order),
-        **payment_info,
-        **selection_info,
+        "message": "Tracking actualizado correctamente",
+        "order": order_to_dict(db, order, include_history=True),
     }
 
 
@@ -548,29 +629,18 @@ def update_order_status(
     if payload.status == "delivered" and order.delivered_at is None:
         order.delivered_at = now
 
+    add_tracking_history(
+        db=db,
+        order=order,
+        current_user=current_user,
+        status=payload.status,
+        note=payload.logistics_notes or f"Estado actualizado a {payload.status}",
+    )
+
     db.commit()
     db.refresh(order)
 
-    payment = get_order_payment(db, order.id)
-    payment_info = payment_data(payment)
-    selection_info = get_monthly_selection_data(
-        db,
-        order.user_id,
-        order.month,
-        order.year,
-    )
-
     return {
         "message": "Estado de orden actualizado correctamente",
-        "order": {
-            "id": order.id,
-            "order_code": order.order_code,
-            "status": order.status,
-            "logistics_notes": order.logistics_notes,
-            "items_count": len(order.items),
-            **order_items_data(order),
-            **order_date_data(order),
-            **payment_info,
-            **selection_info,
-        },
+        "order": order_to_dict(db, order, include_history=True),
     }
