@@ -153,7 +153,11 @@ def tracking_history_data(order):
                 "created_by": h.created_by,
                 "created_at": h.created_at,
             }
-            for h in sorted(history, key=lambda x: x.created_at or datetime.utcnow(), reverse=True)
+            for h in sorted(
+                history,
+                key=lambda x: x.created_at or datetime.utcnow(),
+                reverse=True,
+            )
         ]
     }
 
@@ -197,24 +201,14 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
             "monthly_selection_status": None,
         }
 
-    items = (
-        db.query(models.MonthlySelectionItem)
-        .filter(models.MonthlySelectionItem.monthly_selection_id == selection.id)
-        .all()
-    )
-
     products = []
 
-    for item in items:
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id
-        ).first()
-
-        if product:
+    for item in selection.items:
+        if item.product:
             products.append(
                 {
-                    "product_id": product.id,
-                    "name": product.name,
+                    "product_id": item.product.id,
+                    "name": item.product.name,
                     "quantity": item.quantity,
                 }
             )
@@ -332,13 +326,14 @@ def create_order_manual(
     for item in monthly_selection.items:
         product_name = item.product.name if item.product else "Producto no encontrado"
 
-        order_item = models.OrderItem(
-            order_id=new_order.id,
-            product_id=item.product_id,
-            product_name_snapshot=product_name,
-            quantity=item.quantity,
+        db.add(
+            models.OrderItem(
+                order_id=new_order.id,
+                product_id=item.product_id,
+                product_name_snapshot=product_name,
+                quantity=item.quantity,
+            )
         )
-        db.add(order_item)
 
     add_tracking_history(
         db=db,
@@ -474,6 +469,55 @@ def list_orders(
     }
 
 
+@router.get("/user/{user_id}")
+def list_user_orders(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_team_access(current_user)
+
+    orders = (
+        db.query(models.Order)
+        .filter(models.Order.user_id == user_id)
+        .order_by(models.Order.created_at.desc())
+        .all()
+    )
+
+    return {
+        "items": [
+            order_to_dict(db, order, include_history=True)
+            for order in orders
+        ]
+    }
+
+
+@router.get("/user/{user_id}/delivered")
+def list_user_delivered_orders(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_team_access(current_user)
+
+    orders = (
+        db.query(models.Order)
+        .filter(
+            models.Order.user_id == user_id,
+            models.Order.status == "delivered",
+        )
+        .order_by(models.Order.delivered_at.desc())
+        .all()
+    )
+
+    return {
+        "items": [
+            order_to_dict(db, order, include_history=True)
+            for order in orders
+        ]
+    }
+
+
 @router.get("/{order_id}")
 def get_order_detail(
     order_id: int,
@@ -532,7 +576,9 @@ def update_order_tracking(
         )
 
     if payload.tracking_url is not None:
-        order.tracking_url = payload.tracking_url.strip() if payload.tracking_url else None
+        order.tracking_url = (
+            payload.tracking_url.strip() if payload.tracking_url else None
+        )
 
     if payload.shipping_notes is not None:
         order.shipping_notes = (
