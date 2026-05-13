@@ -141,7 +141,7 @@ def level_text(user, card):
 
 def get_card_visual_data(db: Session, user, card):
     if user.role == "ambassador":
-        ambassador = get_ambassador_by_user(db, user.id)
+        ambassador = get_ambassador_by_user(db, user.id) if db else None
         ambassador_id = ambassador.id if ambassador else user.id
 
         return {
@@ -149,7 +149,7 @@ def get_card_visual_data(db: Session, user, card):
             "display_name": user.name,
             "level_text": "Embajador Mayu",
             "member_code": generate_ambassador_code(ambassador_id),
-            "bg_file": "card_oro.jpg",
+            "bg_file": "card_embajador.jpg",
             "fallback_color": (0, 120, 110),
             "accent_color": (255, 236, 170),
         }
@@ -510,9 +510,18 @@ def create_wallet_icon(output_path: str):
     img.save(output_path)
 
 
-def copy_or_create_wallet_images(pass_dir: str):
+def copy_or_create_wallet_images(pass_dir: str, user, card):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+
+    if user.role == "ambassador":
+        strip_source = os.path.join(base_dir, "assets", "card_embajador.jpg")
+    elif card.level_snapshot == 1:
+        strip_source = os.path.join(base_dir, "assets", "card_cobre.jpg")
+    elif card.level_snapshot == 2:
+        strip_source = os.path.join(base_dir, "assets", "card_plata.jpg")
+    else:
+        strip_source = os.path.join(base_dir, "assets", "card_oro.jpg")
 
     for filename, size in [
         ("icon.png", (29, 29)),
@@ -536,6 +545,17 @@ def copy_or_create_wallet_images(pass_dir: str):
                 create_wallet_icon(target)
         else:
             create_wallet_icon(target)
+
+    if os.path.exists(strip_source):
+        try:
+            strip = Image.open(strip_source).convert("RGB")
+            strip = strip.resize((1032, 336))
+            strip.save(os.path.join(pass_dir, "strip.png"))
+
+            strip_2x = strip.resize((2064, 672))
+            strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
+        except Exception as e:
+            print("ERROR STRIP WALLET:", e)
 
 
 def load_wwdr_certificate(path: str):
@@ -667,7 +687,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "description": "Tarjeta Mayu Wellness Club",
             "logoText": "MAYU",
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(13,148,136)",
+            "backgroundColor": "rgb(0,0,0)",
             "labelColor": "rgb(255,255,255)",
             "generic": {
                 "primaryFields": [
@@ -730,7 +750,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         with open(os.path.join(pass_dir, "pass.json"), "w", encoding="utf-8") as f:
             json.dump(pass_json, f, ensure_ascii=False, separators=(",", ":"))
 
-        copy_or_create_wallet_images(pass_dir)
+        copy_or_create_wallet_images(pass_dir, user, card)
         build_manifest(pass_dir)
         sign_manifest(pass_dir, certs_dir)
 
