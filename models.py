@@ -142,23 +142,11 @@ class AmbassadorReferral(Base):
     __tablename__ = "ambassador_referrals"
 
     id = Column(Integer, primary_key=True, index=True)
-
-    ambassador_id = Column(
-        Integer,
-        ForeignKey("ambassadors.id"),
-        nullable=False,
-    )
-
-    user_id = Column(
-        Integer,
-        ForeignKey("users.id"),
-        nullable=False,
-        unique=True,
-    )
+    ambassador_id = Column(Integer, ForeignKey("ambassadors.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
 
     referral_code = Column(String, nullable=False)
     status = Column(String, default="active", nullable=False)
-
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ambassador = relationship("Ambassador", back_populates="referrals")
@@ -213,7 +201,7 @@ class Product(Base):
     image_url = Column(String, nullable=True)
 
     # Categorías válidas:
-    # coloides / cbd / bienestar / hongos / soporte_funcional
+    # coloide / cbd / bienestar / hongos / soporte_funcional
     category = Column(String, nullable=True, index=True)
 
     active = Column(Boolean, default=True, nullable=False)
@@ -285,13 +273,11 @@ class MonthlySelectionItem(Base):
     __tablename__ = "monthly_selection_items"
 
     id = Column(Integer, primary_key=True, index=True)
-
     monthly_selection_id = Column(
         Integer,
         ForeignKey("monthly_selections.id"),
         nullable=False,
     )
-
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     quantity = Column(Integer, default=1, nullable=False)
 
@@ -425,6 +411,12 @@ class Order(Base):
     status = Column(String, nullable=False, default="pending")
     logistics_notes = Column(Text, nullable=True)
 
+    # FASE 4 — LOGÍSTICA PRO
+    carrier = Column(String, nullable=True)  # Ejemplo: Servientrega
+    tracking_number = Column(String, nullable=True, index=True)
+    tracking_url = Column(String, nullable=True)
+    shipping_notes = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     prepared_at = Column(DateTime, nullable=True)
     shipped_at = Column(DateTime, nullable=True)
@@ -440,6 +432,12 @@ class Order(Base):
     )
 
     payments = relationship("MembershipPayment", back_populates="order")
+
+    tracking_history = relationship(
+        "OrderTrackingHistory",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "month", "year", name="uq_order_user_cycle"),
@@ -458,6 +456,26 @@ class OrderItem(Base):
 
     order = relationship("Order", back_populates="items")
     product = relationship("Product", back_populates="order_items")
+
+
+class OrderTrackingHistory(Base):
+    __tablename__ = "order_tracking_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+
+    status = Column(String, nullable=False)
+    note = Column(Text, nullable=True)
+
+    carrier = Column(String, nullable=True)
+    tracking_number = Column(String, nullable=True)
+    tracking_url = Column(String, nullable=True)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    order = relationship("Order", back_populates="tracking_history")
+    creator = relationship("User", foreign_keys=[created_by])
 
 
 class MembershipPayment(Base):
