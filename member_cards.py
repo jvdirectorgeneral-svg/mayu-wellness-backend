@@ -51,6 +51,7 @@ def get_card_level_snapshot(user):
 def get_card_status(user):
     if user.role == "ambassador":
         return "active" if getattr(user, "is_active", True) else "inactive"
+
     return "active" if user.membership_active else "inactive"
 
 
@@ -149,7 +150,7 @@ def get_card_visual_data(db: Session, user, card):
             "display_name": user.name,
             "level_text": "Embajador Mayu",
             "member_code": generate_ambassador_code(ambassador_id),
-            "bg_file": "card_embajador.jpg",
+            "bg_file": "embajador_pic.png",
             "fallback_color": (0, 120, 110),
             "accent_color": (255, 236, 170),
         }
@@ -323,7 +324,6 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
         return HTMLResponse("<h1>Usuario no encontrado</h1>", status_code=404)
 
     card.status = get_card_status(user)
-
     db.commit()
     db.refresh(card)
 
@@ -346,9 +346,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
         </head>
 
         <body style="background:#0f172a; color:white; font-family:Arial; padding:40px;">
-
             <div style="max-width:520px; margin:auto; background:#1e293b; border-radius:24px; padding:32px;">
-
                 <h1 style="text-align:center;">MAYU WELLNESS CLUB</h1>
 
                 <div style="text-align:center; margin:20px 0;">
@@ -362,9 +360,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
                 <p><strong>Tipo:</strong> {level_text(user, card)}</p>
                 <p><strong>Código:</strong> {card.member_code}</p>
                 <p><strong>Vigencia:</strong> {CARD_VALIDITY_TEXT}</p>
-
             </div>
-
         </body>
     </html>
     """
@@ -436,53 +432,13 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         shadow_color=shadow_color,
     )
 
-    draw_text_with_shadow(
-        draw,
-        (60, 305),
-        visual["display_name"],
-        name_font,
-        text_color,
-        shadow_color,
-    )
-
-    draw_text_with_shadow(
-        draw,
-        (60, 355),
-        visual["level_text"],
-        info_font,
-        text_color,
-        shadow_color,
-    )
-
-    draw_text_with_shadow(
-        draw,
-        (60, 400),
-        f"Código: {visual['member_code']}",
-        info_font,
-        text_color,
-        shadow_color,
-    )
-
-    draw_text_with_shadow(
-        draw,
-        (60, 440),
-        f"Válido hasta: {CARD_VALIDITY_TEXT}",
-        info_font,
-        text_color,
-        shadow_color,
-    )
-
-    draw_text_with_shadow(
-        draw,
-        (60, 480),
-        f"Estado: {card.status}",
-        info_font,
-        text_color,
-        shadow_color,
-    )
+    draw_text_with_shadow(draw, (60, 305), visual["display_name"], name_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 355), visual["level_text"], info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 400), f"Código: {visual['member_code']}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 440), f"Válido hasta: {CARD_VALIDITY_TEXT}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 480), f"Estado: {card.status}", info_font, text_color, shadow_color)
 
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
-
     qr = qrcode.make(validation_url)
     qr = qr.resize((170, 170))
     image.paste(qr, (735, 340))
@@ -515,13 +471,13 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
 
     if user.role == "ambassador":
-        strip_source = os.path.join(base_dir, "assets", "card_embajador.jpg")
+        strip_source = os.path.join(base_dir, "assets", "wallet_embajador.png")
     elif card.level_snapshot == 1:
-        strip_source = os.path.join(base_dir, "assets", "card_cobre.jpg")
+        strip_source = os.path.join(base_dir, "assets", "wallet_cobre.png")
     elif card.level_snapshot == 2:
-        strip_source = os.path.join(base_dir, "assets", "card_plata.jpg")
+        strip_source = os.path.join(base_dir, "assets", "wallet_plata.png")
     else:
-        strip_source = os.path.join(base_dir, "assets", "card_oro.jpg")
+        strip_source = os.path.join(base_dir, "assets", "wallet_oro.png")
 
     for filename, size in [
         ("icon.png", (29, 29)),
@@ -549,13 +505,14 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
     if os.path.exists(strip_source):
         try:
             strip = Image.open(strip_source).convert("RGB")
-            strip = strip.resize((1032, 336))
             strip.save(os.path.join(pass_dir, "strip.png"))
 
-            strip_2x = strip.resize((2064, 672))
+            strip_2x = strip.resize((strip.width * 2, strip.height * 2))
             strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
         except Exception as e:
             print("ERROR STRIP WALLET:", e)
+    else:
+        print("NO EXISTE STRIP WALLET:", strip_source)
 
 
 def load_wwdr_certificate(path: str):
@@ -687,7 +644,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "description": "Tarjeta Mayu Wellness Club",
             "logoText": "MAYU",
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(0,0,0)",
+            "backgroundColor": "rgb(255,255,255)",
             "labelColor": "rgb(255,255,255)",
             "generic": {
                 "primaryFields": [
