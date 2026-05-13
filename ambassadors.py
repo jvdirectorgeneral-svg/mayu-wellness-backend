@@ -44,6 +44,108 @@ def build_whatsapp_url(phone: str | None):
     return f"https://wa.me/{normalized}"
 
 
+def level_name(level):
+    try:
+        parsed = int(level or 0)
+    except Exception:
+        parsed = 0
+
+    if parsed == 1:
+        return "Nivel 1 - Cobre"
+    if parsed == 2:
+        return "Nivel 2 - Plata"
+    if parsed == 3:
+        return "Nivel 3 - Oro"
+    return "Sin nivel"
+
+
+def format_order_products(order):
+    if not order:
+        return []
+
+    return [
+        {
+            "id": item.id,
+            "product_id": item.product_id,
+            "name": item.product_name_snapshot,
+            "product_name_snapshot": item.product_name_snapshot,
+            "quantity": item.quantity,
+        }
+        for item in order.items
+    ]
+
+
+def order_tracking_data(order):
+    if not order:
+        return {
+            "last_order_id": None,
+            "last_order_code": None,
+            "last_order_status": None,
+            "carrier": None,
+            "tracking_number": None,
+            "tracking_url": None,
+            "shipping_notes": None,
+            "shipping_batch_date": None,
+            "prepared_at": None,
+            "shipped_at": None,
+            "delivered_at": None,
+            "delivery_products": [],
+        }
+
+    return {
+        "last_order_id": order.id,
+        "last_order_code": order.order_code,
+        "last_order_status": order.status,
+        "carrier": getattr(order, "carrier", None),
+        "tracking_number": getattr(order, "tracking_number", None),
+        "tracking_url": getattr(order, "tracking_url", None),
+        "shipping_notes": getattr(order, "shipping_notes", None),
+        "shipping_batch_date": getattr(order, "shipping_batch_date", None),
+        "prepared_at": getattr(order, "prepared_at", None),
+        "shipped_at": getattr(order, "shipped_at", None),
+        "delivered_at": getattr(order, "delivered_at", None),
+        "delivery_products": format_order_products(order),
+    }
+
+
+def get_last_order_for_user(db: Session, user_id: int):
+    return (
+        db.query(models.Order)
+        .filter(models.Order.user_id == user_id)
+        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
+        .first()
+    )
+
+
+def get_delivery_history_for_user(db: Session, user_id: int):
+    orders = (
+        db.query(models.Order)
+        .filter(models.Order.user_id == user_id)
+        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "order_id": order.id,
+            "order_code": order.order_code,
+            "month": order.month,
+            "year": order.year,
+            "status": order.status,
+            "carrier": getattr(order, "carrier", None),
+            "tracking_number": getattr(order, "tracking_number", None),
+            "tracking_url": getattr(order, "tracking_url", None),
+            "shipping_notes": getattr(order, "shipping_notes", None),
+            "shipping_batch_date": getattr(order, "shipping_batch_date", None),
+            "prepared_at": getattr(order, "prepared_at", None),
+            "shipped_at": getattr(order, "shipped_at", None),
+            "delivered_at": getattr(order, "delivered_at", None),
+            "products": format_order_products(order),
+        }
+        for order in orders
+    ]
+
+
 def draw_text_with_shadow(
     draw,
     position,
@@ -90,13 +192,8 @@ def get_spaced_text_width(draw, text, font, spacing=1):
 
 
 @router.post("/register")
-def register_ambassador(
-    data: AmbassadorRegister,
-    db: Session = Depends(get_db)
-):
-    existing_user = db.query(models.User).filter(
-        models.User.email == data.email
-    ).first()
+def register_ambassador(data: AmbassadorRegister, db: Session = Depends(get_db)):
+    existing_user = db.query(models.User).filter(models.User.email == data.email).first()
 
     if existing_user:
         raise HTTPException(status_code=400, detail="El email ya está registrado")
@@ -123,7 +220,7 @@ def register_ambassador(
         membership_level=None,
         membership_active=False,
         role="ambassador",
-        is_active=True
+        is_active=True,
     )
 
     db.add(user)
@@ -137,10 +234,10 @@ def register_ambassador(
         national_id=data.national_id,
         address=data.address,
         bank_name=data.bank_name,
-        account_type=data.account_type,
+        bank_account_type=data.account_type,
         bank_account_number=data.bank_account_number,
         status="active",
-        is_active=True
+        is_active=True,
     )
 
     db.add(ambassador)
@@ -148,6 +245,7 @@ def register_ambassador(
     db.refresh(ambassador)
 
     ambassador.ambassador_code = generate_ambassador_code(ambassador.id)
+
     db.commit()
     db.refresh(ambassador)
 
@@ -161,7 +259,7 @@ def register_ambassador(
             "cedula": user.cedula,
             "address": user.address,
             "role": user.role,
-            "is_active": user.is_active
+            "is_active": user.is_active,
         },
         "ambassador": {
             "id": ambassador.id,
@@ -171,20 +269,22 @@ def register_ambassador(
             "national_id": ambassador.national_id,
             "address": ambassador.address,
             "bank_name": ambassador.bank_name,
-            "account_type": ambassador.account_type,
+            "account_type": ambassador.bank_account_type,
+            "bank_account_type": ambassador.bank_account_type,
             "bank_account_number": ambassador.bank_account_number,
             "status": ambassador.status,
-            "is_active": ambassador.is_active
-        }
+            "is_active": ambassador.is_active,
+        },
     }
 
 
 @router.post("/login")
 def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
-    db_user = db.query(models.User).filter(
-        models.User.email == payload.email,
-        models.User.role == "ambassador"
-    ).first()
+    db_user = (
+        db.query(models.User)
+        .filter(models.User.email == payload.email, models.User.role == "ambassador")
+        .first()
+    )
 
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -195,25 +295,21 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
     try:
         password_ok = verify_password(payload.password, db_user.password)
     except Exception:
-        raise HTTPException(
-            status_code=401,
-            detail="Contraseña inválida o hash dañado"
-        )
+        raise HTTPException(status_code=401, detail="Contraseña inválida o hash dañado")
 
     if not password_ok:
         raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.user_id == db_user.id
-    ).first()
+    ambassador = (
+        db.query(models.Ambassador)
+        .filter(models.Ambassador.user_id == db_user.id)
+        .first()
+    )
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
 
-    token = create_access_token({
-        "sub": str(db_user.id),
-        "email": db_user.email
-    })
+    token = create_access_token({"sub": str(db_user.id), "email": db_user.email})
 
     return {
         "message": "Login exitoso",
@@ -225,7 +321,7 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
             "email": db_user.email,
             "phone": db_user.phone,
             "cedula": db_user.cedula,
-            "role": db_user.role
+            "role": db_user.role,
         },
         "ambassador": {
             "id": ambassador.id,
@@ -235,26 +331,23 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
             "national_id": ambassador.national_id,
             "address": ambassador.address,
             "bank_name": ambassador.bank_name,
-            "account_type": ambassador.account_type,
+            "account_type": ambassador.bank_account_type,
+            "bank_account_type": ambassador.bank_account_type,
             "bank_account_number": ambassador.bank_account_number,
             "status": ambassador.status,
-            "is_active": ambassador.is_active
-        }
+            "is_active": ambassador.is_active,
+        },
     }
 
 
 @router.get("/{ambassador_id}")
 def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.id == ambassador_id
-    ).first()
+    ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
-    user = db.query(models.User).filter(
-        models.User.id == ambassador.user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
@@ -272,26 +365,23 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
             "national_id": ambassador.national_id,
             "address": ambassador.address,
             "bank_name": ambassador.bank_name,
-            "account_type": ambassador.account_type,
+            "account_type": ambassador.bank_account_type,
+            "bank_account_type": ambassador.bank_account_type,
             "bank_account_number": ambassador.bank_account_number,
             "status": ambassador.status,
-            "is_active": ambassador.is_active
+            "is_active": ambassador.is_active,
         }
     }
 
 
 @router.get("/{ambassador_id}/card")
 def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.id == ambassador_id
-    ).first()
+    ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
-    user = db.query(models.User).filter(
-        models.User.id == ambassador.user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
@@ -302,49 +392,38 @@ def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
         "code": ambassador.ambassador_code,
         "valid_until": "Indefinido",
         "status": ambassador.status,
-        "qr_token": ambassador.ambassador_token
+        "qr_token": ambassador.ambassador_token,
+        "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
     }
 
 
 @router.get("/validate/{ambassador_token}", response_class=HTMLResponse)
 def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db)):
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.ambassador_token == ambassador_token
-    ).first()
+    ambassador = (
+        db.query(models.Ambassador)
+        .filter(models.Ambassador.ambassador_token == ambassador_token)
+        .first()
+    )
 
     if not ambassador:
         return HTMLResponse(
             content="""
-            <html>
-                <head>
-                    <title>Tarjeta inválida</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                </head>
-                <body style="font-family: Arial, sans-serif; background:#111; color:white; text-align:center; padding:40px;">
-                    <h1 style="color:#ff4d4f;">Tarjeta inválida</h1>
-                    <p>El código QR no corresponde a una tarjeta válida.</p>
-                </body>
-            </html>
+            <html><body style="font-family: Arial; background:#111; color:white; text-align:center; padding:40px;">
+            <h1 style="color:#ff4d4f;">Tarjeta inválida</h1>
+            <p>El código QR no corresponde a una tarjeta válida.</p>
+            </body></html>
             """,
             status_code=404,
         )
 
-    user = db.query(models.User).filter(
-        models.User.id == ambassador.user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
         return HTMLResponse(
             content="""
-            <html>
-                <head>
-                    <title>Usuario no encontrado</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                </head>
-                <body style="font-family: Arial, sans-serif; background:#111; color:white; text-align:center; padding:40px;">
-                    <h1 style="color:#ff4d4f;">Usuario no encontrado</h1>
-                </body>
-            </html>
+            <html><body style="font-family: Arial; background:#111; color:white; text-align:center; padding:40px;">
+            <h1 style="color:#ff4d4f;">Usuario no encontrado</h1>
+            </body></html>
             """,
             status_code=404,
         )
@@ -359,19 +438,19 @@ def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
         </head>
         <body style="margin:0; font-family: Arial, sans-serif; background:#0f172a; color:white; display:flex; align-items:center; justify-content:center; min-height:100vh;">
-            <div style="max-width:520px; width:90%; background:#1e293b; border-radius:24px; padding:32px; box-shadow:0 10px 30px rgba(0,0,0,0.35);">
+            <div style="max-width:520px; width:90%; background:#1e293b; border-radius:24px; padding:32px;">
                 <h1 style="text-align:center; margin-top:0;">MAYU WELLNESS CLUB</h1>
                 <div style="text-align:center; margin:20px 0;">
                     <span style="display:inline-block; padding:12px 24px; border-radius:999px; background:{status_color}; color:white; font-weight:bold; font-size:22px;">
                         {status_text}
                     </span>
                 </div>
-                <p style="font-size:20px; margin:14px 0;"><strong>Nombre:</strong> {user.name}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Email:</strong> {user.email}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Celular:</strong> {user.phone or ''}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Tipo:</strong> Embajador Mayu</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Código:</strong> {ambassador.ambassador_code}</p>
-                <p style="font-size:20px; margin:14px 0;"><strong>Vigencia:</strong> Indefinido</p>
+                <p style="font-size:20px;"><strong>Nombre:</strong> {user.name}</p>
+                <p style="font-size:20px;"><strong>Email:</strong> {user.email}</p>
+                <p style="font-size:20px;"><strong>Celular:</strong> {user.phone or ''}</p>
+                <p style="font-size:20px;"><strong>Tipo:</strong> Embajador Mayu</p>
+                <p style="font-size:20px;"><strong>Código:</strong> {ambassador.ambassador_code}</p>
+                <p style="font-size:20px;"><strong>Vigencia:</strong> Indefinido</p>
             </div>
         </body>
     </html>
@@ -382,16 +461,12 @@ def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db
 
 @router.get("/{ambassador_id}/image")
 def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get_db)):
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.id == ambassador_id
-    ).first()
+    ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
-    user = db.query(models.User).filter(
-        models.User.id == ambassador.user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
@@ -429,6 +504,7 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
     )
 
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+
     if os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert("RGBA")
@@ -462,6 +538,7 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
     draw_text_with_shadow(draw, (60, 480), f"Estado: {ambassador.status}", info_font, text_color, shadow_color)
 
     validation_url = f"{BASE_PUBLIC_URL}/ambassadors/validate/{ambassador.ambassador_token}"
+
     qr = qrcode.make(validation_url)
     qr = qr.resize((170, 170))
     image.paste(qr, (735, 340))
@@ -478,38 +555,36 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
 
 @router.get("/{ambassador_id}/dashboard")
 def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
-    ambassador = db.query(models.Ambassador).filter(
-        models.Ambassador.id == ambassador_id
-    ).first()
+    ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
-    user = db.query(models.User).filter(
-        models.User.id == ambassador.user_id
-    ).first()
+    user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
 
-    referrals = db.query(models.AmbassadorReferral).filter(
-        models.AmbassadorReferral.ambassador_id == ambassador.id
-    ).all()
+    referrals = (
+        db.query(models.AmbassadorReferral)
+        .filter(models.AmbassadorReferral.ambassador_id == ambassador.id)
+        .all()
+    )
 
     affiliates = []
     active_referrals = 0
     inactive_referrals = 0
 
     for referral in referrals:
-        referred_user = db.query(models.User).filter(
-            models.User.id == referral.user_id
-        ).first()
+        referred_user = db.query(models.User).filter(models.User.id == referral.user_id).first()
 
         if referred_user:
             if referred_user.membership_active:
                 active_referrals += 1
             else:
                 inactive_referrals += 1
+
+            last_order = get_last_order_for_user(db, referred_user.id)
 
             affiliates.append({
                 "id": referred_user.id,
@@ -518,7 +593,15 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
                 "phone": referred_user.phone,
                 "whatsapp_url": build_whatsapp_url(referred_user.phone),
                 "membership_level": referred_user.membership_level,
-                "membership_active": referred_user.membership_active
+                "membership_level_name": level_name(referred_user.membership_level),
+                "membership_active": referred_user.membership_active,
+                "is_active": referred_user.is_active,
+                "city": referred_user.city,
+                "address": referred_user.address,
+                "reference": referred_user.reference,
+                "delivery_notes": referred_user.delivery_notes,
+                **order_tracking_data(last_order),
+                "delivery_history": get_delivery_history_for_user(db, referred_user.id),
             })
 
     total_referrals = len(affiliates)
@@ -533,7 +616,7 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
             "valid_until": "Indefinido",
             "status": ambassador.status,
             "qr_token": ambassador.ambassador_token,
-            "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image"
+            "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
         },
         "stats": {
             "total_referrals": total_referrals,
@@ -541,12 +624,54 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
             "inactive_referrals": inactive_referrals,
             "total_payments": total_payments,
             "monthly_commission": monthly_commission,
-            "goal": 100
+            "goal": 100,
         },
         "reward_progress": {
             "goal": 100,
             "current": active_referrals,
-            "reward": "Viaje a la playa"
+            "reward": "Viaje a la playa",
         },
-        "affiliates": affiliates
+        "affiliates": affiliates,
+    }
+
+
+@router.get("/{ambassador_id}/affiliates/{user_id}/history")
+def get_affiliate_delivery_history(
+    ambassador_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
+
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    referral = (
+        db.query(models.AmbassadorReferral)
+        .filter(
+            models.AmbassadorReferral.ambassador_id == ambassador.id,
+            models.AmbassadorReferral.user_id == user_id,
+        )
+        .first()
+    )
+
+    if not referral:
+        raise HTTPException(status_code=403, detail="Este socio no pertenece a este embajador")
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Socio no encontrado")
+
+    return {
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "membership_level": user.membership_level,
+            "membership_level_name": level_name(user.membership_level),
+            "membership_active": user.membership_active,
+        },
+        "history": get_delivery_history_for_user(db, user.id),
     }
