@@ -59,6 +59,20 @@ def payment_data(payment):
     }
 
 
+def order_items_data(order):
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "product_id": item.product_id,
+                "product_name_snapshot": item.product_name_snapshot,
+                "quantity": item.quantity,
+            }
+            for item in order.items
+        ]
+    }
+
+
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
     selection = (
         db.query(models.MonthlySelection)
@@ -224,10 +238,12 @@ def create_order_manual(
     db.flush()
 
     for item in monthly_selection.items:
+        product_name = item.product.name if item.product else "Producto no encontrado"
+
         order_item = models.OrderItem(
             order_id=new_order.id,
             product_id=item.product_id,
-            product_name_snapshot=item.product.name,
+            product_name_snapshot=product_name,
             quantity=item.quantity,
         )
         db.add(order_item)
@@ -257,6 +273,8 @@ def create_order_manual(
             "reference_snapshot": new_order.reference_snapshot,
             "delivery_notes_snapshot": new_order.delivery_notes_snapshot,
             "admin_verified": False,
+            "items_count": len(new_order.items),
+            **order_items_data(new_order),
             **order_date_data(new_order),
             **selection_info,
         },
@@ -316,6 +334,8 @@ def approve_order_for_logistics(
             "order_code": order.order_code,
             "status": order.status,
             "logistics_notes": order.logistics_notes,
+            "items_count": len(order.items),
+            **order_items_data(order),
             **order_date_data(order),
             **payment_info,
             **selection_info,
@@ -389,6 +409,7 @@ def list_orders(
             "month": order.month,
             "year": order.year,
             "items_count": len(order.items),
+            **order_items_data(order),
             **order_date_data(order),
             **payment_info,
             **selection_info,
@@ -448,16 +469,9 @@ def get_order_detail(
         "logistics_notes": order.logistics_notes,
         "month": order.month,
         "year": order.year,
+        "items_count": len(order.items),
+        **order_items_data(order),
         **order_date_data(order),
-        "items": [
-            {
-                "id": item.id,
-                "product_id": item.product_id,
-                "product_name_snapshot": item.product_name_snapshot,
-                "quantity": item.quantity,
-            }
-            for item in order.items
-        ],
         **payment_info,
         **selection_info,
     }
@@ -553,6 +567,8 @@ def update_order_status(
             "order_code": order.order_code,
             "status": order.status,
             "logistics_notes": order.logistics_notes,
+            "items_count": len(order.items),
+            **order_items_data(order),
             **order_date_data(order),
             **payment_info,
             **selection_info,
