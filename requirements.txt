@@ -16,3 +16,4 @@ python-jose[cryptography]
 pillow
 qrcode
 cryptography
+pyOpenSSL
