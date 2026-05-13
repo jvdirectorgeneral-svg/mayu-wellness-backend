@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -68,9 +68,11 @@ def get_spaced_text_width(draw, text, font, spacing=1):
 
 
 def get_ambassador_by_user(db: Session, user_id: int):
-    return db.query(models.Ambassador).filter(
-        models.Ambassador.user_id == user_id
-    ).first()
+    return (
+        db.query(models.Ambassador)
+        .filter(models.Ambassador.user_id == user_id)
+        .first()
+    )
 
 
 def get_user_card_type(user):
@@ -135,9 +137,11 @@ def get_or_create_card(db: Session, user_id: int):
     member_code = get_card_code(db, user)
     card_status = get_card_status(user)
 
-    card = db.query(models.MemberCard).filter(
-        models.MemberCard.user_id == user.id
-    ).first()
+    card = (
+        db.query(models.MemberCard)
+        .filter(models.MemberCard.user_id == user.id)
+        .first()
+    )
 
     if card:
         card.member_code = member_code
@@ -229,6 +233,10 @@ def generate_member_card(user_id: int, db: Session = Depends(get_db)):
             "status": card.status,
             "expires_at": card.expires_at,
             "card_type": get_user_card_type(user),
+            "image_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image",
+            "web_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}",
+            "apple_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}",
+            "google_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}",
         },
     }
 
@@ -245,15 +253,57 @@ def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
         "level_snapshot": card.level_snapshot,
         "status": card.status,
         "expires_at": card.expires_at or CARD_VALIDITY_TEXT,
-        "card_type": get_user_card_type(user) if user else "member",
+        "card_type": get_user_card_type(user),
+        "image_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image",
+        "web_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}",
+        "apple_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}",
+        "google_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}",
     }
+
+
+@router.get("/user/{user_id}", response_class=HTMLResponse)
+def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
+    user, card = get_or_create_card(db, user_id)
+
+    visual = get_card_visual_data(db, user, card)
+    image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image"
+    validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
+
+    html = f"""
+    <html>
+        <head>
+            <title>Tarjeta Mayu Wellness Club</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin:0; font-family:Arial,sans-serif; background:#0f172a; color:white; padding:24px;">
+            <div style="max-width:720px; margin:auto;">
+                <h1 style="text-align:center;">MAYU WELLNESS CLUB</h1>
+                <div style="background:#1e293b; border-radius:24px; padding:20px; text-align:center;">
+                    <img src="{image_url}" style="max-width:100%; border-radius:18px;" />
+                    <h2>{user.name}</h2>
+                    <p><strong>Tipo:</strong> {visual["level_text"]}</p>
+                    <p><strong>Código:</strong> {card.member_code}</p>
+                    <p><strong>Estado:</strong> {card.status}</p>
+                    <p><strong>Vigencia:</strong> {CARD_VALIDITY_TEXT}</p>
+                    <a href="{validate_url}" style="display:inline-block; margin-top:16px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">
+                        Validar tarjeta
+                    </a>
+                </div>
+            </div>
+        </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html, status_code=200)
 
 
 @router.get("/validate/{qr_token}", response_class=HTMLResponse)
 def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
-    card = db.query(models.MemberCard).filter(
-        models.MemberCard.qr_token == qr_token
-    ).first()
+    card = (
+        db.query(models.MemberCard)
+        .filter(models.MemberCard.qr_token == qr_token)
+        .first()
+    )
 
     if not card:
         return HTMLResponse(
@@ -465,3 +515,44 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         media_type="image/png",
         content_disposition_type="inline",
     )
+
+
+@router.get("/apple-wallet/{user_id}", response_class=HTMLResponse)
+def apple_wallet_placeholder(user_id: int, db: Session = Depends(get_db)):
+    user, card = get_or_create_card(db, user_id)
+
+    image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image"
+    web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}"
+
+    html = f"""
+    <html>
+        <head>
+            <title>Apple Wallet - Mayu</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin:0; font-family:Arial,sans-serif; background:#0f172a; color:white; padding:24px;">
+            <div style="max-width:620px; margin:auto; background:#1e293b; border-radius:24px; padding:28px; text-align:center;">
+                <h1>Apple Wallet</h1>
+                <p>La tarjeta digital Mayu ya está generada.</p>
+                <img src="{image_url}" style="max-width:100%; border-radius:18px; margin:16px 0;" />
+                <p><strong>Socio:</strong> {user.name}</p>
+                <p><strong>Código:</strong> {card.member_code}</p>
+                <p>Para activar Apple Wallet real falta configurar certificado PassKit y generar archivo .pkpass firmado.</p>
+                <a href="{web_url}" style="display:inline-block; margin-top:14px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">
+                    Ver tarjeta web
+                </a>
+            </div>
+        </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html, status_code=200)
+
+
+@router.get("/google-wallet/{user_id}")
+def google_wallet_placeholder(user_id: int, db: Session = Depends(get_db)):
+    user, card = get_or_create_card(db, user_id)
+
+    web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}"
+
+    return RedirectResponse(url=web_url)
