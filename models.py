@@ -14,9 +14,6 @@ from datetime import datetime
 from database import Base
 
 
-# =========================
-# 👤 USUARIO
-# =========================
 class User(Base):
     __tablename__ = "users"
 
@@ -45,11 +42,9 @@ class User(Base):
 
     membership_level = Column(Integer, nullable=True)
     membership_active = Column(Boolean, default=False, nullable=False)
-
     is_active = Column(Boolean, default=True, nullable=False)
 
     role = Column(String, default="member", nullable=False)
-
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ambassador_profile = relationship(
@@ -104,9 +99,6 @@ class User(Base):
     )
 
 
-# =========================
-# 🤝 EMBAJADOR
-# =========================
 class Ambassador(Base):
     __tablename__ = "ambassadors"
 
@@ -146,9 +138,6 @@ class Ambassador(Base):
     )
 
 
-# =========================
-# 🔗 REFERIDOS DE EMBAJADOR
-# =========================
 class AmbassadorReferral(Base):
     __tablename__ = "ambassador_referrals"
 
@@ -181,9 +170,6 @@ class AmbassadorReferral(Base):
     )
 
 
-# =========================
-# 💎 PLANES
-# =========================
 class Plan(Base):
     __tablename__ = "plans"
 
@@ -217,9 +203,6 @@ class Plan(Base):
     commissions = relationship("Commission", back_populates="plan")
 
 
-# =========================
-# 🧪 PRODUCTOS
-# =========================
 class Product(Base):
     __tablename__ = "products"
 
@@ -228,6 +211,11 @@ class Product(Base):
     price = Column(Float, nullable=False)
     description = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
+
+    # Categorías válidas:
+    # coloides / cbd / bienestar / hongos / soporte_funcional
+    category = Column(String, nullable=True, index=True)
+
     active = Column(Boolean, default=True, nullable=False)
 
     plan_products = relationship(
@@ -244,9 +232,6 @@ class Product(Base):
     order_items = relationship("OrderItem", back_populates="product")
 
 
-# =========================
-# 🔗 RELACIÓN PLAN - PRODUCTO
-# =========================
 class PlanProduct(Base):
     __tablename__ = "plan_products"
 
@@ -264,9 +249,6 @@ class PlanProduct(Base):
     )
 
 
-# =========================
-# 📅 SELECCIÓN MENSUAL
-# =========================
 class MonthlySelection(Base):
     __tablename__ = "monthly_selections"
 
@@ -299,9 +281,6 @@ class MonthlySelection(Base):
     )
 
 
-# =========================
-# 📦 ITEMS DE LA SELECCIÓN MENSUAL
-# =========================
 class MonthlySelectionItem(Base):
     __tablename__ = "monthly_selection_items"
 
@@ -335,9 +314,6 @@ class MonthlySelectionItem(Base):
     )
 
 
-# =========================
-# 🔁 SOLICITUD DE CAMBIO DE PLAN
-# =========================
 class PlanChangeRequest(Base):
     __tablename__ = "plan_change_requests"
 
@@ -365,9 +341,6 @@ class PlanChangeRequest(Base):
     )
 
 
-# =========================
-# 💳 TARJETA DIGITAL DEL SOCIO
-# =========================
 class MemberCard(Base):
     __tablename__ = "member_cards"
 
@@ -384,9 +357,6 @@ class MemberCard(Base):
     user = relationship("User", back_populates="member_card")
 
 
-# =========================
-# 💰 COMISIONES MENSUALES
-# =========================
 class Commission(Base):
     __tablename__ = "commissions"
 
@@ -433,9 +403,6 @@ class Commission(Base):
     )
 
 
-# =========================
-# 📦 ÓRDENES
-# =========================
 class Order(Base):
     __tablename__ = "orders"
 
@@ -479,9 +446,6 @@ class Order(Base):
     )
 
 
-# =========================
-# 📦 ITEMS DE ORDEN
-# =========================
 class OrderItem(Base):
     __tablename__ = "order_items"
 
@@ -496,9 +460,6 @@ class OrderItem(Base):
     product = relationship("Product", back_populates="order_items")
 
 
-# =========================
-# 💸 PAGOS DE MEMBRESÍA
-# =========================
 class MembershipPayment(Base):
     __tablename__ = "membership_payments"
 
