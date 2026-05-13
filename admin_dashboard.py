@@ -31,6 +31,20 @@ class AdminUpdatePhoneRequest(BaseModel):
     phone: str
 
 
+class AdminUpdateMemberRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    cedula: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    reference: Optional[str] = None
+    delivery_notes: Optional[str] = None
+    membership_level: Optional[int] = None
+    membership_active: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
 class AdminUpdateAmbassadorRequest(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -39,7 +53,6 @@ class AdminUpdateAmbassadorRequest(BaseModel):
     ambassador_code: Optional[str] = None
     status: Optional[str] = None
     is_active: Optional[bool] = None
-
     bank_name: Optional[str] = None
     bank_account_type: Optional[str] = None
     bank_account_number: Optional[str] = None
@@ -75,6 +88,31 @@ def set_if_exists(obj, field: str, value):
         setattr(obj, field, value)
 
 
+def clean_optional(value):
+    if value is None:
+        return None
+    return value.strip()
+
+
+def user_to_dict(u: User):
+    return {
+        "id": u.id,
+        "name": u.name,
+        "email": u.email,
+        "phone": u.phone,
+        "cedula": u.cedula,
+        "city": getattr(u, "city", None),
+        "address": getattr(u, "address", None),
+        "reference": getattr(u, "reference", None),
+        "delivery_notes": getattr(u, "delivery_notes", None),
+        "membership_level": u.membership_level,
+        "membership_active": u.membership_active,
+        "is_active": u.is_active,
+        "role": u.role,
+        "created_at": u.created_at,
+    }
+
+
 def ambassador_to_dict(a: Ambassador):
     user = a.user
 
@@ -90,7 +128,6 @@ def ambassador_to_dict(a: Ambassador):
         "status": a.status,
         "is_active": a.is_active,
         "created_at": a.created_at,
-
         "bank_name": getattr(a, "bank_name", None),
         "bank_account_type": getattr(a, "bank_account_type", None),
         "bank_account_number": getattr(a, "bank_account_number", None),
@@ -142,6 +179,20 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
         "editable_product": products[0]["name"] if products else None,
         "monthly_selection_products": products,
         "monthly_selection_status": selection.status,
+    }
+
+
+def order_items_data(order: Order):
+    return {
+        "items": [
+            {
+                "id": item.id,
+                "product_id": item.product_id,
+                "product_name_snapshot": item.product_name_snapshot,
+                "quantity": item.quantity,
+            }
+            for item in order.items
+        ]
     }
 
 
@@ -203,6 +254,7 @@ def order_to_dict(db: Session, order: Order):
         "delivered_at": order.delivered_at,
         "shipping_batch_date": getattr(order, "shipping_batch_date", None),
         "items_count": len(order.items),
+        **order_items_data(order),
         "payment_id": payment.id if payment else None,
         "payment_status": payment.status if payment else None,
         "payment_amount": payment.amount if payment else None,
@@ -298,23 +350,93 @@ def get_users(
         .all()
     )
 
+    return {"items": [user_to_dict(u) for u in users]}
+
+
+@router.put("/users/{user_id}")
+def admin_update_member(
+    user_id: int,
+    payload: AdminUpdateMemberRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role != "member":
+        raise HTTPException(
+            status_code=403,
+            detail="Este endpoint solo permite editar socios",
+        )
+
+    if payload.email is not None:
+        clean_email = payload.email.strip().lower()
+
+        existing_email = db.query(User).filter(
+            User.email == clean_email,
+            User.id != user.id,
+        ).first()
+
+        if existing_email:
+            raise HTTPException(
+                status_code=400,
+                detail="El correo ya está registrado por otro usuario",
+            )
+
+        user.email = clean_email
+
+    if payload.cedula is not None:
+        clean_cedula = payload.cedula.strip()
+
+        if clean_cedula:
+            existing_cedula = db.query(User).filter(
+                User.cedula == clean_cedula,
+                User.id != user.id,
+            ).first()
+
+            if existing_cedula:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La cédula ya está registrada por otro usuario",
+                )
+
+        user.cedula = clean_cedula
+
+    if payload.name is not None:
+        user.name = payload.name.strip()
+
+    if payload.phone is not None:
+        user.phone = payload.phone.strip()
+
+    set_if_exists(user, "city", clean_optional(payload.city))
+    set_if_exists(user, "address", clean_optional(payload.address))
+    set_if_exists(user, "reference", clean_optional(payload.reference))
+    set_if_exists(user, "delivery_notes", clean_optional(payload.delivery_notes))
+
+    if payload.membership_level is not None:
+        if payload.membership_level not in {1, 2, 3}:
+            raise HTTPException(
+                status_code=400,
+                detail="El nivel debe ser 1, 2 o 3",
+            )
+        user.membership_level = payload.membership_level
+
+    if payload.membership_active is not None:
+        user.membership_active = payload.membership_active
+
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(user)
+
     return {
-        "items": [
-            {
-                "id": u.id,
-                "name": u.name,
-                "email": u.email,
-                "phone": u.phone,
-                "cedula": u.cedula,
-                "city": u.city,
-                "membership_level": u.membership_level,
-                "membership_active": u.membership_active,
-                "is_active": u.is_active,
-                "role": u.role,
-                "created_at": u.created_at,
-            }
-            for u in users
-        ]
+        "message": "Socio actualizado correctamente",
+        "user": user_to_dict(user),
     }
 
 
@@ -327,9 +449,7 @@ def get_ambassadors(
 
     ambassadors = db.query(Ambassador).order_by(Ambassador.id.desc()).all()
 
-    return {
-        "items": [ambassador_to_dict(a) for a in ambassadors]
-    }
+    return {"items": [ambassador_to_dict(a) for a in ambassadors]}
 
 
 @router.put("/ambassadors/{ambassador_id}")
@@ -372,16 +492,17 @@ def update_ambassador(
     if payload.cedula is not None:
         clean_cedula = payload.cedula.strip()
 
-        existing_cedula = db.query(User).filter(
-            User.cedula == clean_cedula,
-            User.id != user.id,
-        ).first()
+        if clean_cedula:
+            existing_cedula = db.query(User).filter(
+                User.cedula == clean_cedula,
+                User.id != user.id,
+            ).first()
 
-        if existing_cedula:
-            raise HTTPException(
-                status_code=400,
-                detail="La cédula ya está registrada por otro usuario",
-            )
+            if existing_cedula:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La cédula ya está registrada por otro usuario",
+                )
 
         user.cedula = clean_cedula
 
@@ -414,12 +535,12 @@ def update_ambassador(
         ambassador.is_active = payload.is_active
         user.is_active = payload.is_active
 
-    set_if_exists(ambassador, "bank_name", payload.bank_name.strip() if payload.bank_name else None)
-    set_if_exists(ambassador, "bank_account_type", payload.bank_account_type.strip() if payload.bank_account_type else None)
-    set_if_exists(ambassador, "bank_account_number", payload.bank_account_number.strip() if payload.bank_account_number else None)
-    set_if_exists(ambassador, "bank_account_holder", payload.bank_account_holder.strip() if payload.bank_account_holder else None)
-    set_if_exists(ambassador, "bank_identification", payload.bank_identification.strip() if payload.bank_identification else None)
-    set_if_exists(ambassador, "payment_notes", payload.payment_notes.strip() if payload.payment_notes else None)
+    set_if_exists(ambassador, "bank_name", clean_optional(payload.bank_name))
+    set_if_exists(ambassador, "bank_account_type", clean_optional(payload.bank_account_type))
+    set_if_exists(ambassador, "bank_account_number", clean_optional(payload.bank_account_number))
+    set_if_exists(ambassador, "bank_account_holder", clean_optional(payload.bank_account_holder))
+    set_if_exists(ambassador, "bank_identification", clean_optional(payload.bank_identification))
+    set_if_exists(ambassador, "payment_notes", clean_optional(payload.payment_notes))
 
     db.commit()
     db.refresh(ambassador)
@@ -466,13 +587,7 @@ def admin_update_user_phone(
 
     return {
         "message": "Teléfono actualizado correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "phone": user.phone,
-            "role": user.role,
-        },
+        "user": user_to_dict(user),
     }
 
 
@@ -489,9 +604,7 @@ def get_payments(
         .all()
     )
 
-    return {
-        "items": [payment_to_dict(payment) for payment in payments]
-    }
+    return {"items": [payment_to_dict(payment) for payment in payments]}
 
 
 @router.put("/payments/{payment_id}/verify")
@@ -633,9 +746,7 @@ def get_orders(
 
     orders = db.query(Order).order_by(Order.created_at.desc()).all()
 
-    return {
-        "items": [order_to_dict(db, order) for order in orders]
-    }
+    return {"items": [order_to_dict(db, order) for order in orders]}
 
 
 @router.put("/orders/{order_id}/approve")
