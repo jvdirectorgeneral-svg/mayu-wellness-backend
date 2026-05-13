@@ -28,25 +28,21 @@ def is_edit_window_open():
 
 def current_cycle_status():
     weekday = datetime.now().weekday()
-
     if weekday in [0, 1, 2, 3]:
         return "admin_review"
     if weekday == 4:
         return "weekly_shipping"
-
     return "editable"
 
 
 def get_cycle_status_label():
     status = current_cycle_status()
-
     if status == "editable":
         return "Productos editables disponibles"
     if status == "admin_review":
         return "Revisión administrativa de pagos y suscripciones"
     if status == "weekly_shipping":
         return "Despacho semanal de logística"
-
     return "Productos editables disponibles"
 
 
@@ -57,26 +53,15 @@ def get_plan_name_by_level(level: int):
         return "Nivel 2 - Plata"
     if level == 3:
         return "Nivel 3 - Oro"
-
     return "Sin plan"
 
 
 def format_month_label(month: int, year: int):
     months = {
-        1: "Enero",
-        2: "Febrero",
-        3: "Marzo",
-        4: "Abril",
-        5: "Mayo",
-        6: "Junio",
-        7: "Julio",
-        8: "Agosto",
-        9: "Septiembre",
-        10: "Octubre",
-        11: "Noviembre",
-        12: "Diciembre",
+        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+        5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+        9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
     }
-
     return f"{months.get(month, 'Mes')} {year}"
 
 
@@ -95,14 +80,10 @@ def product_to_option(p: models.Product):
 def get_products_by_category(db: Session, category: str):
     products = (
         db.query(models.Product)
-        .filter(
-            models.Product.category == category,
-            models.Product.active == True,
-        )
+        .filter(models.Product.category == category, models.Product.active == True)
         .order_by(models.Product.name.asc())
         .all()
     )
-
     return [product_to_option(p) for p in products]
 
 
@@ -115,98 +96,26 @@ def get_available_editable_sections_by_level(db: Session, level: int):
 
     if level == 1:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar a elección",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     if level == 2:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "hongos",
-                "section_name": "Hongos medicinales",
-                "category": "hongos",
-                "max_items": 1,
-                "products": hongos,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar a elección",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "hongos", "section_name": "Hongos medicinales", "category": "hongos", "max_items": 1, "products": hongos},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     if level == 3:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar CBD",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
-            {
-                "section_key": "soporte_funcional",
-                "section_name": "Soporte funcional",
-                "category": "soporte_funcional",
-                "max_items": 1,
-                "products": soporte,
-            },
-            {
-                "section_key": "extra_bienestar",
-                "section_name": "Producto extra bienestar",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar CBD", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {"section_key": "soporte_funcional", "section_name": "Soporte funcional", "category": "soporte_funcional", "max_items": 1, "products": soporte},
+            {"section_key": "extra_bienestar", "section_name": "Producto extra bienestar", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     return []
@@ -228,20 +137,14 @@ def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
     if item.product_id is not None:
         return (
             db.query(models.Product)
-            .filter(
-                models.Product.id == item.product_id,
-                models.Product.active == True,
-            )
+            .filter(models.Product.id == item.product_id, models.Product.active == True)
             .first()
         )
 
     if item.product_name and item.product_name.strip():
         return (
             db.query(models.Product)
-            .filter(
-                models.Product.name == item.product_name.strip(),
-                models.Product.active == True,
-            )
+            .filter(models.Product.name == item.product_name.strip(), models.Product.active == True)
             .first()
         )
 
@@ -258,19 +161,15 @@ def get_selected_products(db: Session, selection_id: int):
     products = []
 
     for item in items:
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id
-        ).first()
+        product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
 
         if product:
-            products.append(
-                {
-                    "product_id": product.id,
-                    "name": product.name,
-                    "category": product.category,
-                    "quantity": item.quantity,
-                }
-            )
+            products.append({
+                "product_id": product.id,
+                "name": product.name,
+                "category": product.category,
+                "quantity": item.quantity,
+            })
 
     return products
 
@@ -287,34 +186,64 @@ def get_order_for_selection(db: Session, user_id: int, month: int, year: int):
     )
 
 
+def get_tracking_history(order):
+    if not order:
+        return []
+
+    history = getattr(order, "tracking_history", []) or []
+
+    return [
+        {
+            "id": h.id,
+            "order_id": h.order_id,
+            "status": h.status,
+            "note": h.note,
+            "carrier": h.carrier,
+            "tracking_number": h.tracking_number,
+            "tracking_url": h.tracking_url,
+            "created_by": h.created_by,
+            "created_at": h.created_at,
+        }
+        for h in sorted(
+            history,
+            key=lambda x: x.created_at or datetime.utcnow(),
+            reverse=True,
+        )
+    ]
+
+
 def order_tracking_data(order):
     if not order:
         return {
             "order_id": None,
             "order_code": None,
             "order_status": None,
+            "carrier": None,
             "tracking_number": None,
             "tracking_url": None,
-            "shipping_provider": None,
+            "shipping_notes": None,
             "shipping_batch_date": None,
             "prepared_at": None,
             "shipped_at": None,
             "delivered_at": None,
             "logistics_notes": None,
+            "tracking_history": [],
         }
 
     return {
         "order_id": order.id,
         "order_code": order.order_code,
         "order_status": order.status,
+        "carrier": getattr(order, "carrier", None),
         "tracking_number": getattr(order, "tracking_number", None),
         "tracking_url": getattr(order, "tracking_url", None),
-        "shipping_provider": getattr(order, "shipping_provider", None),
+        "shipping_notes": getattr(order, "shipping_notes", None),
         "shipping_batch_date": getattr(order, "shipping_batch_date", None),
         "prepared_at": getattr(order, "prepared_at", None),
         "shipped_at": getattr(order, "shipped_at", None),
         "delivered_at": getattr(order, "delivered_at", None),
         "logistics_notes": getattr(order, "logistics_notes", None),
+        "tracking_history": get_tracking_history(order),
     }
 
 
@@ -331,9 +260,7 @@ def init_monthly_selection(
     if not user.membership_level:
         raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
 
-    plan = db.query(models.Plan).filter(
-        models.Plan.level == user.membership_level
-    ).first()
+    plan = db.query(models.Plan).filter(models.Plan.level == user.membership_level).first()
 
     if not plan:
         raise HTTPException(status_code=404, detail="Plan no encontrado")
@@ -363,12 +290,11 @@ def init_monthly_selection(
             editable=editable_now,
         )
         db.add(selection)
-        db.commit()
-        db.refresh(selection)
     else:
         selection.editable = editable_now
-        db.commit()
-        db.refresh(selection)
+
+    db.commit()
+    db.refresh(selection)
 
     products = get_selected_products(db, selection.id)
 
@@ -386,14 +312,8 @@ def init_monthly_selection(
         "products": products,
         "editable_product": products[0]["name"] if products else None,
         "editable_products": products,
-        "editable_sections": get_available_editable_sections_by_level(
-            db,
-            user.membership_level,
-        ),
-        "available_editable_products": get_available_editable_products_by_level(
-            db,
-            user.membership_level,
-        ),
+        "editable_sections": get_available_editable_sections_by_level(db, user.membership_level),
+        "available_editable_products": get_available_editable_products_by_level(db, user.membership_level),
         "fixed_products": [],
         "edit_window": "Disponible durante todo el mes",
         "admin_review_window": "lunes a jueves",
@@ -452,14 +372,8 @@ def get_user_monthly_selection(
         "products": products,
         "editable_product": products[0]["name"] if products else None,
         "editable_products": products,
-        "editable_sections": get_available_editable_sections_by_level(
-            db,
-            user.membership_level or 0,
-        ),
-        "available_editable_products": get_available_editable_products_by_level(
-            db,
-            user.membership_level or 0,
-        ),
+        "editable_sections": get_available_editable_sections_by_level(db, user.membership_level or 0),
+        "available_editable_products": get_available_editable_products_by_level(db, user.membership_level or 0),
         "fixed_products": [],
         "edit_window": "Disponible durante todo el mes",
         "admin_review_window": "lunes a jueves",
@@ -495,10 +409,7 @@ def save_monthly_selection_items(
             detail="La ventana de edición no está disponible",
         )
 
-    allowed_products = get_available_editable_products_by_level(
-        db,
-        user.membership_level or 0,
-    )
+    allowed_products = get_available_editable_products_by_level(db, user.membership_level or 0)
 
     db.query(models.MonthlySelectionItem).filter(
         models.MonthlySelectionItem.monthly_selection_id == selection.id
@@ -525,7 +436,6 @@ def save_monthly_selection_items(
                 quantity=1,
             )
         )
-
         saved_products.append(product.name)
 
     if not saved_products:
@@ -572,10 +482,7 @@ def get_user_monthly_selection_history(
     )
 
     if not selections:
-        return {
-            "history": [],
-            "upcoming": None,
-        }
+        return {"history": [], "upcoming": None}
 
     now = datetime.now()
     current_month = now.month
@@ -587,19 +494,11 @@ def get_user_monthly_selection_history(
     for selection in selections:
         selected_products = get_selected_products(db, selection.id)
         selected_names = [p["name"] for p in selected_products]
-        order = get_order_for_selection(
-            db,
-            user_id,
-            selection.month,
-            selection.year,
-        )
+        order = get_order_for_selection(db, user_id, selection.month, selection.year)
 
         is_current_or_future = (
             selection.year > current_year
-            or (
-                selection.year == current_year
-                and selection.month >= current_month
-            )
+            or (selection.year == current_year and selection.month >= current_month)
         )
 
         selection_data = {
@@ -611,11 +510,7 @@ def get_user_monthly_selection_history(
             "editableProduct": selected_names[0] if selected_names else "No seleccionado",
             "editableProducts": selected_names,
             "products": selected_products,
-            "status": (
-                "Pendiente para próximo despacho semanal"
-                if is_current_or_future
-                else "Procesado"
-            ),
+            "status": "Pendiente para próximo despacho semanal" if is_current_or_future else "Procesado",
             "shippingWindow": "viernes",
             "editWindow": "Disponible durante todo el mes",
             **order_tracking_data(order),
@@ -626,10 +521,7 @@ def get_user_monthly_selection_history(
         else:
             history.append(selection_data)
 
-    return {
-        "history": history,
-        "upcoming": upcoming,
-    }
+    return {"history": history, "upcoming": upcoming}
 
 
 @router.get("/user/{user_id}/upcoming")
@@ -638,9 +530,7 @@ def get_user_upcoming_delivery(
     db: Session = Depends(get_db),
 ):
     data = get_user_monthly_selection_history(user_id=user_id, db=db)
-    return {
-        "upcoming": data.get("upcoming"),
-    }
+    return {"upcoming": data.get("upcoming")}
 
 
 @router.get("/cycle-info")
