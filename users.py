@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
 from dependencies import get_current_user
@@ -47,6 +47,17 @@ class LoginRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+
+class VerifyRecoveryCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class ResetPasswordWithCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
 
 
 class StaffCreate(BaseModel):
@@ -112,12 +123,11 @@ def require_superadmin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Acceso solo para superadmin")
 
 
-def generate_temporary_password(length: int = 10) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+def generate_recovery_code() -> str:
+    return "".join(secrets.choice(string.digits) for _ in range(4))
 
 
-def send_reset_email(to_email: str, temporary_password: str):
+def send_reset_email(to_email: str, code: str):
     smtp_email = os.getenv("SMTP_EMAIL")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -127,19 +137,21 @@ def send_reset_email(to_email: str, temporary_password: str):
         raise Exception("Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor")
 
     msg = EmailMessage()
-    msg["Subject"] = "Recuperación de contraseña - Mayu Wellness Club"
+    msg["Subject"] = "Código de recuperación - Mayu Wellness Club"
     msg["From"] = smtp_email
     msg["To"] = to_email
+
     msg.set_content(
         f"""
 Hola,
 
-Hemos generado una contraseña temporal para tu cuenta de Mayu Wellness Club.
+Tu código de recuperación para Mayu Wellness Club es:
 
-Tu nueva contraseña temporal es:
-{temporary_password}
+{code}
 
-Te recomendamos iniciar sesión y cambiarla lo antes posible.
+Este código expira en 10 minutos.
+
+Si no solicitaste este cambio, puedes ignorar este mensaje.
 
 Equipo Mayu Wellness Club
 """.strip()
@@ -151,6 +163,32 @@ Equipo Mayu Wellness Club
         server.starttls(context=context)
         server.login(smtp_email, smtp_password)
         server.send_message(msg)
+
+
+def user_response(user: models.User):
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "phone": user.phone,
+        "cedula": user.cedula,
+        "city": user.city,
+        "address": user.address,
+        "reference": user.reference,
+        "delivery_notes": user.delivery_notes,
+        "phone_secondary": user.phone_secondary,
+        "status": user.status,
+        "membership_level": user.membership_level,
+        "membership_active": user.membership_active,
+        "is_active": getattr(user, "is_active", True),
+        "role": user.role,
+        "accepted_terms": getattr(user, "accepted_terms", False),
+        "accepted_privacy_policy": getattr(user, "accepted_privacy_policy", False),
+        "accepted_digital_policy": getattr(user, "accepted_digital_policy", False),
+        "accepted_terms_at": getattr(user, "accepted_terms_at", None),
+        "accepted_privacy_policy_at": getattr(user, "accepted_privacy_policy_at", None),
+        "accepted_digital_policy_at": getattr(user, "accepted_digital_policy_at", None),
+    }
 
 
 @router.get("/superadmin/me")
@@ -198,15 +236,18 @@ def update_superadmin_profile(
     db.commit()
     db.refresh(user)
 
-    return {"message": "Perfil superadmin actualizado correctamente", "user": {
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "phone": user.phone,
-        "cedula": user.cedula,
-        "role": user.role,
-        "is_active": getattr(user, "is_active", True),
-    }}
+    return {
+        "message": "Perfil superadmin actualizado correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "phone": user.phone,
+            "cedula": user.cedula,
+            "role": user.role,
+            "is_active": getattr(user, "is_active", True),
+        },
+    }
 
 
 @router.put("/superadmin/me/password")
@@ -236,35 +277,7 @@ def update_superadmin_password(
 @router.get("/users")
 def get_users(db: Session = Depends(get_db)):
     users = db.query(models.User).all()
-
-    return {
-        "users": [
-            {
-                "id": u.id,
-                "name": u.name,
-                "email": u.email,
-                "phone": u.phone,
-                "cedula": u.cedula,
-                "city": u.city,
-                "address": u.address,
-                "reference": u.reference,
-                "delivery_notes": u.delivery_notes,
-                "phone_secondary": u.phone_secondary,
-                "status": u.status,
-                "membership_level": u.membership_level,
-                "membership_active": u.membership_active,
-                "is_active": getattr(u, "is_active", True),
-                "role": u.role,
-                "accepted_terms": getattr(u, "accepted_terms", False),
-                "accepted_privacy_policy": getattr(u, "accepted_privacy_policy", False),
-                "accepted_digital_policy": getattr(u, "accepted_digital_policy", False),
-                "accepted_terms_at": getattr(u, "accepted_terms_at", None),
-                "accepted_privacy_policy_at": getattr(u, "accepted_privacy_policy_at", None),
-                "accepted_digital_policy_at": getattr(u, "accepted_digital_policy_at", None),
-            }
-            for u in users
-        ]
-    }
+    return {"users": [user_response(u) for u in users]}
 
 
 @router.post("/users")
@@ -349,30 +362,9 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
         db.add(referral)
         db.commit()
 
-    return {
-        "id": new_user.id,
-        "name": new_user.name,
-        "email": new_user.email,
-        "phone": new_user.phone,
-        "cedula": new_user.cedula,
-        "city": new_user.city,
-        "address": new_user.address,
-        "reference": new_user.reference,
-        "delivery_notes": new_user.delivery_notes,
-        "phone_secondary": new_user.phone_secondary,
-        "status": new_user.status,
-        "membership_level": new_user.membership_level,
-        "membership_active": new_user.membership_active,
-        "is_active": new_user.is_active,
-        "role": new_user.role,
-        "ambassador_code": cleaned_ambassador_code,
-        "accepted_terms": new_user.accepted_terms,
-        "accepted_privacy_policy": new_user.accepted_privacy_policy,
-        "accepted_digital_policy": new_user.accepted_digital_policy,
-        "accepted_terms_at": new_user.accepted_terms_at,
-        "accepted_privacy_policy_at": new_user.accepted_privacy_policy_at,
-        "accepted_digital_policy_at": new_user.accepted_digital_policy_at,
-    }
+    response = user_response(new_user)
+    response["ambassador_code"] = cleaned_ambassador_code
+    return response
 
 
 @router.put("/users/{user_id}/membership")
@@ -388,26 +380,7 @@ def update_membership(user_id: int, payload: MembershipUpdate, db: Session = Dep
     db.commit()
     db.refresh(user)
 
-    return {
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "phone": user.phone,
-        "cedula": user.cedula,
-        "city": user.city,
-        "address": user.address,
-        "reference": user.reference,
-        "delivery_notes": user.delivery_notes,
-        "phone_secondary": user.phone_secondary,
-        "status": user.status,
-        "membership_level": user.membership_level,
-        "membership_active": user.membership_active,
-        "is_active": getattr(user, "is_active", True),
-        "role": user.role,
-        "accepted_terms": getattr(user, "accepted_terms", False),
-        "accepted_privacy_policy": getattr(user, "accepted_privacy_policy", False),
-        "accepted_digital_policy": getattr(user, "accepted_digital_policy", False),
-    }
+    return user_response(user)
 
 
 @router.post("/login")
@@ -439,25 +412,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         "message": "Login exitoso",
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": db_user.id,
-            "name": db_user.name,
-            "email": db_user.email,
-            "phone": db_user.phone,
-            "cedula": db_user.cedula,
-            "city": db_user.city,
-            "address": db_user.address,
-            "reference": db_user.reference,
-            "delivery_notes": db_user.delivery_notes,
-            "phone_secondary": db_user.phone_secondary,
-            "membership_level": db_user.membership_level,
-            "membership_active": db_user.membership_active,
-            "is_active": getattr(db_user, "is_active", True),
-            "role": db_user.role,
-            "accepted_terms": getattr(db_user, "accepted_terms", False),
-            "accepted_privacy_policy": getattr(db_user, "accepted_privacy_policy", False),
-            "accepted_digital_policy": getattr(db_user, "accepted_digital_policy", False),
-        },
+        "user": user_response(db_user),
     }
 
 
@@ -473,19 +428,114 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     if not getattr(db_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    temporary_password = generate_temporary_password()
+    code = generate_recovery_code()
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+
+    db.query(models.PasswordResetCode).filter(
+        models.PasswordResetCode.email == email,
+        models.PasswordResetCode.used == False,
+    ).update({"used": True}, synchronize_session=False)
+
+    reset_code = models.PasswordResetCode(
+        user_id=db_user.id,
+        email=email,
+        code=code,
+        used=False,
+        expires_at=expires_at,
+    )
+
+    db.add(reset_code)
+    db.commit()
 
     try:
-        send_reset_email(db_user.email, temporary_password)
+        send_reset_email(db_user.email, code)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"No se pudo enviar el correo: {str(e)}")
 
-    db_user.password = hash_password(temporary_password)
+    return {"message": "Código de recuperación enviado al correo registrado"}
+
+
+@router.post("/verify-recovery-code")
+def verify_recovery_code(payload: VerifyRecoveryCodeRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    code = payload.code.strip()
+
+    reset_code = (
+        db.query(models.PasswordResetCode)
+        .filter(
+            models.PasswordResetCode.email == email,
+            models.PasswordResetCode.code == code,
+            models.PasswordResetCode.used == False,
+        )
+        .order_by(models.PasswordResetCode.created_at.desc())
+        .first()
+    )
+
+    if not reset_code:
+        raise HTTPException(status_code=400, detail="Código incorrecto")
+
+    if datetime.utcnow() > reset_code.expires_at:
+        reset_code.used = True
+        db.commit()
+        raise HTTPException(status_code=400, detail="Código expirado")
+
+    return {"message": "Código válido"}
+
+
+@router.post("/reset-password-with-code")
+def reset_password_with_code(
+    payload: ResetPasswordWithCodeRequest,
+    db: Session = Depends(get_db),
+):
+    email = payload.email.strip().lower()
+    code = payload.code.strip()
+    new_password = payload.new_password.strip()
+
+    if not new_password or len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres")
+
+    reset_code = (
+        db.query(models.PasswordResetCode)
+        .filter(
+            models.PasswordResetCode.email == email,
+            models.PasswordResetCode.code == code,
+            models.PasswordResetCode.used == False,
+        )
+        .order_by(models.PasswordResetCode.created_at.desc())
+        .first()
+    )
+
+    if not reset_code:
+        raise HTTPException(status_code=400, detail="Código incorrecto")
+
+    if datetime.utcnow() > reset_code.expires_at:
+        reset_code.used = True
+        db.commit()
+        raise HTTPException(status_code=400, detail="Código expirado")
+
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    user.password = hash_password(new_password)
+    reset_code.used = True
 
     db.commit()
-    db.refresh(db_user)
+    db.refresh(user)
 
-    return {"message": "Se envió una contraseña temporal al correo registrado"}
+    return {
+        "message": "Contraseña actualizada correctamente",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "apple_wallet_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/apple-wallet/{user.id}",
+            "google_wallet_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/google-wallet/{user.id}",
+            "card_web_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/user/{user.id}/web",
+        },
+    }
 
 
 @router.post("/superadmin/internal-users")
@@ -578,6 +628,7 @@ def list_staff(
     items = []
 
     for u in users:
+        item = user_response(u)
         ambassador_code = None
 
         if u.role == "ambassador":
@@ -588,23 +639,8 @@ def list_staff(
             if ambassador:
                 ambassador_code = ambassador.ambassador_code
 
-        items.append({
-            "id": u.id,
-            "name": u.name,
-            "email": u.email,
-            "phone": u.phone,
-            "cedula": u.cedula,
-            "role": u.role,
-            "status": u.status,
-            "membership_level": u.membership_level,
-            "membership_active": u.membership_active,
-            "is_active": getattr(u, "is_active", True),
-            "created_at": u.created_at,
-            "ambassador_code": ambassador_code,
-            "accepted_terms": getattr(u, "accepted_terms", False),
-            "accepted_privacy_policy": getattr(u, "accepted_privacy_policy", False),
-            "accepted_digital_policy": getattr(u, "accepted_digital_policy", False),
-        })
+        item["ambassador_code"] = ambassador_code
+        items.append(item)
 
     return {"items": items}
 
@@ -953,7 +989,6 @@ def recovery_reset_admin(db: Session = Depends(get_db)):
     db.refresh(admin)
 
     return {
-        "message": "Admin recuperado",
+        "message": "Admin recuperado correctamente",
         "email": admin.email,
-        "password": "Mayu2026",
     }
