@@ -199,11 +199,7 @@ class Product(Base):
     price = Column(Float, nullable=False)
     description = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
-
-    # Categorías válidas:
-    # coloide / cbd / bienestar / hongos / soporte_funcional
     category = Column(String, nullable=True, index=True)
-
     active = Column(Boolean, default=True, nullable=False)
 
     plan_products = relationship(
@@ -411,8 +407,7 @@ class Order(Base):
     status = Column(String, nullable=False, default="pending")
     logistics_notes = Column(Text, nullable=True)
 
-    # FASE 4 — LOGÍSTICA PRO
-    carrier = Column(String, nullable=True)  # Ejemplo: Servientrega
+    carrier = Column(String, nullable=True)
     tracking_number = Column(String, nullable=True, index=True)
     tracking_url = Column(String, nullable=True)
     shipping_notes = Column(Text, nullable=True)
@@ -521,3 +516,20 @@ class MembershipPayment(Base):
         "User",
         foreign_keys=[admin_verified_by],
     )
+
+
+class PasswordResetCode(Base):
+    __tablename__ = "password_reset_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    email = Column(String, nullable=False, index=True)
+
+    code = Column(String, nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
+
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
