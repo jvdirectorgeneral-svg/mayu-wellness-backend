@@ -131,7 +131,7 @@ def send_reset_email(to_email: str, code: str):
     smtp_email = os.getenv("SMTP_EMAIL")
     smtp_password = os.getenv("SMTP_PASSWORD")
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_port = int(os.getenv("SMTP_PORT", "465"))
 
     if not smtp_email or not smtp_password:
         raise Exception("Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor")
@@ -159,10 +159,24 @@ Equipo Mayu Wellness Club
 
     context = ssl.create_default_context()
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-        server.starttls(context=context)
-        server.login(smtp_email, smtp_password)
-        server.send_message(msg)
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(
+            smtp_host,
+            smtp_port,
+            context=context,
+            timeout=30,
+        ) as server:
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(
+            smtp_host,
+            smtp_port,
+            timeout=30,
+        ) as server:
+            server.starttls(context=context)
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
 
 
 def user_response(user: models.User):
@@ -222,10 +236,16 @@ def update_superadmin_profile(
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
 
-    if db.query(models.User).filter(models.User.email == email, models.User.id != user.id).first():
+    if db.query(models.User).filter(
+        models.User.email == email,
+        models.User.id != user.id,
+    ).first():
         raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
 
-    if db.query(models.User).filter(models.User.cedula == cedula, models.User.id != user.id).first():
+    if db.query(models.User).filter(
+        models.User.cedula == cedula,
+        models.User.id != user.id,
+    ).first():
         raise HTTPException(status_code=400, detail="La cédula ya está registrada por otro usuario")
 
     user.name = payload.name.strip()
@@ -667,10 +687,16 @@ def update_staff(
     if user.role not in allowed_roles:
         raise HTTPException(status_code=400, detail="Solo se puede editar usuarios internos")
 
-    if db.query(models.User).filter(models.User.email == payload.email.strip().lower(), models.User.id != user_id).first():
+    if db.query(models.User).filter(
+        models.User.email == payload.email.strip().lower(),
+        models.User.id != user_id,
+    ).first():
         raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
 
-    if db.query(models.User).filter(models.User.cedula == payload.cedula.strip(), models.User.id != user_id).first():
+    if db.query(models.User).filter(
+        models.User.cedula == payload.cedula.strip(),
+        models.User.id != user_id,
+    ).first():
         raise HTTPException(status_code=400, detail="La cédula ya está registrada por otro usuario")
 
     user.name = payload.name.strip()
