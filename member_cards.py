@@ -221,6 +221,7 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
     image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image"
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     apple_wallet_url = f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}"
+    google_wallet_url = f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}"
 
     html = f"""
     <html>
@@ -248,6 +249,12 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
 
                     <a href="{apple_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#000; color:white; text-decoration:none; border-radius:999px;">
                         Agregar a Apple Wallet
+                    </a>
+
+                    <br/>
+
+                    <a href="{google_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#0f9d58; color:white; text-decoration:none; border-radius:999px;">
+                        Agregar a Google Wallet
                     </a>
                 </div>
             </div>
@@ -355,14 +362,14 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     if os.path.exists(logo_path):
         try:
-            logo = Image.open(logo_path).convert("RGBA").resize((145, 145))
-            image.paste(logo, ((width - 145) // 2, 25), logo)
+            logo = Image.open(logo_path).convert("RGBA").resize((180, 180))
+            image.paste(logo, ((width - 180) // 2, 20), logo)
         except Exception:
             pass
 
     bbox = draw.textbbox((0, 0), CLUB_NAME.upper(), font=club_font)
     club_width = bbox[2] - bbox[0]
-    draw_text(draw, ((width - club_width) // 2, 180), CLUB_NAME.upper(), club_font)
+    draw_text(draw, ((width - club_width) // 2, 205), CLUB_NAME.upper(), club_font)
 
     draw_text(draw, (60, 305), visual["display_name"], name_font)
     draw_text(draw, (60, 355), visual["level_text"], info_font)
@@ -415,13 +422,15 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
         ("icon@2x.png", (58, 58)),
         ("logo.png", (160, 50)),
         ("logo@2x.png", (320, 100)),
+        ("thumbnail.png", (90, 90)),
+        ("thumbnail@2x.png", (180, 180)),
     ]:
         target = os.path.join(pass_dir, filename)
 
         if os.path.exists(logo_path):
             try:
-                img = Image.open(logo_path).convert("RGBA")
-                img.thumbnail(size)
+                img = Image.open(logo_path).convert("RGBA").resize(size)
+
                 canvas = Image.new("RGBA", size, (0, 0, 0, 0))
                 canvas.paste(
                     img,
@@ -436,10 +445,10 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
 
     if os.path.exists(strip_source):
         strip = Image.open(strip_source).convert("RGB")
-        strip = strip.resize((375, 123))
+        strip = strip.resize((1125, 369))
         strip.save(os.path.join(pass_dir, "strip.png"))
 
-        strip_2x = strip.resize((750, 246))
+        strip_2x = strip.resize((2250, 738))
         strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
     else:
         print("NO EXISTE STRIP WALLET:", strip_source)
@@ -561,9 +570,11 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "description": CLUB_NAME,
             "logoText": CLUB_NAME,
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(0,0,0)",
+            "backgroundColor": "rgb(255,255,255)",
             "labelColor": "rgb(255,255,255)",
-            "storeCard": {
+            "suppressStripShine": True,
+            "sharingProhibited": False,
+            "generic": {
                 "primaryFields": [
                     {
                         "key": "club",
