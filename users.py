@@ -9,13 +9,13 @@ from dependencies import get_current_user
 import models
 
 import os
-import smtplib
-import ssl
 import secrets
 import string
-from email.message import EmailMessage
+import resend
 
 router = APIRouter()
+
+BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
 class UserCreate(BaseModel):
@@ -115,10 +115,8 @@ def get_db():
 def require_superadmin(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
-
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
-
     if current_user.role != "superadmin":
         raise HTTPException(status_code=403, detail="Acceso solo para superadmin")
 
@@ -128,55 +126,32 @@ def generate_recovery_code() -> str:
 
 
 def send_reset_email(to_email: str, code: str):
-    smtp_email = os.getenv("SMTP_EMAIL")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "465"))
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    from_email = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
-    if not smtp_email or not smtp_password:
-        raise Exception("Faltan variables SMTP_EMAIL o SMTP_PASSWORD en el servidor")
+    if not resend_api_key:
+        raise Exception("Falta RESEND_API_KEY en Render")
 
-    msg = EmailMessage()
-    msg["Subject"] = "Código de recuperación - Mayu Wellness Club"
-    msg["From"] = smtp_email
-    msg["To"] = to_email
+    resend.api_key = resend_api_key
 
-    msg.set_content(
-        f"""
-Hola,
+    params = {
+        "from": from_email,
+        "to": [to_email],
+        "subject": "Código de recuperación - Mayu Wellness Club",
+        "html": f"""
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: auto; padding: 24px;">
+            <h2>Mayu Wellness Club</h2>
+            <p>Tu código de recuperación es:</p>
+            <h1 style="font-size: 42px; letter-spacing: 8px;">{code}</h1>
+            <p>Este código expira en 10 minutos.</p>
+            <p>Si no solicitaste este cambio, puedes ignorar este correo.</p>
+            <br>
+            <p>Equipo Mayu Wellness Club</p>
+        </div>
+        """,
+    }
 
-Tu código de recuperación para Mayu Wellness Club es:
-
-{code}
-
-Este código expira en 10 minutos.
-
-Si no solicitaste este cambio, puedes ignorar este mensaje.
-
-Equipo Mayu Wellness Club
-""".strip()
-    )
-
-    context = ssl.create_default_context()
-
-    if smtp_port == 465:
-        with smtplib.SMTP_SSL(
-            smtp_host,
-            smtp_port,
-            context=context,
-            timeout=30,
-        ) as server:
-            server.login(smtp_email, smtp_password)
-            server.send_message(msg)
-    else:
-        with smtplib.SMTP(
-            smtp_host,
-            smtp_port,
-            timeout=30,
-        ) as server:
-            server.starttls(context=context)
-            server.login(smtp_email, smtp_password)
-            server.send_message(msg)
+    resend.Emails.send(params)
 
 
 def user_response(user: models.User):
@@ -258,15 +233,7 @@ def update_superadmin_profile(
 
     return {
         "message": "Perfil superadmin actualizado correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "phone": user.phone,
-            "cedula": user.cedula,
-            "role": user.role,
-            "is_active": getattr(user, "is_active", True),
-        },
+        "user": user_response(user),
     }
 
 
@@ -551,9 +518,9 @@ def reset_password_with_code(
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "apple_wallet_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/apple-wallet/{user.id}",
-            "google_wallet_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/google-wallet/{user.id}",
-            "card_web_url": f"https://mayu-wellness-backend-v1.onrender.com/member-cards/user/{user.id}/web",
+            "apple_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}",
+            "google_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}",
+            "card_web_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web",
         },
     }
 
@@ -609,16 +576,7 @@ def create_staff(
 
     return {
         "message": "Usuario staff creado correctamente",
-        "user": {
-            "id": new_staff.id,
-            "name": new_staff.name,
-            "email": new_staff.email,
-            "phone": new_staff.phone,
-            "cedula": new_staff.cedula,
-            "role": new_staff.role,
-            "status": new_staff.status,
-            "is_active": new_staff.is_active,
-        },
+        "user": user_response(new_staff),
     }
 
 
@@ -710,16 +668,7 @@ def update_staff(
 
     return {
         "message": "Usuario interno actualizado correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "phone": user.phone,
-            "cedula": user.cedula,
-            "role": user.role,
-            "status": user.status,
-            "is_active": getattr(user, "is_active", True),
-        },
+        "user": user_response(user),
     }
 
 
@@ -782,13 +731,7 @@ def reset_any_user_password(
 
     return {
         "message": "Contraseña actualizada correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role,
-            "is_active": getattr(user, "is_active", True),
-        },
+        "user": user_response(user),
     }
 
 
@@ -821,13 +764,7 @@ def update_staff_status(
 
     return {
         "message": "Estado actualizado correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role,
-            "is_active": user.is_active,
-        },
+        "user": user_response(user),
     }
 
 
@@ -855,13 +792,7 @@ def update_any_user_status(
 
     return {
         "message": "Estado actualizado correctamente",
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role,
-            "is_active": user.is_active,
-        },
+        "user": user_response(user),
     }
 
 
