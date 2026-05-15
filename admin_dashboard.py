@@ -15,6 +15,7 @@ from models import (
     MembershipPayment,
     Order,
     OrderItem,
+    OrderTrackingHistory,
     MonthlySelection,
     MonthlySelectionItem,
     Product,
@@ -94,6 +95,25 @@ def clean_optional(value):
     return value.strip()
 
 
+def add_order_tracking_history(
+    db: Session,
+    order: Order,
+    current_user: User,
+    status: str,
+    note: str,
+):
+    history = OrderTrackingHistory(
+        order_id=order.id,
+        status=status,
+        note=note,
+        carrier=getattr(order, "carrier", None),
+        tracking_number=getattr(order, "tracking_number", None),
+        tracking_url=getattr(order, "tracking_url", None),
+        created_by=current_user.id if current_user else None,
+    )
+    db.add(history)
+
+
 def user_to_dict(u: User):
     return {
         "id": u.id,
@@ -168,11 +188,13 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
         product = db.query(Product).filter(Product.id == item.product_id).first()
 
         if product:
-            products.append({
-                "product_id": product.id,
-                "name": product.name,
-                "quantity": item.quantity,
-            })
+            products.append(
+                {
+                    "product_id": product.id,
+                    "name": product.name,
+                    "quantity": item.quantity,
+                }
+            )
 
     return {
         "monthly_selection_id": selection.id,
@@ -461,9 +483,7 @@ def update_ambassador(
 ):
     require_admin_or_superadmin(current_user)
 
-    ambassador = db.query(Ambassador).filter(
-        Ambassador.id == ambassador_id
-    ).first()
+    ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
@@ -643,12 +663,16 @@ def verify_payment(
     user.is_active = True
 
     order = None
+    should_add_history = False
 
     if payment.order_id:
         order = db.query(Order).filter(Order.id == payment.order_id).first()
 
         if order:
             order.user_status_snapshot = "active"
+
+            if order.status != "approved_for_logistics":
+                should_add_history = True
 
             if order.status == "pending_payment_review":
                 order.status = "approved_for_logistics"
@@ -667,6 +691,7 @@ def verify_payment(
 
         if order:
             payment.order_id = order.id
+            should_add_history = order.status != "approved_for_logistics"
 
     if not order:
         selection = (
@@ -718,11 +743,21 @@ def verify_payment(
                         db.add(order_item)
 
                 payment.order_id = order.id
+                should_add_history = True
 
     if order:
         order.user_status_snapshot = "active"
         order.status = "approved_for_logistics"
         order.logistics_notes = "✔ Pago verificado - listo para despacho"
+
+        if should_add_history:
+            add_order_tracking_history(
+                db=db,
+                order=order,
+                current_user=current_user,
+                status="approved_for_logistics",
+                note="Pago verificado por administración y orden liberada a logística",
+            )
 
     db.commit()
     db.refresh(payment)
@@ -787,9 +822,20 @@ def approve_order(
         user.membership_active = True
         user.is_active = True
 
+    old_status = order.status
+
     order.status = "approved_for_logistics"
     order.user_status_snapshot = "active"
     order.logistics_notes = "✔ Pago verificado - listo para despacho"
+
+    if old_status != "approved_for_logistics":
+        add_order_tracking_history(
+            db=db,
+            order=order,
+            current_user=current_user,
+            status="approved_for_logistics",
+            note="Orden aprobada manualmente por administración",
+        )
 
     db.commit()
     db.refresh(order)
@@ -807,16 +853,21 @@ def get_pending_commissions(
 ):
     require_admin_or_superadmin(current_user)
 
-    commissions = db.query(Commission).filter(
-        Commission.status == "pending"
-    ).order_by(Commission.generated_at.desc()).all()
+    commissions = (
+        db.query(Commission)
+        .filter(Commission.status == "pending")
+        .order_by(Commission.generated_at.desc())
+        .all()
+    )
 
     return {
         "items": [
             {
                 "id": c.id,
                 "ambassador_id": c.ambassador_id,
-                "ambassador_name": c.ambassador.user.name if c.ambassador and c.ambassador.user else None,
+                "ambassador_name": c.ambassador.user.name
+                if c.ambassador and c.ambassador.user
+                else None,
                 "amount": c.commission_amount,
                 "commission_amount": c.commission_amount,
                 "month": c.month,
