@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
+
 from database import get_db
+from dependencies import get_current_user
 import models
 
 router = APIRouter(prefix="/monthly-selection", tags=["Monthly Selection"])
@@ -58,11 +60,37 @@ def get_plan_name_by_level(level: int):
 
 def format_month_label(month: int, year: int):
     months = {
-        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
-        5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
-        9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+        1: "Enero",
+        2: "Febrero",
+        3: "Marzo",
+        4: "Abril",
+        5: "Mayo",
+        6: "Junio",
+        7: "Julio",
+        8: "Agosto",
+        9: "Septiembre",
+        10: "Octubre",
+        11: "Noviembre",
+        12: "Diciembre",
     }
     return f"{months.get(month, 'Mes')} {year}"
+
+
+def can_access_user(current_user: models.User, user_id: int):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role in {"admin", "superadmin", "supervisor", "logistics"}:
+        return
+
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes acceder a información de otro socio",
+        )
 
 
 def product_to_option(p: models.Product):
@@ -96,26 +124,98 @@ def get_available_editable_sections_by_level(db: Session, level: int):
 
     if level == 1:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar a elección",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     if level == 2:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "hongos", "section_name": "Hongos medicinales", "category": "hongos", "max_items": 1, "products": hongos},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "hongos",
+                "section_name": "Hongos medicinales",
+                "category": "hongos",
+                "max_items": 1,
+                "products": hongos,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar a elección",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     if level == 3:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar CBD", "category": "bienestar", "max_items": 1, "products": bienestar},
-            {"section_key": "soporte_funcional", "section_name": "Soporte funcional", "category": "soporte_funcional", "max_items": 1, "products": soporte},
-            {"section_key": "extra_bienestar", "section_name": "Producto extra bienestar", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar CBD",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
+            {
+                "section_key": "soporte_funcional",
+                "section_name": "Soporte funcional",
+                "category": "soporte_funcional",
+                "max_items": 1,
+                "products": soporte,
+            },
+            {
+                "section_key": "extra_bienestar",
+                "section_name": "Producto extra bienestar",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     return []
@@ -133,6 +233,16 @@ def get_available_editable_products_by_level(db: Session, level: int):
     return products
 
 
+def get_max_products_by_level(level: int):
+    if level == 1:
+        return 3
+    if level == 2:
+        return 4
+    if level == 3:
+        return 5
+    return 0
+
+
 def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
     if item.product_id is not None:
         return (
@@ -144,7 +254,10 @@ def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
     if item.product_name and item.product_name.strip():
         return (
             db.query(models.Product)
-            .filter(models.Product.name == item.product_name.strip(), models.Product.active == True)
+            .filter(
+                models.Product.name == item.product_name.strip(),
+                models.Product.active == True,
+            )
             .first()
         )
 
@@ -164,12 +277,14 @@ def get_selected_products(db: Session, selection_id: int):
         product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
 
         if product:
-            products.append({
-                "product_id": product.id,
-                "name": product.name,
-                "category": product.category,
-                "quantity": item.quantity,
-            })
+            products.append(
+                {
+                    "product_id": product.id,
+                    "name": product.name,
+                    "category": product.category,
+                    "quantity": item.quantity,
+                }
+            )
 
     return products
 
@@ -184,6 +299,19 @@ def get_order_for_selection(db: Session, user_id: int, month: int, year: int):
         )
         .first()
     )
+
+
+def order_is_locked(order):
+    if not order:
+        return False
+
+    return order.status in {
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+        "delivered",
+        "cancelled",
+    }
 
 
 def get_tracking_history(order):
@@ -228,6 +356,7 @@ def order_tracking_data(order):
             "delivered_at": None,
             "logistics_notes": None,
             "tracking_history": [],
+            "order_locked": False,
         }
 
     return {
@@ -244,6 +373,7 @@ def order_tracking_data(order):
         "delivered_at": getattr(order, "delivered_at", None),
         "logistics_notes": getattr(order, "logistics_notes", None),
         "tracking_history": get_tracking_history(order),
+        "order_locked": order_is_locked(order),
     }
 
 
@@ -251,7 +381,10 @@ def order_tracking_data(order):
 def init_monthly_selection(
     payload: MonthlySelectionInitRequest,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
+    can_access_user(current_user, payload.user_id)
+
     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
 
     if not user:
@@ -297,13 +430,14 @@ def init_monthly_selection(
     db.refresh(selection)
 
     products = get_selected_products(db, selection.id)
+    order = get_order_for_selection(db, user.id, month, year)
 
     return {
         "message": "Selección mensual lista",
         "selection_id": selection.id,
         "month": selection.month,
         "year": selection.year,
-        "editable": editable_now,
+        "editable": editable_now and not order_is_locked(order),
         "status": selection.status,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
@@ -315,9 +449,10 @@ def init_monthly_selection(
         "editable_sections": get_available_editable_sections_by_level(db, user.membership_level),
         "available_editable_products": get_available_editable_products_by_level(db, user.membership_level),
         "fixed_products": [],
-        "edit_window": "Disponible durante todo el mes",
+        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
+        **order_tracking_data(order),
     }
 
 
@@ -325,7 +460,10 @@ def init_monthly_selection(
 def get_user_monthly_selection(
     user_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
+    can_access_user(current_user, user_id)
+
     now = datetime.now()
     month = now.month
     year = now.year
@@ -352,18 +490,19 @@ def get_user_monthly_selection(
             detail="No existe selección mensual para este usuario",
         )
 
-    selection.editable = editable_now
+    order = get_order_for_selection(db, user_id, month, year)
+
+    selection.editable = editable_now and not order_is_locked(order)
     db.commit()
     db.refresh(selection)
 
     products = get_selected_products(db, selection.id)
-    order = get_order_for_selection(db, user_id, month, year)
 
     return {
         "selection_id": selection.id,
         "month": selection.month,
         "year": selection.year,
-        "editable": editable_now,
+        "editable": selection.editable,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
@@ -375,7 +514,7 @@ def get_user_monthly_selection(
         "editable_sections": get_available_editable_sections_by_level(db, user.membership_level or 0),
         "available_editable_products": get_available_editable_products_by_level(db, user.membership_level or 0),
         "fixed_products": [],
-        "edit_window": "Disponible durante todo el mes",
+        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
         **order_tracking_data(order),
@@ -387,21 +526,34 @@ def save_monthly_selection_items(
     selection_id: int,
     payload: MonthlySelectionSaveRequest,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    selection = db.query(models.MonthlySelection).filter(
-        models.MonthlySelection.id == selection_id
-    ).first()
+    selection = (
+        db.query(models.MonthlySelection)
+        .filter(models.MonthlySelection.id == selection_id)
+        .first()
+    )
 
     if not selection:
         raise HTTPException(status_code=404, detail="Selección no encontrada")
+
+    can_access_user(current_user, selection.user_id)
 
     user = db.query(models.User).filter(models.User.id == selection.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
+    order = get_order_for_selection(db, user.id, selection.month, selection.year)
+
+    if order_is_locked(order) and current_user.role not in {"admin", "superadmin"}:
+        raise HTTPException(
+            status_code=400,
+            detail="La orden ya fue liberada a logística y no puede modificarse",
+        )
+
     editable_now = is_edit_window_open()
-    selection.editable = editable_now
+    selection.editable = editable_now and not order_is_locked(order)
 
     if not editable_now and not payload.force_save:
         raise HTTPException(
@@ -409,7 +561,18 @@ def save_monthly_selection_items(
             detail="La ventana de edición no está disponible",
         )
 
-    allowed_products = get_available_editable_products_by_level(db, user.membership_level or 0)
+    allowed_products = get_available_editable_products_by_level(
+        db,
+        user.membership_level or 0,
+    )
+
+    max_products = get_max_products_by_level(user.membership_level or 0)
+
+    if max_products <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene un nivel de membresía válido",
+        )
 
     db.query(models.MonthlySelectionItem).filter(
         models.MonthlySelectionItem.monthly_selection_id == selection.id
@@ -418,6 +581,9 @@ def save_monthly_selection_items(
     saved_products = []
 
     for item_input in payload.items:
+        if len(saved_products) >= max_products:
+            break
+
         product = get_product_by_input(db, item_input)
 
         if not product:
@@ -436,6 +602,7 @@ def save_monthly_selection_items(
                 quantity=1,
             )
         )
+
         saved_products.append(product.name)
 
     if not saved_products:
@@ -453,10 +620,10 @@ def save_monthly_selection_items(
         "message": "Selección mensual actualizada correctamente",
         "selection_id": selection.id,
         "saved_products": saved_products,
-        "editable": editable_now,
+        "editable": selection.editable,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "Disponible durante todo el mes",
+        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
         "shipping_window": "viernes",
     }
 
@@ -465,7 +632,10 @@ def save_monthly_selection_items(
 def get_user_monthly_selection_history(
     user_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
+    can_access_user(current_user, user_id)
+
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
@@ -510,9 +680,11 @@ def get_user_monthly_selection_history(
             "editableProduct": selected_names[0] if selected_names else "No seleccionado",
             "editableProducts": selected_names,
             "products": selected_products,
-            "status": "Pendiente para próximo despacho semanal" if is_current_or_future else "Procesado",
+            "status": "Pendiente para próximo despacho semanal"
+            if is_current_or_future
+            else "Procesado",
             "shippingWindow": "viernes",
-            "editWindow": "Disponible durante todo el mes",
+            "editWindow": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
             **order_tracking_data(order),
         }
 
@@ -528,8 +700,13 @@ def get_user_monthly_selection_history(
 def get_user_upcoming_delivery(
     user_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
-    data = get_user_monthly_selection_history(user_id=user_id, db=db)
+    data = get_user_monthly_selection_history(
+        user_id=user_id,
+        db=db,
+        current_user=current_user,
+    )
     return {"upcoming": data.get("upcoming")}
 
 
@@ -539,8 +716,8 @@ def get_cycle_info():
         "editable": is_edit_window_open(),
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "Disponible durante todo el mes",
+        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        "business_rule": "El socio puede cambiar sus productos editables durante todo el mes. Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
+        "business_rule": "El socio puede cambiar sus productos editables durante todo el mes, siempre que la orden no haya sido liberada a logística. Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
     }
