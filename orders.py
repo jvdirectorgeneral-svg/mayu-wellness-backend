@@ -48,6 +48,37 @@ def generate_order_code(user_id: int, month: int, year: int) -> str:
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
 
 
+def format_month_label(month: int, year: int) -> str:
+    months = {
+        1: "Enero",
+        2: "Febrero",
+        3: "Marzo",
+        4: "Abril",
+        5: "Mayo",
+        6: "Junio",
+        7: "Julio",
+        8: "Agosto",
+        9: "Septiembre",
+        10: "Octubre",
+        11: "Noviembre",
+        12: "Diciembre",
+    }
+    return f"{months.get(month, 'Mes')} {year}"
+
+
+def order_is_locked(order: models.Order) -> bool:
+    if not order:
+        return False
+
+    return order.status in {
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+        "delivered",
+        "cancelled",
+    }
+
+
 def require_team_access(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -110,6 +141,7 @@ def order_items_data(order):
             {
                 "id": item.id,
                 "product_id": item.product_id,
+                "name": item.product_name_snapshot,
                 "product_name_snapshot": item.product_name_snapshot,
                 "quantity": item.quantity,
             }
@@ -182,8 +214,8 @@ def add_tracking_history(
     db.add(history)
 
 
-def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
-    selection = (
+def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
+    return (
         db.query(models.MonthlySelection)
         .filter(
             models.MonthlySelection.user_id == user_id,
@@ -192,6 +224,10 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
         )
         .first()
     )
+
+
+def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
+    selection = get_monthly_selection(db, user_id, month, year)
 
     if not selection:
         return {
@@ -237,9 +273,13 @@ def order_to_dict(db: Session, order: models.Order, include_history: bool = Fals
         "reference_snapshot": order.reference_snapshot,
         "delivery_notes_snapshot": order.delivery_notes_snapshot,
         "status": order.status,
+        "order_status": order.status,
+        "order_locked": order_is_locked(order),
         "logistics_notes": order.logistics_notes,
         "month": order.month,
         "year": order.year,
+        "month_label": format_month_label(order.month, order.year),
+        "monthLabel": format_month_label(order.month, order.year),
         "items_count": len(order.items),
         **order_items_data(order),
         **order_date_data(order),
@@ -254,41 +294,26 @@ def order_to_dict(db: Session, order: models.Order, include_history: bool = Fals
     return data
 
 
-@router.post("/create-manual")
-def create_order_manual(
-    payload: OrderCreateManual,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+def create_order_from_selection(
+    db: Session,
+    user: models.User,
+    monthly_selection: models.MonthlySelection,
+    current_user: models.User,
+    status: str = "pending_payment_review",
+    logistics_notes: str = "Orden creada, pendiente de validación administrativa",
 ):
-    require_admin_or_superadmin(current_user)
-
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    monthly_selection = (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == payload.user_id,
-            models.MonthlySelection.month == payload.month,
-            models.MonthlySelection.year == payload.year,
-        )
-        .first()
-    )
-
-    if not monthly_selection:
+    if not monthly_selection.items:
         raise HTTPException(
-            status_code=404,
-            detail="No existe selección mensual para ese usuario en ese ciclo",
+            status_code=400,
+            detail="La selección mensual no tiene productos",
         )
 
     existing_order = (
         db.query(models.Order)
         .filter(
-            models.Order.user_id == payload.user_id,
-            models.Order.month == payload.month,
-            models.Order.year == payload.year,
+            models.Order.user_id == user.id,
+            models.Order.month == monthly_selection.month,
+            models.Order.year == monthly_selection.year,
         )
         .first()
     )
@@ -299,25 +324,23 @@ def create_order_manual(
             detail="Ya existe una orden para este usuario en ese ciclo",
         )
 
-    if not monthly_selection.items:
-        raise HTTPException(
-            status_code=400,
-            detail="La selección mensual no tiene productos",
-        )
-
     new_order = models.Order(
-        order_code=generate_order_code(user.id, payload.month, payload.year),
+        order_code=generate_order_code(
+            user.id,
+            monthly_selection.month,
+            monthly_selection.year,
+        ),
         user_id=user.id,
-        month=payload.month,
-        year=payload.year,
+        month=monthly_selection.month,
+        year=monthly_selection.year,
         membership_level_snapshot=user.membership_level,
         user_status_snapshot="active" if user.membership_active else "inactive",
         city_snapshot=user.city,
         address_snapshot=user.address,
         reference_snapshot=user.reference,
         delivery_notes_snapshot=user.delivery_notes,
-        status="pending_payment_review",
-        logistics_notes="Orden creada, pendiente de validación administrativa",
+        status=status,
+        logistics_notes=logistics_notes,
     )
 
     db.add(new_order)
@@ -339,8 +362,46 @@ def create_order_manual(
         db=db,
         order=new_order,
         current_user=current_user,
+        status=status,
+        note=logistics_notes,
+    )
+
+    return new_order
+
+
+@router.post("/create-manual")
+def create_order_manual(
+    payload: OrderCreateManual,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    monthly_selection = get_monthly_selection(
+        db=db,
+        user_id=payload.user_id,
+        month=payload.month,
+        year=payload.year,
+    )
+
+    if not monthly_selection:
+        raise HTTPException(
+            status_code=404,
+            detail="No existe selección mensual para ese usuario en ese ciclo",
+        )
+
+    new_order = create_order_from_selection(
+        db=db,
+        user=user,
+        monthly_selection=monthly_selection,
+        current_user=current_user,
         status="pending_payment_review",
-        note="Orden creada manualmente por administración",
+        logistics_notes="Orden creada manualmente, pendiente de validación administrativa",
     )
 
     db.commit()
@@ -381,11 +442,17 @@ def approve_order_for_logistics(
         )
 
     order.status = "approved_for_logistics"
+    order.user_status_snapshot = "active"
     order.logistics_notes = (
         payload.approval_notes.strip()
         if payload.approval_notes and payload.approval_notes.strip()
         else "Pagos OK - orden liberada a logística"
     )
+
+    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
+
+    if selection:
+        selection.editable = False
 
     add_tracking_history(
         db=db,
@@ -480,7 +547,11 @@ def list_user_orders(
     orders = (
         db.query(models.Order)
         .filter(models.Order.user_id == user_id)
-        .order_by(models.Order.created_at.desc())
+        .order_by(
+            models.Order.year.desc(),
+            models.Order.month.desc(),
+            models.Order.created_at.desc(),
+        )
         .all()
     )
 
@@ -566,6 +637,16 @@ def update_order_tracking(
 
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if current_user.role == "logistics" and order.status not in {
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+    }:
+        raise HTTPException(
+            status_code=403,
+            detail="La orden no está disponible para actualizar tracking",
+        )
 
     if payload.carrier is not None:
         order.carrier = payload.carrier.strip() if payload.carrier else None
@@ -674,6 +755,17 @@ def update_order_status(
 
     if payload.status == "delivered" and order.delivered_at is None:
         order.delivered_at = now
+
+    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
+
+    if selection and payload.status in {
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+        "delivered",
+        "cancelled",
+    }:
+        selection.editable = False
 
     add_tracking_history(
         db=db,
