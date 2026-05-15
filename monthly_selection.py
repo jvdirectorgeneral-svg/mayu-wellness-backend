@@ -76,6 +76,12 @@ def format_month_label(month: int, year: int):
     return f"{months.get(month, 'Mes')} {year}"
 
 
+def next_month_year(month: int, year: int):
+    if month == 12:
+        return 1, year + 1
+    return month + 1, year
+
+
 def can_access_user(current_user: models.User, user_id: int):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -124,98 +130,26 @@ def get_available_editable_sections_by_level(db: Session, level: int):
 
     if level == 1:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar a elección",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     if level == 2:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "hongos",
-                "section_name": "Hongos medicinales",
-                "category": "hongos",
-                "max_items": 1,
-                "products": hongos,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar a elección",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "hongos", "section_name": "Hongos medicinales", "category": "hongos", "max_items": 1, "products": hongos},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     if level == 3:
         return [
-            {
-                "section_key": "coloides",
-                "section_name": "Coloide a libre elección",
-                "category": "coloides",
-                "max_items": 1,
-                "products": coloides,
-            },
-            {
-                "section_key": "cbd",
-                "section_name": "Producto CBD a elección",
-                "category": "cbd",
-                "max_items": 1,
-                "products": cbd,
-            },
-            {
-                "section_key": "bienestar",
-                "section_name": "Producto bienestar CBD",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
-            {
-                "section_key": "soporte_funcional",
-                "section_name": "Soporte funcional",
-                "category": "soporte_funcional",
-                "max_items": 1,
-                "products": soporte,
-            },
-            {
-                "section_key": "extra_bienestar",
-                "section_name": "Producto extra bienestar",
-                "category": "bienestar",
-                "max_items": 1,
-                "products": bienestar,
-            },
+            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
+            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
+            {"section_key": "bienestar", "section_name": "Producto bienestar CBD", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {"section_key": "soporte_funcional", "section_name": "Soporte funcional", "category": "soporte_funcional", "max_items": 1, "products": soporte},
+            {"section_key": "extra_bienestar", "section_name": "Producto extra bienestar", "category": "bienestar", "max_items": 1, "products": bienestar},
         ]
 
     return []
@@ -314,6 +248,20 @@ def order_is_locked(order):
     }
 
 
+def get_active_editable_cycle(db: Session, user_id: int):
+    now = datetime.now()
+    month = now.month
+    year = now.year
+
+    current_order = get_order_for_selection(db, user_id, month, year)
+
+    if order_is_locked(current_order):
+        next_month, next_year = next_month_year(month, year)
+        return next_month, next_year, current_order, True
+
+    return month, year, current_order, False
+
+
 def get_tracking_history(order):
     if not order:
         return []
@@ -377,31 +325,17 @@ def order_tracking_data(order):
     }
 
 
-@router.post("/init")
-def init_monthly_selection(
-    payload: MonthlySelectionInitRequest,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+def get_or_create_selection(
+    db: Session,
+    user: models.User,
+    month: int,
+    year: int,
+    editable_now: bool,
 ):
-    can_access_user(current_user, payload.user_id)
-
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
-
     plan = db.query(models.Plan).filter(models.Plan.level == user.membership_level).first()
 
     if not plan:
         raise HTTPException(status_code=404, detail="Plan no encontrado")
-
-    now = datetime.now()
-    month = now.month
-    year = now.year
-    editable_now = is_edit_window_open()
 
     selection = (
         db.query(models.MonthlySelection)
@@ -424,23 +358,62 @@ def init_monthly_selection(
         )
         db.add(selection)
     else:
+        selection.plan_id = plan.id
         selection.editable = editable_now
 
     db.commit()
     db.refresh(selection)
 
+    return selection
+
+
+@router.post("/init")
+def init_monthly_selection(
+    payload: MonthlySelectionInitRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    can_access_user(current_user, payload.user_id)
+
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not user.membership_level:
+        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+
+    editable_now = is_edit_window_open()
+    month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
+        db,
+        user.id,
+    )
+
+    selected_cycle_order = get_order_for_selection(db, user.id, month, year)
+    selected_cycle_locked = order_is_locked(selected_cycle_order)
+
+    selection = get_or_create_selection(
+        db=db,
+        user=user,
+        month=month,
+        year=year,
+        editable_now=editable_now and not selected_cycle_locked,
+    )
+
     products = get_selected_products(db, selection.id)
-    order = get_order_for_selection(db, user.id, month, year)
 
     return {
         "message": "Selección mensual lista",
         "selection_id": selection.id,
         "month": selection.month,
         "year": selection.year,
-        "editable": editable_now and not order_is_locked(order),
+        "month_label": format_month_label(selection.month, selection.year),
+        "editable": editable_now and not selected_cycle_locked,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
+        "moved_to_next_cycle": moved_to_next_cycle,
+        "previous_order_locked": order_is_locked(current_order),
         "plan_level": user.membership_level,
         "plan_name": get_plan_name_by_level(user.membership_level),
         "products": products,
@@ -449,10 +422,10 @@ def init_monthly_selection(
         "editable_sections": get_available_editable_sections_by_level(db, user.membership_level),
         "available_editable_products": get_available_editable_products_by_level(db, user.membership_level),
         "fixed_products": [],
-        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
+        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        **order_tracking_data(order),
+        **order_tracking_data(selected_cycle_order),
     }
 
 
@@ -464,9 +437,6 @@ def get_user_monthly_selection(
 ):
     can_access_user(current_user, user_id)
 
-    now = datetime.now()
-    month = now.month
-    year = now.year
     editable_now = is_edit_window_open()
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -474,27 +444,24 @@ def get_user_monthly_selection(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    selection = (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.month == month,
-            models.MonthlySelection.year == year,
-        )
-        .first()
+    if not user.membership_level:
+        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+
+    month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
+        db,
+        user_id,
     )
 
-    if not selection:
-        raise HTTPException(
-            status_code=404,
-            detail="No existe selección mensual para este usuario",
-        )
+    selected_cycle_order = get_order_for_selection(db, user_id, month, year)
+    selected_cycle_locked = order_is_locked(selected_cycle_order)
 
-    order = get_order_for_selection(db, user_id, month, year)
-
-    selection.editable = editable_now and not order_is_locked(order)
-    db.commit()
-    db.refresh(selection)
+    selection = get_or_create_selection(
+        db=db,
+        user=user,
+        month=month,
+        year=year,
+        editable_now=editable_now and not selected_cycle_locked,
+    )
 
     products = get_selected_products(db, selection.id)
 
@@ -502,10 +469,13 @@ def get_user_monthly_selection(
         "selection_id": selection.id,
         "month": selection.month,
         "year": selection.year,
+        "month_label": format_month_label(selection.month, selection.year),
         "editable": selection.editable,
         "status": selection.status,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
+        "moved_to_next_cycle": moved_to_next_cycle,
+        "previous_order_locked": order_is_locked(current_order),
         "plan_level": user.membership_level,
         "plan_name": get_plan_name_by_level(user.membership_level or 0),
         "products": products,
@@ -514,10 +484,10 @@ def get_user_monthly_selection(
         "editable_sections": get_available_editable_sections_by_level(db, user.membership_level or 0),
         "available_editable_products": get_available_editable_products_by_level(db, user.membership_level or 0),
         "fixed_products": [],
-        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
+        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        **order_tracking_data(order),
+        **order_tracking_data(selected_cycle_order),
     }
 
 
@@ -555,10 +525,10 @@ def save_monthly_selection_items(
     editable_now = is_edit_window_open()
     selection.editable = editable_now and not order_is_locked(order)
 
-    if not editable_now and not payload.force_save:
+    if not selection.editable and not payload.force_save:
         raise HTTPException(
             status_code=400,
-            detail="La ventana de edición no está disponible",
+            detail="La ventana de edición no está disponible para este ciclo",
         )
 
     allowed_products = get_available_editable_products_by_level(
@@ -619,11 +589,14 @@ def save_monthly_selection_items(
     return {
         "message": "Selección mensual actualizada correctamente",
         "selection_id": selection.id,
+        "month": selection.month,
+        "year": selection.year,
+        "month_label": format_month_label(selection.month, selection.year),
         "saved_products": saved_products,
         "editable": selection.editable,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
+        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "shipping_window": "viernes",
     }
 
@@ -684,7 +657,7 @@ def get_user_monthly_selection_history(
             if is_current_or_future
             else "Procesado",
             "shippingWindow": "viernes",
-            "editWindow": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
+            "editWindow": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
             **order_tracking_data(order),
         }
 
@@ -716,8 +689,8 @@ def get_cycle_info():
         "editable": is_edit_window_open(),
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "Disponible durante todo el mes si la orden aún no fue liberada a logística",
+        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        "business_rule": "El socio puede cambiar sus productos editables durante todo el mes, siempre que la orden no haya sido liberada a logística. Administración revisa pagos y suscripciones de lunes a jueves. Logística despacha los viernes las órdenes aprobadas.",
+        "business_rule": "El socio puede cambiar sus productos editables del ciclo activo. Si la orden actual ya fue liberada a logística, el sistema abre automáticamente la selección del siguiente mes.",
     }
