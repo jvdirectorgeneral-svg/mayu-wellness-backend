@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from database import get_db
+from dependencies import get_current_user
 from auth import hash_password, verify_password, create_access_token
 import models
 import uuid
@@ -17,6 +18,29 @@ BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 def generate_ambassador_code(ambassador_id: int):
     return f"EMB-{ambassador_id:06d}"
+
+
+def require_ambassador_access(
+    ambassador: models.Ambassador,
+    current_user: models.User,
+):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role in {"admin", "superadmin", "supervisor"}:
+        return
+
+    if current_user.role != "ambassador":
+        raise HTTPException(status_code=403, detail="Acceso no autorizado")
+
+    if ambassador.user_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes acceder al panel de otro embajador",
+        )
 
 
 def normalize_phone_for_whatsapp(phone: str | None):
@@ -112,7 +136,11 @@ def get_last_order_for_user(db: Session, user_id: int):
     return (
         db.query(models.Order)
         .filter(models.Order.user_id == user_id)
-        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
+        .order_by(
+            models.Order.year.desc(),
+            models.Order.month.desc(),
+            models.Order.created_at.desc(),
+        )
         .first()
     )
 
@@ -121,7 +149,11 @@ def get_delivery_history_for_user(db: Session, user_id: int):
     orders = (
         db.query(models.Order)
         .filter(models.Order.user_id == user_id)
-        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
+        .order_by(
+            models.Order.year.desc(),
+            models.Order.month.desc(),
+            models.Order.created_at.desc(),
+        )
         .all()
     )
 
@@ -341,11 +373,17 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
 
 
 @router.get("/{ambassador_id}")
-def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
+def get_ambassador_profile(
+    ambassador_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    require_ambassador_access(ambassador, current_user)
 
     user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
@@ -375,11 +413,17 @@ def get_ambassador_profile(ambassador_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{ambassador_id}/card")
-def get_ambassador_card(ambassador_id: int, db: Session = Depends(get_db)):
+def get_ambassador_card(
+    ambassador_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    require_ambassador_access(ambassador, current_user)
 
     user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
@@ -483,7 +527,7 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
         image = Image.open(bg_path).convert("RGB")
         image = image.resize((width, height))
     else:
-        image = Image.new("RGB", (width, height), (20, 20, 20))
+        image = Image.new("RGB", (20, 20, 20))
 
     draw = ImageDraw.Draw(image)
 
@@ -554,11 +598,17 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
 
 
 @router.get("/{ambassador_id}/dashboard")
-def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
+def get_ambassador_dashboard(
+    ambassador_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
     ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    require_ambassador_access(ambassador, current_user)
 
     user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
@@ -586,23 +636,25 @@ def get_ambassador_dashboard(ambassador_id: int, db: Session = Depends(get_db)):
 
             last_order = get_last_order_for_user(db, referred_user.id)
 
-            affiliates.append({
-                "id": referred_user.id,
-                "name": referred_user.name,
-                "email": referred_user.email,
-                "phone": referred_user.phone,
-                "whatsapp_url": build_whatsapp_url(referred_user.phone),
-                "membership_level": referred_user.membership_level,
-                "membership_level_name": level_name(referred_user.membership_level),
-                "membership_active": referred_user.membership_active,
-                "is_active": referred_user.is_active,
-                "city": referred_user.city,
-                "address": referred_user.address,
-                "reference": referred_user.reference,
-                "delivery_notes": referred_user.delivery_notes,
-                **order_tracking_data(last_order),
-                "delivery_history": get_delivery_history_for_user(db, referred_user.id),
-            })
+            affiliates.append(
+                {
+                    "id": referred_user.id,
+                    "name": referred_user.name,
+                    "email": referred_user.email,
+                    "phone": referred_user.phone,
+                    "whatsapp_url": build_whatsapp_url(referred_user.phone),
+                    "membership_level": referred_user.membership_level,
+                    "membership_level_name": level_name(referred_user.membership_level),
+                    "membership_active": referred_user.membership_active,
+                    "is_active": referred_user.is_active,
+                    "city": referred_user.city,
+                    "address": referred_user.address,
+                    "reference": referred_user.reference,
+                    "delivery_notes": referred_user.delivery_notes,
+                    **order_tracking_data(last_order),
+                    "delivery_history": get_delivery_history_for_user(db, referred_user.id),
+                }
+            )
 
     total_referrals = len(affiliates)
     total_payments = 0
@@ -640,11 +692,14 @@ def get_affiliate_delivery_history(
     ambassador_id: int,
     user_id: int,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
 ):
     ambassador = db.query(models.Ambassador).filter(models.Ambassador.id == ambassador_id).first()
 
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    require_ambassador_access(ambassador, current_user)
 
     referral = (
         db.query(models.AmbassadorReferral)
