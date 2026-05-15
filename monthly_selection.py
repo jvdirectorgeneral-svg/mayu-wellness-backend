@@ -130,26 +130,98 @@ def get_available_editable_sections_by_level(db: Session, level: int):
 
     if level == 1:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar a elección",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     if level == 2:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "hongos", "section_name": "Hongos medicinales", "category": "hongos", "max_items": 1, "products": hongos},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar a elección", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "hongos",
+                "section_name": "Hongos medicinales",
+                "category": "hongos",
+                "max_items": 1,
+                "products": hongos,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar a elección",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     if level == 3:
         return [
-            {"section_key": "coloides", "section_name": "Coloide a libre elección", "category": "coloides", "max_items": 1, "products": coloides},
-            {"section_key": "cbd", "section_name": "Producto CBD a elección", "category": "cbd", "max_items": 1, "products": cbd},
-            {"section_key": "bienestar", "section_name": "Producto bienestar CBD", "category": "bienestar", "max_items": 1, "products": bienestar},
-            {"section_key": "soporte_funcional", "section_name": "Soporte funcional", "category": "soporte_funcional", "max_items": 1, "products": soporte},
-            {"section_key": "extra_bienestar", "section_name": "Producto extra bienestar", "category": "bienestar", "max_items": 1, "products": bienestar},
+            {
+                "section_key": "coloides",
+                "section_name": "Coloide a libre elección",
+                "category": "coloides",
+                "max_items": 1,
+                "products": coloides,
+            },
+            {
+                "section_key": "cbd",
+                "section_name": "Producto CBD a elección",
+                "category": "cbd",
+                "max_items": 1,
+                "products": cbd,
+            },
+            {
+                "section_key": "bienestar",
+                "section_name": "Producto bienestar CBD",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
+            {
+                "section_key": "soporte_funcional",
+                "section_name": "Soporte funcional",
+                "category": "soporte_funcional",
+                "max_items": 1,
+                "products": soporte,
+            },
+            {
+                "section_key": "extra_bienestar",
+                "section_name": "Producto extra bienestar",
+                "category": "bienestar",
+                "max_items": 1,
+                "products": bienestar,
+            },
         ]
 
     return []
@@ -208,7 +280,9 @@ def get_selected_products(db: Session, selection_id: int):
     products = []
 
     for item in items:
-        product = db.query(models.Product).filter(models.Product.id == item.product_id).first()
+        product = db.query(models.Product).filter(
+            models.Product.id == item.product_id
+        ).first()
 
         if product:
             products.append(
@@ -332,7 +406,9 @@ def get_or_create_selection(
     year: int,
     editable_now: bool,
 ):
-    plan = db.query(models.Plan).filter(models.Plan.level == user.membership_level).first()
+    plan = db.query(models.Plan).filter(
+        models.Plan.level == user.membership_level
+    ).first()
 
     if not plan:
         raise HTTPException(status_code=404, detail="Plan no encontrado")
@@ -365,6 +441,49 @@ def get_or_create_selection(
     db.refresh(selection)
 
     return selection
+
+
+def build_selection_response(
+    db: Session,
+    user: models.User,
+    selection: models.MonthlySelection,
+    selected_cycle_order,
+    current_order,
+    moved_to_next_cycle: bool,
+):
+    products = get_selected_products(db, selection.id)
+
+    return {
+        "message": "Selección mensual lista",
+        "selection_id": selection.id,
+        "month": selection.month,
+        "year": selection.year,
+        "month_label": format_month_label(selection.month, selection.year),
+        "editable": selection.editable,
+        "status": selection.status,
+        "cycle_status": current_cycle_status(),
+        "cycle_status_label": get_cycle_status_label(),
+        "moved_to_next_cycle": moved_to_next_cycle,
+        "previous_order_locked": order_is_locked(current_order),
+        "plan_level": user.membership_level,
+        "plan_name": get_plan_name_by_level(user.membership_level or 0),
+        "products": products,
+        "editable_product": products[0]["name"] if products else None,
+        "editable_products": products,
+        "editable_sections": get_available_editable_sections_by_level(
+            db,
+            user.membership_level or 0,
+        ),
+        "available_editable_products": get_available_editable_products_by_level(
+            db,
+            user.membership_level or 0,
+        ),
+        "fixed_products": [],
+        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
+        "admin_review_window": "lunes a jueves",
+        "shipping_window": "viernes",
+        **order_tracking_data(selected_cycle_order),
+    }
 
 
 @router.post("/init")
@@ -400,33 +519,60 @@ def init_monthly_selection(
         editable_now=editable_now and not selected_cycle_locked,
     )
 
-    products = get_selected_products(db, selection.id)
+    return build_selection_response(
+        db=db,
+        user=user,
+        selection=selection,
+        selected_cycle_order=selected_cycle_order,
+        current_order=current_order,
+        moved_to_next_cycle=moved_to_next_cycle,
+    )
 
-    return {
-        "message": "Selección mensual lista",
-        "selection_id": selection.id,
-        "month": selection.month,
-        "year": selection.year,
-        "month_label": format_month_label(selection.month, selection.year),
-        "editable": editable_now and not selected_cycle_locked,
-        "status": selection.status,
-        "cycle_status": current_cycle_status(),
-        "cycle_status_label": get_cycle_status_label(),
-        "moved_to_next_cycle": moved_to_next_cycle,
-        "previous_order_locked": order_is_locked(current_order),
-        "plan_level": user.membership_level,
-        "plan_name": get_plan_name_by_level(user.membership_level),
-        "products": products,
-        "editable_product": products[0]["name"] if products else None,
-        "editable_products": products,
-        "editable_sections": get_available_editable_sections_by_level(db, user.membership_level),
-        "available_editable_products": get_available_editable_products_by_level(db, user.membership_level),
-        "fixed_products": [],
-        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
-        "admin_review_window": "lunes a jueves",
-        "shipping_window": "viernes",
-        **order_tracking_data(selected_cycle_order),
-    }
+
+@router.post("/init-after-payment")
+def init_monthly_selection_after_payment(
+    payload: MonthlySelectionInitRequest,
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if not user.membership_level:
+        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+
+    user.membership_active = True
+    user.is_active = True
+
+    editable_now = is_edit_window_open()
+    month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
+        db,
+        user.id,
+    )
+
+    selected_cycle_order = get_order_for_selection(db, user.id, month, year)
+    selected_cycle_locked = order_is_locked(selected_cycle_order)
+
+    selection = get_or_create_selection(
+        db=db,
+        user=user,
+        month=month,
+        year=year,
+        editable_now=editable_now and not selected_cycle_locked,
+    )
+
+    db.commit()
+    db.refresh(user)
+
+    return build_selection_response(
+        db=db,
+        user=user,
+        selection=selection,
+        selected_cycle_order=selected_cycle_order,
+        current_order=current_order,
+        moved_to_next_cycle=moved_to_next_cycle,
+    )
 
 
 @router.get("/user/{user_id}")
@@ -463,32 +609,14 @@ def get_user_monthly_selection(
         editable_now=editable_now and not selected_cycle_locked,
     )
 
-    products = get_selected_products(db, selection.id)
-
-    return {
-        "selection_id": selection.id,
-        "month": selection.month,
-        "year": selection.year,
-        "month_label": format_month_label(selection.month, selection.year),
-        "editable": selection.editable,
-        "status": selection.status,
-        "cycle_status": current_cycle_status(),
-        "cycle_status_label": get_cycle_status_label(),
-        "moved_to_next_cycle": moved_to_next_cycle,
-        "previous_order_locked": order_is_locked(current_order),
-        "plan_level": user.membership_level,
-        "plan_name": get_plan_name_by_level(user.membership_level or 0),
-        "products": products,
-        "editable_product": products[0]["name"] if products else None,
-        "editable_products": products,
-        "editable_sections": get_available_editable_sections_by_level(db, user.membership_level or 0),
-        "available_editable_products": get_available_editable_products_by_level(db, user.membership_level or 0),
-        "fixed_products": [],
-        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
-        "admin_review_window": "lunes a jueves",
-        "shipping_window": "viernes",
-        **order_tracking_data(selected_cycle_order),
-    }
+    return build_selection_response(
+        db=db,
+        user=user,
+        selection=selection,
+        selected_cycle_order=selected_cycle_order,
+        current_order=current_order,
+        moved_to_next_cycle=moved_to_next_cycle,
+    )
 
 
 @router.post("/{selection_id}/save-items")
@@ -598,6 +726,93 @@ def save_monthly_selection_items(
         "cycle_status_label": get_cycle_status_label(),
         "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "shipping_window": "viernes",
+    }
+
+
+@router.post("/{selection_id}/save-items-after-payment")
+def save_monthly_selection_items_after_payment(
+    selection_id: int,
+    payload: MonthlySelectionSaveRequest,
+    db: Session = Depends(get_db),
+):
+    selection = (
+        db.query(models.MonthlySelection)
+        .filter(models.MonthlySelection.id == selection_id)
+        .first()
+    )
+
+    if not selection:
+        raise HTTPException(status_code=404, detail="Selección no encontrada")
+
+    user = db.query(models.User).filter(models.User.id == selection.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    allowed_products = get_available_editable_products_by_level(
+        db,
+        user.membership_level or 0,
+    )
+
+    max_products = get_max_products_by_level(user.membership_level or 0)
+
+    if max_products <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene un nivel de membresía válido",
+        )
+
+    db.query(models.MonthlySelectionItem).filter(
+        models.MonthlySelectionItem.monthly_selection_id == selection.id
+    ).delete()
+
+    saved_products = []
+
+    for item_input in payload.items:
+        if len(saved_products) >= max_products:
+            break
+
+        product = get_product_by_input(db, item_input)
+
+        if not product:
+            continue
+
+        if product.name not in allowed_products:
+            continue
+
+        if product.name in saved_products:
+            continue
+
+        db.add(
+            models.MonthlySelectionItem(
+                monthly_selection_id=selection.id,
+                product_id=product.id,
+                quantity=1,
+            )
+        )
+
+        saved_products.append(product.name)
+
+    if not saved_products:
+        raise HTTPException(
+            status_code=400,
+            detail="No se encontró ningún producto válido para guardar",
+        )
+
+    selection.status = "confirmed"
+    selection.editable = True
+
+    db.commit()
+    db.refresh(selection)
+
+    return {
+        "message": "Selección inicial guardada correctamente",
+        "selection_id": selection.id,
+        "month": selection.month,
+        "year": selection.year,
+        "month_label": format_month_label(selection.month, selection.year),
+        "saved_products": saved_products,
+        "editable": selection.editable,
     }
 
 
