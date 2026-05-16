@@ -72,6 +72,24 @@ def generate_order_code(user_id: int, month: int, year: int):
     return f"MWC-{year}{month:02d}-U{user_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
 
+def safe_set(obj, attr, value):
+    if hasattr(obj, attr):
+        setattr(obj, attr, value)
+
+
+def order_is_locked(order):
+    if not order:
+        return False
+
+    return order.status in {
+        "approved_for_logistics",
+        "preparing",
+        "shipped",
+        "delivered",
+        "cancelled",
+    }
+
+
 def add_tracking_history(
     db: Session,
     order: models.Order,
@@ -89,19 +107,6 @@ def add_tracking_history(
         created_by=current_user.id if current_user else None,
     )
     db.add(history)
-
-
-def order_is_locked(order):
-    if not order:
-        return False
-
-    return order.status in {
-        "approved_for_logistics",
-        "preparing",
-        "shipped",
-        "delivered",
-        "cancelled",
-    }
 
 
 def get_monthly_amount_by_level(level: int) -> float:
@@ -125,10 +130,8 @@ def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
 
     if rounded in [45.00, 45.50, 40.00]:
         return 1
-
     if rounded in [55.00, 50.00]:
         return 2
-
     if rounded in [65.00, 67.00, 60.00]:
         return 3
 
@@ -151,11 +154,6 @@ def resolve_plan_level(payload: PayPalCreateOrderRequest, user: models.User) -> 
         status_code=400,
         detail="Debe enviarse plan_level para calcular el primer pago",
     )
-
-
-def safe_set(obj, attr, value):
-    if hasattr(obj, attr):
-        setattr(obj, attr, value)
 
 
 def get_token():
@@ -232,41 +230,39 @@ def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
 
 
 def get_best_selection_for_payment(db: Session, user: models.User):
-    now = datetime.utcnow()
+    selections = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user.id,
+            models.MonthlySelection.status.in_(["confirmed", "draft"]),
+        )
+        .order_by(
+            models.MonthlySelection.year.asc(),
+            models.MonthlySelection.month.asc(),
+            models.MonthlySelection.id.asc(),
+        )
+        .all()
+    )
 
-    current_selection = get_monthly_selection(db, user.id, now.month, now.year)
+    for selection in selections:
+        if not selection.items:
+            continue
 
-    if current_selection and current_selection.items:
-        current_order = (
+        existing_order = (
             db.query(models.Order)
             .filter(
                 models.Order.user_id == user.id,
-                models.Order.month == now.month,
-                models.Order.year == now.year,
+                models.Order.month == selection.month,
+                models.Order.year == selection.year,
             )
             .first()
         )
 
-        if not order_is_locked(current_order):
-            return current_selection
+        if not order_is_locked(existing_order):
+            return selection
 
-    next_selection = (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user.id,
-            models.MonthlySelection.status.in_(["draft", "confirmed"]),
-        )
-        .order_by(
-            models.MonthlySelection.year.desc(),
-            models.MonthlySelection.month.desc(),
-        )
-        .first()
-    )
-
-    if next_selection and next_selection.items:
-        return next_selection
-
-    return current_selection
+    now = datetime.utcnow()
+    return get_monthly_selection(db, user.id, now.month, now.year)
 
 
 def get_or_create_order_for_payment(
@@ -306,6 +302,8 @@ def get_or_create_order_for_payment(
 
     if existing_order:
         payment.order_id = existing_order.id
+        monthly.editable = False
+        monthly.status = "confirmed"
         return existing_order
 
     order = models.Order(
@@ -314,7 +312,7 @@ def get_or_create_order_for_payment(
         month=monthly.month,
         year=monthly.year,
         membership_level_snapshot=user.membership_level,
-        user_status_snapshot="active" if user.membership_active else "inactive",
+        user_status_snapshot="active",
         city_snapshot=user.city,
         address_snapshot=user.address,
         reference_snapshot=user.reference,
@@ -344,6 +342,7 @@ def get_or_create_order_for_payment(
             )
 
     monthly.editable = False
+    monthly.status = "confirmed"
     payment.order_id = order.id
 
     add_tracking_history(
@@ -650,6 +649,7 @@ def verify(
 
     if selection:
         selection.editable = False
+        selection.status = "confirmed"
 
     db.commit()
     db.refresh(payment)
