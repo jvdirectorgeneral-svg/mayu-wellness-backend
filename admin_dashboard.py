@@ -18,6 +18,7 @@ from models import (
     MonthlySelection,
     MonthlySelectionItem,
     Product,
+    OrderItem,
 )
 
 router = APIRouter(prefix="/admin-dashboard", tags=["admin-dashboard"])
@@ -98,6 +99,10 @@ def format_month_label(month: int, year: int):
         9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
     }
     return f"{months.get(month, 'Mes')} {year}"
+
+
+def generate_order_code(user_id: int, month: int, year: int):
+    return f"MWC-{year}{month:02d}-U{user_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
 
 def order_is_locked(order: Order):
@@ -290,6 +295,153 @@ def order_to_dict(db: Session, order: Order):
         "admin_verified_at": payment.admin_verified_at if payment else None,
         **get_monthly_selection_data(db, order.user_id, order.month, order.year),
     }
+
+
+def get_best_selection_for_payment(db: Session, user: User):
+    now = datetime.utcnow()
+
+    current_selection = (
+        db.query(MonthlySelection)
+        .filter(
+            MonthlySelection.user_id == user.id,
+            MonthlySelection.month == now.month,
+            MonthlySelection.year == now.year,
+        )
+        .first()
+    )
+
+    if current_selection:
+        current_items = (
+            db.query(MonthlySelectionItem)
+            .filter(MonthlySelectionItem.monthly_selection_id == current_selection.id)
+            .all()
+        )
+
+        current_order = (
+            db.query(Order)
+            .filter(
+                Order.user_id == user.id,
+                Order.month == now.month,
+                Order.year == now.year,
+            )
+            .first()
+        )
+
+        if current_items and not order_is_locked(current_order):
+            return current_selection
+
+    selections = (
+        db.query(MonthlySelection)
+        .filter(
+            MonthlySelection.user_id == user.id,
+            MonthlySelection.status.in_(["draft", "confirmed"]),
+        )
+        .order_by(
+            MonthlySelection.year.desc(),
+            MonthlySelection.month.desc(),
+        )
+        .all()
+    )
+
+    for selection in selections:
+        items = (
+            db.query(MonthlySelectionItem)
+            .filter(MonthlySelectionItem.monthly_selection_id == selection.id)
+            .all()
+        )
+        if items:
+            return selection
+
+    return current_selection
+
+
+def get_or_create_order_for_payment(
+    db: Session,
+    user: User,
+    payment: MembershipPayment,
+    current_user: User,
+):
+    if payment.order_id:
+        order = db.query(Order).filter(Order.id == payment.order_id).first()
+        if order:
+            return order
+
+    monthly = get_best_selection_for_payment(db, user)
+
+    if not monthly:
+        raise HTTPException(
+            status_code=400,
+            detail="No existe selección mensual para este socio. Primero debe guardar sus productos.",
+        )
+
+    items = (
+        db.query(MonthlySelectionItem)
+        .filter(MonthlySelectionItem.monthly_selection_id == monthly.id)
+        .all()
+    )
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="La selección mensual no tiene productos. No se puede crear orden para logística.",
+        )
+
+    existing_order = (
+        db.query(Order)
+        .filter(
+            Order.user_id == user.id,
+            Order.month == monthly.month,
+            Order.year == monthly.year,
+        )
+        .first()
+    )
+
+    if existing_order:
+        payment.order_id = existing_order.id
+        return existing_order
+
+    order = Order(
+        order_code=generate_order_code(user.id, monthly.month, monthly.year),
+        user_id=user.id,
+        month=monthly.month,
+        year=monthly.year,
+        membership_level_snapshot=user.membership_level,
+        user_status_snapshot="active" if user.membership_active else "inactive",
+        city_snapshot=getattr(user, "city", None),
+        address_snapshot=getattr(user, "address", None),
+        reference_snapshot=getattr(user, "reference", None),
+        delivery_notes_snapshot=getattr(user, "delivery_notes", None),
+        status="approved_for_logistics",
+        logistics_notes="✔ Pago verificado - listo para despacho",
+    )
+
+    db.add(order)
+    db.flush()
+
+    for item in items:
+        product = db.query(Product).filter(Product.id == item.product_id).first()
+        if product:
+            db.add(
+                OrderItem(
+                    order_id=order.id,
+                    product_id=product.id,
+                    product_name_snapshot=product.name,
+                    quantity=item.quantity,
+                )
+            )
+
+    monthly.editable = False
+    payment.order_id = order.id
+
+    add_order_tracking_history(
+        db=db,
+        order=order,
+        current_user=current_user,
+        status="approved_for_logistics",
+        note="✔ Pago verificado - orden creada y lista para despacho",
+    )
+
+    return order
 
 
 @router.get("/summary")
@@ -498,8 +650,6 @@ def get_payments(db: Session = Depends(get_db), current_user: User = Depends(get
 def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
 
-    from payments import get_or_create_order_for_payment
-
     payment = db.query(MembershipPayment).filter(MembershipPayment.id == payment_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
@@ -545,14 +695,6 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
 
     if selection:
         selection.editable = False
-
-    add_order_tracking_history(
-        db=db,
-        order=order,
-        current_user=current_user,
-        status="approved_for_logistics",
-        note="Pago verificado por administración y orden liberada a logística",
-    )
 
     db.commit()
     db.refresh(payment)
