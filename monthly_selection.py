@@ -39,8 +39,6 @@ def current_cycle_status():
 
 def get_cycle_status_label():
     status = current_cycle_status()
-    if status == "editable":
-        return "Productos editables disponibles"
     if status == "admin_review":
         return "Revisión administrativa de pagos y suscripciones"
     if status == "weekly_shipping":
@@ -114,7 +112,10 @@ def product_to_option(p: models.Product):
 def get_products_by_category(db: Session, category: str):
     products = (
         db.query(models.Product)
-        .filter(models.Product.category == category, models.Product.active == True)
+        .filter(
+            models.Product.category == category,
+            models.Product.active == True,
+        )
         .order_by(models.Product.name.asc())
         .all()
     )
@@ -253,15 +254,20 @@ def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
     if item.product_id is not None:
         return (
             db.query(models.Product)
-            .filter(models.Product.id == item.product_id, models.Product.active == True)
+            .filter(
+                models.Product.id == item.product_id,
+                models.Product.active == True,
+            )
             .first()
         )
 
     if item.product_name and item.product_name.strip():
+        clean_name = item.product_name.strip()
+
         return (
             db.query(models.Product)
             .filter(
-                models.Product.name == item.product_name.strip(),
+                models.Product.name == clean_name,
                 models.Product.active == True,
             )
             .first()
@@ -280,9 +286,11 @@ def get_selected_products(db: Session, selection_id: int):
     products = []
 
     for item in items:
-        product = db.query(models.Product).filter(
-            models.Product.id == item.product_id
-        ).first()
+        product = (
+            db.query(models.Product)
+            .filter(models.Product.id == item.product_id)
+            .first()
+        )
 
         if product:
             products.append(
@@ -406,9 +414,11 @@ def get_or_create_selection(
     year: int,
     editable_now: bool,
 ):
-    plan = db.query(models.Plan).filter(
-        models.Plan.level == user.membership_level
-    ).first()
+    plan = (
+        db.query(models.Plan)
+        .filter(models.Plan.level == user.membership_level)
+        .first()
+    )
 
     if not plan:
         raise HTTPException(status_code=404, detail="Plan no encontrado")
@@ -456,6 +466,7 @@ def build_selection_response(
     return {
         "message": "Selección mensual lista",
         "selection_id": selection.id,
+        "id": selection.id,
         "month": selection.month,
         "year": selection.year,
         "month_label": format_month_label(selection.month, selection.year),
@@ -480,10 +491,75 @@ def build_selection_response(
         ),
         "fixed_products": [],
         "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
+        "next_selection_rule": "Cuando la orden actual sea liberada a logística, la siguiente selección se abrirá para el próximo mes.",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
         **order_tracking_data(selected_cycle_order),
     }
+
+
+def save_selection_items_core(
+    db: Session,
+    selection: models.MonthlySelection,
+    user: models.User,
+    payload: MonthlySelectionSaveRequest,
+):
+    allowed_products = get_available_editable_products_by_level(
+        db,
+        user.membership_level or 0,
+    )
+
+    max_products = get_max_products_by_level(user.membership_level or 0)
+
+    if max_products <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene un nivel de membresía válido",
+        )
+
+    db.query(models.MonthlySelectionItem).filter(
+        models.MonthlySelectionItem.monthly_selection_id == selection.id
+    ).delete()
+
+    saved_products = []
+
+    for item_input in payload.items:
+        if len(saved_products) >= max_products:
+            break
+
+        product = get_product_by_input(db, item_input)
+
+        if not product:
+            continue
+
+        if product.name not in allowed_products:
+            continue
+
+        if product.name in saved_products:
+            continue
+
+        db.add(
+            models.MonthlySelectionItem(
+                monthly_selection_id=selection.id,
+                product_id=product.id,
+                quantity=1,
+            )
+        )
+
+        saved_products.append(product.name)
+
+    if not saved_products:
+        raise HTTPException(
+            status_code=400,
+            detail="No se encontró ningún producto válido para guardar",
+        )
+
+    selection.status = "confirmed"
+
+    db.commit()
+    db.refresh(selection)
+
+    return saved_products
 
 
 @router.post("/init")
@@ -500,9 +576,13 @@ def init_monthly_selection(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene plan asignado",
+        )
 
     editable_now = is_edit_window_open()
+
     month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
         db,
         user.id,
@@ -540,12 +620,16 @@ def init_monthly_selection_after_payment(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene plan asignado",
+        )
 
     user.membership_active = True
     user.is_active = True
 
     editable_now = is_edit_window_open()
+
     month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
         db,
         user.id,
@@ -583,15 +667,18 @@ def get_user_monthly_selection(
 ):
     can_access_user(current_user, user_id)
 
-    editable_now = is_edit_window_open()
-
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not user.membership_level:
-        raise HTTPException(status_code=400, detail="El usuario no tiene plan asignado")
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene plan asignado",
+        )
+
+    editable_now = is_edit_window_open()
 
     month, year, current_order, moved_to_next_cycle = get_active_editable_cycle(
         db,
@@ -659,72 +746,25 @@ def save_monthly_selection_items(
             detail="La ventana de edición no está disponible para este ciclo",
         )
 
-    allowed_products = get_available_editable_products_by_level(
-        db,
-        user.membership_level or 0,
+    saved_products = save_selection_items_core(
+        db=db,
+        selection=selection,
+        user=user,
+        payload=payload,
     )
-
-    max_products = get_max_products_by_level(user.membership_level or 0)
-
-    if max_products <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="El usuario no tiene un nivel de membresía válido",
-        )
-
-    db.query(models.MonthlySelectionItem).filter(
-        models.MonthlySelectionItem.monthly_selection_id == selection.id
-    ).delete()
-
-    saved_products = []
-
-    for item_input in payload.items:
-        if len(saved_products) >= max_products:
-            break
-
-        product = get_product_by_input(db, item_input)
-
-        if not product:
-            continue
-
-        if product.name not in allowed_products:
-            continue
-
-        if product.name in saved_products:
-            continue
-
-        db.add(
-            models.MonthlySelectionItem(
-                monthly_selection_id=selection.id,
-                product_id=product.id,
-                quantity=1,
-            )
-        )
-
-        saved_products.append(product.name)
-
-    if not saved_products:
-        raise HTTPException(
-            status_code=400,
-            detail="No se encontró ningún producto válido para guardar",
-        )
-
-    selection.status = "confirmed"
-
-    db.commit()
-    db.refresh(selection)
 
     return {
         "message": "Selección mensual actualizada correctamente",
         "selection_id": selection.id,
+        "id": selection.id,
         "month": selection.month,
         "year": selection.year,
         "month_label": format_month_label(selection.month, selection.year),
         "saved_products": saved_products,
+        "products": get_selected_products(db, selection.id),
         "editable": selection.editable,
         "cycle_status": current_cycle_status(),
         "cycle_status_label": get_cycle_status_label(),
-        "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "shipping_window": "viernes",
     }
 
@@ -749,69 +789,30 @@ def save_monthly_selection_items_after_payment(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    allowed_products = get_available_editable_products_by_level(
-        db,
-        user.membership_level or 0,
-    )
-
-    max_products = get_max_products_by_level(user.membership_level or 0)
-
-    if max_products <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="El usuario no tiene un nivel de membresía válido",
-        )
-
-    db.query(models.MonthlySelectionItem).filter(
-        models.MonthlySelectionItem.monthly_selection_id == selection.id
-    ).delete()
-
-    saved_products = []
-
-    for item_input in payload.items:
-        if len(saved_products) >= max_products:
-            break
-
-        product = get_product_by_input(db, item_input)
-
-        if not product:
-            continue
-
-        if product.name not in allowed_products:
-            continue
-
-        if product.name in saved_products:
-            continue
-
-        db.add(
-            models.MonthlySelectionItem(
-                monthly_selection_id=selection.id,
-                product_id=product.id,
-                quantity=1,
-            )
-        )
-
-        saved_products.append(product.name)
-
-    if not saved_products:
-        raise HTTPException(
-            status_code=400,
-            detail="No se encontró ningún producto válido para guardar",
-        )
-
-    selection.status = "confirmed"
+    user.membership_active = True
+    user.is_active = True
     selection.editable = True
 
+    saved_products = save_selection_items_core(
+        db=db,
+        selection=selection,
+        user=user,
+        payload=payload,
+    )
+
     db.commit()
+    db.refresh(user)
     db.refresh(selection)
 
     return {
         "message": "Selección inicial guardada correctamente",
         "selection_id": selection.id,
+        "id": selection.id,
         "month": selection.month,
         "year": selection.year,
         "month_label": format_month_label(selection.month, selection.year),
         "saved_products": saved_products,
+        "products": get_selected_products(db, selection.id),
         "editable": selection.editable,
     }
 
@@ -852,11 +853,19 @@ def get_user_monthly_selection_history(
     for selection in selections:
         selected_products = get_selected_products(db, selection.id)
         selected_names = [p["name"] for p in selected_products]
-        order = get_order_for_selection(db, user_id, selection.month, selection.year)
+        order = get_order_for_selection(
+            db,
+            user_id,
+            selection.month,
+            selection.year,
+        )
 
         is_current_or_future = (
             selection.year > current_year
-            or (selection.year == current_year and selection.month >= current_month)
+            or (
+                selection.year == current_year
+                and selection.month >= current_month
+            )
         )
 
         selection_data = {
@@ -865,7 +874,9 @@ def get_user_monthly_selection_history(
             "year": selection.year,
             "planName": get_plan_name_by_level(user.membership_level or 0),
             "fixedProducts": [],
-            "editableProduct": selected_names[0] if selected_names else "No seleccionado",
+            "editableProduct": selected_names[0]
+            if selected_names
+            else "No seleccionado",
             "editableProducts": selected_names,
             "products": selected_products,
             "status": "Pendiente para próximo despacho semanal"
@@ -895,6 +906,7 @@ def get_user_upcoming_delivery(
         db=db,
         current_user=current_user,
     )
+
     return {"upcoming": data.get("upcoming")}
 
 
@@ -907,5 +919,5 @@ def get_cycle_info():
         "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
-        "business_rule": "El socio puede cambiar sus productos editables del ciclo activo. Si la orden actual ya fue liberada a logística, el sistema abre automáticamente la selección del siguiente mes.",
+        "business_rule": "El socio puede cambiar productos del ciclo activo. Si la orden actual ya fue liberada a logística, el sistema abre automáticamente la selección del siguiente mes.",
     }
