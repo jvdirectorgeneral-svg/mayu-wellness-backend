@@ -61,9 +61,6 @@ def get_plan_id_by_level(level: int):
     return os.getenv(env_map.get(level, "") or "")
 
 
-# =========================
-# PRECIOS MENSUALES RECURRENTES
-# =========================
 MONTHLY_PRICES = {
     1: 40.00,
     2: 50.00,
@@ -93,6 +90,11 @@ class CreatePlanRequest(BaseModel):
     product_id: str
     plan_level: int
     currency: str = "USD"
+
+
+def safe_set(obj, attr, value):
+    if hasattr(obj, attr):
+        setattr(obj, attr, value)
 
 
 def get_token():
@@ -181,11 +183,6 @@ def extract_approve_url(links):
             return link.get("href")
 
     return None
-
-
-def safe_set(obj, attr, value):
-    if hasattr(obj, attr):
-        setattr(obj, attr, value)
 
 
 @router.get("/debug")
@@ -327,6 +324,7 @@ def create_subscription(
 
     subscription_id = response.get("id")
     approve_url = extract_approve_url(response.get("links", []))
+    paypal_status = response.get("status", "APPROVAL_PENDING")
     monthly_amount = MONTHLY_PRICES[payload.plan_level]
 
     user.membership_level = payload.plan_level
@@ -357,7 +355,9 @@ def create_subscription(
         "monthly_amount": monthly_amount,
         "start_time": start_time,
         "paypal_subscription_id": subscription_id,
+        "subscription_status": paypal_status,
         "approve_url": approve_url,
+        "approval_url": approve_url,
         "links": response.get("links", []),
     }
 
@@ -437,6 +437,7 @@ async def subscription_webhook(
 
         if user:
             user.membership_active = True
+            user.is_active = True
 
         db.commit()
 
@@ -459,6 +460,7 @@ async def subscription_webhook(
 
         if user:
             user.membership_active = True
+            user.is_active = True
 
         db.commit()
 
@@ -546,13 +548,20 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
 
         paypal_status = response.get("status")
         billing_info = response.get("billing_info", {})
-        next_billing_time = billing_info.get("next_billing_time") if billing_info else None
+        next_billing_time = (
+            billing_info.get("next_billing_time") if billing_info else None
+        )
 
         if paypal_status == "ACTIVE":
             payment.status = "subscription_active"
             safe_set(payment, "admin_verified", True)
             safe_set(payment, "admin_verified_at", datetime.utcnow())
             user.membership_active = True
+            user.is_active = True
+            db.commit()
+
+        elif paypal_status in ["APPROVAL_PENDING"]:
+            payment.status = "subscription_created"
             db.commit()
 
         elif paypal_status in ["SUSPENDED", "CANCELLED", "EXPIRED"]:
