@@ -263,7 +263,6 @@ def get_product_by_input(db: Session, item: MonthlySelectionItemInput):
 
     if item.product_name and item.product_name.strip():
         clean_name = item.product_name.strip()
-
         return (
             db.query(models.Product)
             .filter(
@@ -303,6 +302,120 @@ def get_selected_products(db: Session, selection_id: int):
             )
 
     return products
+
+
+def selection_has_items(db: Session, selection_id: int):
+    count = (
+        db.query(models.MonthlySelectionItem)
+        .filter(models.MonthlySelectionItem.monthly_selection_id == selection_id)
+        .count()
+    )
+    return count > 0
+
+
+def get_last_confirmed_selection_with_items(
+    db: Session,
+    user_id: int,
+    exclude_selection_id: int | None = None,
+):
+    query = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.status == "confirmed",
+        )
+        .order_by(
+            models.MonthlySelection.year.desc(),
+            models.MonthlySelection.month.desc(),
+            models.MonthlySelection.id.desc(),
+        )
+    )
+
+    if exclude_selection_id is not None:
+        query = query.filter(models.MonthlySelection.id != exclude_selection_id)
+
+    selections = query.all()
+
+    for selection in selections:
+        if selection_has_items(db, selection.id):
+            return selection
+
+    return None
+
+
+def copy_previous_products_if_empty(
+    db: Session,
+    user: models.User,
+    selection: models.MonthlySelection,
+):
+    if selection_has_items(db, selection.id):
+        return False
+
+    previous = get_last_confirmed_selection_with_items(
+        db=db,
+        user_id=user.id,
+        exclude_selection_id=selection.id,
+    )
+
+    if not previous:
+        return False
+
+    previous_items = (
+        db.query(models.MonthlySelectionItem)
+        .filter(models.MonthlySelectionItem.monthly_selection_id == previous.id)
+        .all()
+    )
+
+    allowed_products = get_available_editable_products_by_level(
+        db,
+        user.membership_level or 0,
+    )
+
+    max_products = get_max_products_by_level(user.membership_level or 0)
+
+    copied = 0
+    copied_names = set()
+
+    for item in previous_items:
+        if copied >= max_products:
+            break
+
+        product = (
+            db.query(models.Product)
+            .filter(
+                models.Product.id == item.product_id,
+                models.Product.active == True,
+            )
+            .first()
+        )
+
+        if not product:
+            continue
+
+        if product.name not in allowed_products:
+            continue
+
+        if product.name in copied_names:
+            continue
+
+        db.add(
+            models.MonthlySelectionItem(
+                monthly_selection_id=selection.id,
+                product_id=product.id,
+                quantity=item.quantity or 1,
+            )
+        )
+
+        copied_names.add(product.name)
+        copied += 1
+
+    if copied > 0:
+        selection.status = "confirmed"
+        db.commit()
+        db.refresh(selection)
+        return True
+
+    return False
 
 
 def get_order_for_selection(db: Session, user_id: int, month: int, year: int):
@@ -413,6 +526,7 @@ def get_or_create_selection(
     month: int,
     year: int,
     editable_now: bool,
+    copy_previous_default: bool = True,
 ):
     plan = (
         db.query(models.Plan)
@@ -433,6 +547,8 @@ def get_or_create_selection(
         .first()
     )
 
+    created = False
+
     if not selection:
         selection = models.MonthlySelection(
             user_id=user.id,
@@ -443,12 +559,17 @@ def get_or_create_selection(
             editable=editable_now,
         )
         db.add(selection)
+        db.commit()
+        db.refresh(selection)
+        created = True
     else:
         selection.plan_id = plan.id
         selection.editable = editable_now
+        db.commit()
+        db.refresh(selection)
 
-    db.commit()
-    db.refresh(selection)
+    if copy_previous_default and created:
+        copy_previous_products_if_empty(db, user, selection)
 
     return selection
 
@@ -490,8 +611,9 @@ def build_selection_response(
             user.membership_level or 0,
         ),
         "fixed_products": [],
+        "default_rule": "Si el socio no cambia productos, se repite automáticamente la última selección confirmada.",
         "edit_window": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
-        "next_selection_rule": "Cuando la orden actual sea liberada a logística, la siguiente selección se abrirá para el próximo mes.",
+        "next_selection_rule": "Cuando la orden actual sea liberada a logística, la siguiente selección se abre para el próximo mes.",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
         **order_tracking_data(selected_cycle_order),
@@ -597,6 +719,7 @@ def init_monthly_selection(
         month=month,
         year=year,
         editable_now=editable_now and not selected_cycle_locked,
+        copy_previous_default=True,
     )
 
     return build_selection_response(
@@ -644,6 +767,7 @@ def init_monthly_selection_after_payment(
         month=month,
         year=year,
         editable_now=editable_now and not selected_cycle_locked,
+        copy_previous_default=False,
     )
 
     db.commit()
@@ -694,6 +818,7 @@ def get_user_monthly_selection(
         month=month,
         year=year,
         editable_now=editable_now and not selected_cycle_locked,
+        copy_previous_default=True,
     )
 
     return build_selection_response(
@@ -836,6 +961,7 @@ def get_user_monthly_selection_history(
         .order_by(
             models.MonthlySelection.year.desc(),
             models.MonthlySelection.month.desc(),
+            models.MonthlySelection.id.desc(),
         )
         .all()
     )
@@ -853,6 +979,7 @@ def get_user_monthly_selection_history(
     for selection in selections:
         selected_products = get_selected_products(db, selection.id)
         selected_names = [p["name"] for p in selected_products]
+
         order = get_order_for_selection(
             db,
             user_id,
@@ -869,7 +996,10 @@ def get_user_monthly_selection_history(
         )
 
         selection_data = {
+            "selection_id": selection.id,
+            "id": selection.id,
             "monthLabel": format_month_label(selection.month, selection.year),
+            "month_label": format_month_label(selection.month, selection.year),
             "month": selection.month,
             "year": selection.year,
             "planName": get_plan_name_by_level(user.membership_level or 0),
@@ -882,6 +1012,7 @@ def get_user_monthly_selection_history(
             "status": "Pendiente para próximo despacho semanal"
             if is_current_or_future
             else "Procesado",
+            "default_rule": "Si no cambias productos, se repite automáticamente tu última selección confirmada.",
             "shippingWindow": "viernes",
             "editWindow": "Disponible para el próximo ciclo mientras la orden no haya sido liberada a logística",
             **order_tracking_data(order),
@@ -920,4 +1051,5 @@ def get_cycle_info():
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
         "business_rule": "El socio puede cambiar productos del ciclo activo. Si la orden actual ya fue liberada a logística, el sistema abre automáticamente la selección del siguiente mes.",
+        "default_rule": "Si el socio no selecciona nuevos productos para el siguiente mes, el sistema repite automáticamente la última selección confirmada.",
     }
