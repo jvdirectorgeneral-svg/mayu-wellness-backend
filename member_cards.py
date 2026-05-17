@@ -125,7 +125,7 @@ def level_text(user, card):
     return levels.get(card.level_snapshot, "Socio Mayu")
 
 
-def get_card_visual_data(db: Session, user, card):
+def get_card_visual_data(db: Session | None, user, card):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id) if db else None
         ambassador_id = ambassador.id if ambassador else user.id
@@ -138,7 +138,7 @@ def get_card_visual_data(db: Session, user, card):
             "wallet_file": "wallet_embajador.png",
             "fallback_color": (0, 120, 110),
             "accent_color": (255, 236, 170),
-            "hex_color": "#0f172a",
+            "hex_color": "#0F766E",
         }
 
     if card.level_snapshot == 1:
@@ -254,18 +254,11 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
                     <p><strong>Código:</strong> {card.member_code}</p>
                     <p><strong>Estado:</strong> {card.status}</p>
                     <p><strong>Vigencia:</strong> {CARD_VALIDITY_TEXT}</p>
-
-                    <a href="{validate_url}" style="display:inline-block; margin-top:16px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">
-                        Validar tarjeta
-                    </a>
+                    <a href="{validate_url}" style="display:inline-block; margin-top:16px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">Validar tarjeta</a>
                     <br/>
-                    <a href="{apple_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#000; color:white; text-decoration:none; border-radius:999px;">
-                        Agregar a Apple Wallet
-                    </a>
+                    <a href="{apple_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#000; color:white; text-decoration:none; border-radius:999px;">Agregar a Apple Wallet</a>
                     <br/>
-                    <a href="{google_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#0f9d58; color:white; text-decoration:none; border-radius:999px;">
-                        Agregar a Google Wallet
-                    </a>
+                    <a href="{google_wallet_url}" style="display:inline-block; margin-top:12px; padding:12px 20px; background:#0f9d58; color:white; text-decoration:none; border-radius:999px;">Agregar a Google Wallet</a>
                 </div>
             </div>
         </body>
@@ -308,9 +301,7 @@ def validate_member_card(qr_token: str, db: Session = Depends(get_db)):
             <div style="max-width:520px; margin:auto; background:#1e293b; border-radius:24px; padding:32px;">
                 <h1 style="text-align:center;">{CLUB_NAME}</h1>
                 <div style="text-align:center; margin:20px 0;">
-                    <span style="padding:12px 24px; border-radius:999px; background:{status_color}; color:white;">
-                        {status_text}
-                    </span>
+                    <span style="padding:12px 24px; border-radius:999px; background:{status_color}; color:white;">{status_text}</span>
                 </div>
                 <p><strong>Nombre:</strong> {user.name}</p>
                 <p><strong>Club:</strong> {CLUB_NAME}</p>
@@ -439,8 +430,6 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
 
         strip_2x = strip.resize((2250, 738))
         strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
-    else:
-        print("NO EXISTE STRIP WALLET:", strip_source)
 
 
 def load_wwdr_certificate(path: str):
@@ -587,7 +576,11 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         output_path = os.path.join(temp_dir, f"mayu_wallet_{user_id}.pkpass")
         zip_pkpass(pass_dir, output_path)
 
-        return FileResponse(path=output_path, media_type="application/vnd.apple.pkpass", filename=f"mayu_wallet_{user_id}.pkpass")
+        return FileResponse(
+            path=output_path,
+            media_type="application/vnd.apple.pkpass",
+            filename=f"mayu_wallet_{user_id}.pkpass",
+        )
 
     except HTTPException:
         raise
@@ -607,6 +600,10 @@ def get_google_wallet_service_account():
         raise HTTPException(status_code=500, detail="GOOGLE_WALLET_SERVICE_ACCOUNT_JSON no es JSON válido")
 
 
+def clean_google_private_key(private_key: str):
+    return private_key.replace("\\n", "\n").strip()
+
+
 def build_google_wallet_save_url(user, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     class_suffix = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "mayu_membership")
@@ -622,6 +619,8 @@ def build_google_wallet_save_url(user, card):
     if not client_email or not private_key:
         raise HTTPException(status_code=500, detail="JSON de Google Wallet incompleto")
 
+    private_key = clean_google_private_key(private_key)
+
     visual = get_card_visual_data(None, user, card)
 
     class_id = f"{issuer_id}.{class_suffix}"
@@ -631,13 +630,7 @@ def build_google_wallet_save_url(user, card):
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     image_url = f"{BASE_PUBLIC_URL}/member-cards/assets/{visual['wallet_file']}"
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
-
-    generic_class = {
-        "id": class_id,
-        "issuerName": CLUB_NAME,
-        "reviewStatus": "UNDER_REVIEW",
-        "hexBackgroundColor": visual["hex_color"],
-    }
+    card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
 
     generic_object = {
         "id": object_id,
@@ -646,24 +639,61 @@ def build_google_wallet_save_url(user, card):
         "hexBackgroundColor": visual["hex_color"],
         "logo": {
             "sourceUri": {"uri": logo_url},
-            "contentDescription": {"defaultValue": {"language": "es", "value": CLUB_NAME}},
+            "contentDescription": {
+                "defaultValue": {
+                    "language": "es",
+                    "value": CLUB_NAME,
+                }
+            },
         },
         "heroImage": {
             "sourceUri": {"uri": image_url},
-            "contentDescription": {"defaultValue": {"language": "es", "value": CLUB_NAME}},
+            "contentDescription": {
+                "defaultValue": {
+                    "language": "es",
+                    "value": CLUB_NAME,
+                }
+            },
         },
-        "cardTitle": {"defaultValue": {"language": "es", "value": CLUB_NAME}},
-        "header": {"defaultValue": {"language": "es", "value": user.name}},
-        "subheader": {"defaultValue": {"language": "es", "value": level_text(user, card)}},
+        "cardTitle": {
+            "defaultValue": {
+                "language": "es",
+                "value": CLUB_NAME,
+            }
+        },
+        "header": {
+            "defaultValue": {
+                "language": "es",
+                "value": user.name,
+            }
+        },
+        "subheader": {
+            "defaultValue": {
+                "language": "es",
+                "value": level_text(user, card),
+            }
+        },
         "barcode": {
             "type": "QR_CODE",
             "value": validate_url,
             "alternateText": card.member_code,
         },
         "textModulesData": [
-            {"id": "status", "header": "Estado", "body": "Activo" if card.status == "active" else "Inactivo"},
-            {"id": "code", "header": "Código", "body": card.member_code},
-            {"id": "valid", "header": "Vigencia", "body": CARD_VALIDITY_TEXT},
+            {
+                "id": "status",
+                "header": "Estado",
+                "body": "Activo" if card.status == "active" else "Inactivo",
+            },
+            {
+                "id": "code",
+                "header": "Código",
+                "body": card.member_code,
+            },
+            {
+                "id": "valid",
+                "header": "Vigencia",
+                "body": CARD_VALIDITY_TEXT,
+            },
         ],
         "linksModuleData": {
             "uris": [
@@ -674,7 +704,7 @@ def build_google_wallet_save_url(user, card):
                 },
                 {
                     "id": "web",
-                    "uri": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web",
+                    "uri": card_web_url,
                     "description": "Ver tarjeta web",
                 },
             ]
@@ -686,7 +716,6 @@ def build_google_wallet_save_url(user, card):
         "aud": "google",
         "typ": "savetowallet",
         "payload": {
-            "genericClasses": [generic_class],
             "genericObjects": [generic_object],
         },
     }
