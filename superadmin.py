@@ -71,14 +71,17 @@ def get_db():
 def require_superadmin(current_user: User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
+
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
+
     if current_user.role != "superadmin":
         raise HTTPException(status_code=403, detail="Acceso solo para superadmin")
 
 
 def user_to_dict(db: Session, user: User):
     ambassador = db.query(Ambassador).filter(Ambassador.user_id == user.id).first()
+
     return {
         "id": user.id,
         "name": user.name,
@@ -95,9 +98,12 @@ def user_to_dict(db: Session, user: User):
 
 
 @router.get("/me")
-def get_superadmin_profile(current_user: User = Depends(get_current_user)):
+def get_superadmin_profile(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     require_superadmin(current_user)
-    return user_to_dict(SessionLocal(), current_user)
+    return user_to_dict(db, current_user)
 
 
 @router.put("/me")
@@ -109,6 +115,7 @@ def update_superadmin_profile(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == current_user.id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
@@ -116,10 +123,16 @@ def update_superadmin_profile(
     cedula = payload.cedula.strip()
 
     if db.query(User).filter(User.email == email, User.id != user.id).first():
-        raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
+        raise HTTPException(
+            status_code=400,
+            detail="El correo ya está registrado por otro usuario",
+        )
 
     if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
-        raise HTTPException(status_code=400, detail="La cédula ya está registrada por otro usuario")
+        raise HTTPException(
+            status_code=400,
+            detail="La cédula ya está registrada por otro usuario",
+        )
 
     user.name = payload.name.strip()
     user.email = email
@@ -129,7 +142,10 @@ def update_superadmin_profile(
     db.commit()
     db.refresh(user)
 
-    return {"message": "Perfil superadmin actualizado correctamente", "user": user_to_dict(db, user)}
+    return {
+        "message": "Perfil superadmin actualizado correctamente",
+        "user": user_to_dict(db, user),
+    }
 
 
 @router.put("/me/password")
@@ -141,16 +157,25 @@ def update_superadmin_password(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == current_user.id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if not payload.new_password.strip():
-        raise HTTPException(status_code=400, detail="La nueva contraseña es obligatoria")
+    if not payload.new_password or not payload.new_password.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="La nueva contraseña es obligatoria",
+        )
 
     user.password = hash_password(payload.new_password.strip())
-    db.commit()
 
-    return {"message": "Contraseña superadmin actualizada correctamente", "user_id": user.id}
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "Contraseña superadmin actualizada correctamente",
+        "user_id": user.id,
+    }
 
 
 @router.get("/internal-users")
@@ -161,6 +186,7 @@ def get_internal_users(
     require_superadmin(current_user)
 
     users = db.query(User).order_by(User.id.asc()).all()
+
     return {
         "items": [user_to_dict(db, user) for user in users],
         "internal_roles": INTERNAL_ROLES,
@@ -193,7 +219,7 @@ def create_internal_user(
     if db.query(User).filter(User.cedula == cedula).first():
         raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
-    if not payload.password.strip():
+    if not payload.password or not payload.password.strip():
         raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
 
     user = User(
@@ -221,7 +247,10 @@ def create_internal_user(
     db.commit()
     db.refresh(user)
 
-    return {"message": "Usuario interno creado correctamente", "user": user_to_dict(db, user)}
+    return {
+        "message": "Usuario interno creado correctamente",
+        "user": user_to_dict(db, user),
+    }
 
 
 @router.put("/internal-users/{user_id}")
@@ -234,34 +263,53 @@ def update_internal_user(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role == "superadmin":
-        raise HTTPException(status_code=403, detail="No puedes editar otro superadmin desde aquí")
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes editar otro superadmin desde aquí",
+        )
 
     if user.role not in CREATABLE_INTERNAL_ROLES:
-        raise HTTPException(status_code=403, detail="Este endpoint solo edita usuarios internos")
+        raise HTTPException(
+            status_code=403,
+            detail="Este endpoint solo edita usuarios internos",
+        )
 
     if payload.role is not None:
         role = payload.role.strip().lower()
+
         if role not in CREATABLE_INTERNAL_ROLES:
             raise HTTPException(
                 status_code=400,
                 detail="Rol interno inválido. Roles permitidos: admin, supervisor, logistics, marketing",
             )
+
         user.role = role
 
     if payload.email is not None:
         email = payload.email.strip().lower()
+
         if db.query(User).filter(User.email == email, User.id != user.id).first():
-            raise HTTPException(status_code=400, detail="El correo ya está registrado por otro usuario")
+            raise HTTPException(
+                status_code=400,
+                detail="El correo ya está registrado por otro usuario",
+            )
+
         user.email = email
 
     if payload.cedula is not None:
         cedula = payload.cedula.strip()
+
         if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
-            raise HTTPException(status_code=400, detail="La cédula ya está registrada por otro usuario")
+            raise HTTPException(
+                status_code=400,
+                detail="La cédula ya está registrada por otro usuario",
+            )
+
         user.cedula = cedula
 
     if payload.name is not None:
@@ -273,7 +321,10 @@ def update_internal_user(
     db.commit()
     db.refresh(user)
 
-    return {"message": "Usuario interno actualizado correctamente", "user": user_to_dict(db, user)}
+    return {
+        "message": "Usuario interno actualizado correctamente",
+        "user": user_to_dict(db, user),
+    }
 
 
 @router.put("/internal-users/{user_id}/status")
@@ -286,18 +337,25 @@ def update_internal_user_status(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role == "superadmin":
-        raise HTTPException(status_code=403, detail="No puedes desactivar el superadmin")
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes desactivar el superadmin",
+        )
 
     user.is_active = payload.is_active
 
     db.commit()
     db.refresh(user)
 
-    return {"message": "Estado actualizado correctamente", "user": user_to_dict(db, user)}
+    return {
+        "message": "Estado actualizado correctamente",
+        "user": user_to_dict(db, user),
+    }
 
 
 @router.put("/users/{user_id}/reset-password")
@@ -310,11 +368,15 @@ def reset_any_user_password(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if not payload.new_password.strip():
-        raise HTTPException(status_code=400, detail="La nueva contraseña es obligatoria")
+    if not payload.new_password or not payload.new_password.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="La nueva contraseña es obligatoria",
+        )
 
     user.password = hash_password(payload.new_password.strip())
 
@@ -338,58 +400,102 @@ def delete_user_full(
     require_superadmin(current_user)
 
     user = db.query(User).filter(User.id == user_id).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role in INTERNAL_ROLES:
-        raise HTTPException(status_code=403, detail="No puedes eliminar usuarios internos del sistema")
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar usuarios internos del sistema",
+        )
 
     try:
         orders = db.query(Order).filter(Order.user_id == user_id).all()
 
         for order in orders:
-            db.query(OrderItem).filter(OrderItem.order_id == order.id).delete(synchronize_session=False)
+            db.query(OrderItem).filter(OrderItem.order_id == order.id).delete(
+                synchronize_session=False
+            )
 
         db.query(MembershipPayment).filter(
-            MembershipPayment.order_id.in_(db.query(Order.id).filter(Order.user_id == user_id))
+            MembershipPayment.order_id.in_(
+                db.query(Order.id).filter(Order.user_id == user_id)
+            )
         ).delete(synchronize_session=False)
 
-        db.query(Order).filter(Order.user_id == user_id).delete(synchronize_session=False)
-        db.query(MembershipPayment).filter(MembershipPayment.user_id == user_id).delete(synchronize_session=False)
+        db.query(Order).filter(Order.user_id == user_id).delete(
+            synchronize_session=False
+        )
+
+        db.query(MembershipPayment).filter(
+            MembershipPayment.user_id == user_id
+        ).delete(synchronize_session=False)
 
         db.query(MembershipPayment).filter(
             MembershipPayment.admin_verified_by == user_id
         ).update({"admin_verified_by": None}, synchronize_session=False)
 
-        selections = db.query(MonthlySelection).filter(MonthlySelection.user_id == user_id).all()
+        selections = db.query(MonthlySelection).filter(
+            MonthlySelection.user_id == user_id
+        ).all()
 
         for selection in selections:
             db.query(MonthlySelectionItem).filter(
                 MonthlySelectionItem.monthly_selection_id == selection.id
             ).delete(synchronize_session=False)
 
-        db.query(MonthlySelection).filter(MonthlySelection.user_id == user_id).delete(synchronize_session=False)
+        db.query(MonthlySelection).filter(
+            MonthlySelection.user_id == user_id
+        ).delete(synchronize_session=False)
 
-        db.execute(text("DELETE FROM member_cards WHERE user_id = :user_id"), {"user_id": user_id})
-        db.execute(text("DELETE FROM ambassador_referrals WHERE user_id = :user_id"), {"user_id": user_id})
+        db.execute(
+            text("DELETE FROM member_cards WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        )
 
-        ambassador = db.query(Ambassador).filter(Ambassador.user_id == user_id).first()
+        db.execute(
+            text("DELETE FROM ambassador_referrals WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        )
+
+        ambassador = db.query(Ambassador).filter(
+            Ambassador.user_id == user_id
+        ).first()
 
         if ambassador:
             db.execute(
-                text("DELETE FROM ambassador_referrals WHERE ambassador_id = :ambassador_id"),
+                text(
+                    "DELETE FROM ambassador_referrals WHERE ambassador_id = :ambassador_id"
+                ),
                 {"ambassador_id": ambassador.id},
             )
-            db.query(Commission).filter(Commission.ambassador_id == ambassador.id).delete(synchronize_session=False)
-            db.query(Ambassador).filter(Ambassador.id == ambassador.id).delete(synchronize_session=False)
 
-        db.query(Commission).filter(Commission.referred_user_id == user_id).delete(synchronize_session=False)
-        db.query(User).filter(User.id == user_id).delete(synchronize_session=False)
+            db.query(Commission).filter(
+                Commission.ambassador_id == ambassador.id
+            ).delete(synchronize_session=False)
+
+            db.query(Ambassador).filter(Ambassador.id == ambassador.id).delete(
+                synchronize_session=False
+            )
+
+        db.query(Commission).filter(
+            Commission.referred_user_id == user_id
+        ).delete(synchronize_session=False)
+
+        db.query(User).filter(User.id == user_id).delete(
+            synchronize_session=False
+        )
 
         db.commit()
 
-        return {"message": f"Usuario {user_id} eliminado completamente del sistema"}
+        return {
+            "message": f"Usuario {user_id} eliminado completamente del sistema"
+        }
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error eliminando usuario: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error eliminando usuario: {str(e)}",
+        )
