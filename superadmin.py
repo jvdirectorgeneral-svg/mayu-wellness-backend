@@ -20,9 +20,15 @@ from models import (
 router = APIRouter(prefix="/superadmin", tags=["superadmin"])
 
 
-# =========================
-# SCHEMAS
-# =========================
+INTERNAL_ROLES = [
+    "admin",
+    "superadmin",
+    "supervisor",
+    "logistics",
+    "marketing",
+]
+
+
 class SuperAdminProfileUpdate(BaseModel):
     name: str
     email: EmailStr
@@ -34,9 +40,6 @@ class SuperAdminPasswordUpdate(BaseModel):
     new_password: str
 
 
-# =========================
-# DB
-# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -45,9 +48,6 @@ def get_db():
         db.close()
 
 
-# =========================
-# SECURITY
-# =========================
 def require_superadmin(current_user: User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -62,9 +62,6 @@ def require_superadmin(current_user: User):
         )
 
 
-# =========================
-# SUPERADMIN PROFILE
-# =========================
 @router.get("/me")
 def get_superadmin_profile(
     current_user: User = Depends(get_current_user),
@@ -172,9 +169,6 @@ def update_superadmin_password(
     }
 
 
-# =========================
-# FULL DELETE USER
-# =========================
 @router.delete("/users/{user_id}/full-delete")
 def delete_user_full(
     user_id: int,
@@ -188,16 +182,13 @@ def delete_user_full(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+    if user.role in INTERNAL_ROLES:
         raise HTTPException(
             status_code=403,
-            detail="No puedes eliminar usuarios del sistema",
+            detail="No puedes eliminar usuarios internos del sistema",
         )
 
     try:
-        # =========================
-        # ÓRDENES + ITEMS
-        # =========================
         orders = db.query(Order).filter(Order.user_id == user_id).all()
 
         for order in orders:
@@ -215,9 +206,6 @@ def delete_user_full(
             Order.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================
-        # PAGOS
-        # =========================
         db.query(MembershipPayment).filter(
             MembershipPayment.user_id == user_id
         ).delete(synchronize_session=False)
@@ -229,9 +217,6 @@ def delete_user_full(
             synchronize_session=False,
         )
 
-        # =========================
-        # SELECCIÓN MENSUAL
-        # =========================
         selections = db.query(MonthlySelection).filter(
             MonthlySelection.user_id == user_id
         ).all()
@@ -245,17 +230,11 @@ def delete_user_full(
             MonthlySelection.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # =========================
-        # TARJETAS
-        # =========================
         db.execute(
             text("DELETE FROM member_cards WHERE user_id = :user_id"),
             {"user_id": user_id},
         )
 
-        # =========================
-        # REFERIDOS DONDE ES SOCIO
-        # =========================
         db.execute(
             text("""
                 DELETE FROM ambassador_referrals
@@ -265,9 +244,6 @@ def delete_user_full(
             {"user_id": user_id},
         )
 
-        # =========================
-        # SI ES EMBAJADOR
-        # =========================
         ambassador = db.query(Ambassador).filter(
             Ambassador.user_id == user_id
         ).first()
@@ -289,17 +265,11 @@ def delete_user_full(
                 Ambassador.id == ambassador.id
             ).delete(synchronize_session=False)
 
-        # =========================
-        # COMISIONES SI EXISTE user_id
-        # =========================
         if hasattr(Commission, "user_id"):
             db.query(Commission).filter(
                 Commission.user_id == user_id
             ).delete(synchronize_session=False)
 
-        # =========================
-        # USUARIO
-        # =========================
         db.query(User).filter(
             User.id == user_id
         ).delete(synchronize_session=False)
