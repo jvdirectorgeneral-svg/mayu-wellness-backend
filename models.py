@@ -98,6 +98,18 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    marketing_campaigns_created = relationship(
+        "MarketingCampaign",
+        foreign_keys="MarketingCampaign.created_by",
+        back_populates="creator",
+    )
+
+    marketing_recipients = relationship(
+        "MarketingCampaignRecipient",
+        foreign_keys="MarketingCampaignRecipient.user_id",
+        back_populates="user",
+    )
+
 
 class Ambassador(Base):
     __tablename__ = "ambassadors"
@@ -533,3 +545,122 @@ class PasswordResetCode(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+class MarketingCampaign(Base):
+    __tablename__ = "marketing_campaigns"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    title = Column(String, nullable=False)
+    subject = Column(String, nullable=True)
+    message = Column(Text, nullable=False)
+
+    channel = Column(String, nullable=False, default="email")
+    target_group = Column(String, nullable=False, default="all")
+
+    status = Column(String, nullable=False, default="draft")
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    scheduled_at = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+
+    creator = relationship(
+        "User",
+        foreign_keys=[created_by],
+        back_populates="marketing_campaigns_created",
+    )
+
+    recipients = relationship(
+        "MarketingCampaignRecipient",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+
+    events = relationship(
+        "MarketingEvent",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+
+
+class MarketingCampaignRecipient(Base):
+    __tablename__ = "marketing_campaign_recipients"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    campaign_id = Column(
+        Integer,
+        ForeignKey("marketing_campaigns.id"),
+        nullable=False,
+    )
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    name_snapshot = Column(String, nullable=True)
+    email_snapshot = Column(String, nullable=True)
+    phone_snapshot = Column(String, nullable=True)
+    role_snapshot = Column(String, nullable=True)
+
+    delivery_status = Column(String, nullable=False, default="pending")
+
+    sent_at = Column(DateTime, nullable=True)
+    opened_at = Column(DateTime, nullable=True)
+    clicked_at = Column(DateTime, nullable=True)
+    read_at = Column(DateTime, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+
+    campaign = relationship(
+        "MarketingCampaign",
+        back_populates="recipients",
+    )
+
+    user = relationship(
+        "User",
+        foreign_keys=[user_id],
+        back_populates="marketing_recipients",
+    )
+
+
+class MarketingEvent(Base):
+    __tablename__ = "marketing_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    campaign_id = Column(
+        Integer,
+        ForeignKey("marketing_campaigns.id"),
+        nullable=False,
+    )
+
+    recipient_id = Column(
+        Integer,
+        ForeignKey("marketing_campaign_recipients.id"),
+        nullable=True,
+    )
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    event_type = Column(String, nullable=False)
+    channel = Column(String, nullable=False)
+
+    event_metadata = Column("metadata", Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    campaign = relationship(
+        "MarketingCampaign",
+        back_populates="events",
+    )
+
+    recipient = relationship(
+        "MarketingCampaignRecipient",
+        foreign_keys=[recipient_id],
+    )
+
+    user = relationship(
+        "User",
+        foreign_keys=[user_id],
+    )
