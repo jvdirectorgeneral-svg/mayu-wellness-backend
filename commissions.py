@@ -47,17 +47,31 @@ def require_admin_supervisor_or_superadmin(current_user: User):
         )
 
 
-def calculate_commission(plan_price: float) -> float:
-    return round(float(plan_price) * 0.145, 2)
+def get_commission_amount_by_level(level: int | None) -> float:
+    if level == 1:
+        return 5.00
+    if level == 2:
+        return 6.00
+    if level == 3:
+        return 7.00
+    return 0.00
+
+
+def get_commission_rule_label(level: int | None) -> str:
+    if level == 1:
+        return "Nivel 1 - Cobre: $5 mensual por socio activo pagado"
+    if level == 2:
+        return "Nivel 2 - Plata: $6 mensual por socio activo pagado"
+    if level == 3:
+        return "Nivel 3 - Oro: $7 mensual por socio activo pagado"
+    return "Sin regla de comisión"
 
 
 def get_plan_by_user_level(db: Session, user: User) -> Plan | None:
     if user.membership_level is None:
         return None
 
-    return db.query(Plan).filter(
-        Plan.level == user.membership_level
-    ).first()
+    return db.query(Plan).filter(Plan.level == user.membership_level).first()
 
 
 def has_valid_monthly_payment(db: Session, user_id: int, month: int, year: int) -> bool:
@@ -65,12 +79,14 @@ def has_valid_monthly_payment(db: Session, user_id: int, month: int, year: int) 
         db.query(MembershipPayment)
         .filter(
             MembershipPayment.user_id == user_id,
-            MembershipPayment.status.in_([
-                "verified",
-                "subscription_paid",
-                "subscription_active",
-                "subscription_created",
-            ]),
+            MembershipPayment.status.in_(
+                [
+                    "verified",
+                    "subscription_paid",
+                    "subscription_active",
+                    "subscription_created",
+                ]
+            ),
         )
         .order_by(MembershipPayment.created_at.desc())
         .first()
@@ -112,6 +128,9 @@ def get_eligibility_status(
     if user.membership_level is None:
         return "ineligible"
 
+    if user.membership_level not in {1, 2, 3}:
+        return "ineligible"
+
     if not plan:
         return "ineligible"
 
@@ -148,12 +167,24 @@ def commission_to_dict(db: Session, c: Commission):
         "commission_id": c.id,
         "id": c.id,
         "ambassador_id": c.ambassador_id,
+        "ambassador_user_id": ambassador.user_id if ambassador else None,
         "ambassador_name": ambassador_user.name if ambassador_user else None,
         "ambassador_email": ambassador_user.email if ambassador_user else None,
+        "ambassador_phone": ambassador_user.phone if ambassador_user else None,
         "ambassador_code": ambassador.ambassador_code if ambassador else None,
+        "bank_name": getattr(ambassador, "bank_name", None) if ambassador else None,
+        "bank_account_type": getattr(ambassador, "bank_account_type", None) if ambassador else None,
+        "bank_account_number": getattr(ambassador, "bank_account_number", None) if ambassador else None,
+        "bank_account_holder": getattr(ambassador, "bank_account_holder", None) if ambassador else None,
+        "bank_identification": getattr(ambassador, "bank_identification", None) if ambassador else None,
+        "payment_notes": getattr(ambassador, "payment_notes", None) if ambassador else None,
         "referred_user_id": c.referred_user_id,
         "referred_user_name": referred_user.name if referred_user else None,
         "referred_user_email": referred_user.email if referred_user else None,
+        "referred_membership_level": referred_user.membership_level if referred_user else None,
+        "commission_rule": get_commission_rule_label(
+            referred_user.membership_level if referred_user else None
+        ),
         "plan_id": c.plan_id,
         "plan_name": plan.name if plan else None,
         "month": c.month,
@@ -185,7 +216,7 @@ def commissions_test(db: Session = Depends(get_db)):
         "pending": pending,
         "paid": paid,
         "cancelled": cancelled,
-        "business_rule": "Las comisiones de embajadores se generan mensualmente, independientes del despacho semanal de logística.",
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7 por socio activo pagado mensualmente.",
     }
 
 
@@ -239,9 +270,7 @@ def generate_monthly_commissions(
             })
             continue
 
-        referred_user = db.query(User).filter(
-            User.id == referral.user_id
-        ).first()
+        referred_user = db.query(User).filter(User.id == referral.user_id).first()
 
         if not referred_user:
             skipped_missing_data += 1
@@ -291,7 +320,17 @@ def generate_monthly_commissions(
             })
             continue
 
-        commission_amount = calculate_commission(plan.price)
+        commission_amount = get_commission_amount_by_level(referred_user.membership_level)
+
+        if commission_amount <= 0:
+            skipped_not_eligible += 1
+            skipped_items.append({
+                "ambassador_id": ambassador.id,
+                "referred_user_id": referred_user.id,
+                "reason": "Nivel sin regla de comisión",
+                "membership_level": referred_user.membership_level,
+            })
+            continue
 
         commission = Commission(
             ambassador_id=ambassador.id,
@@ -300,7 +339,7 @@ def generate_monthly_commissions(
             month=month,
             year=year,
             base_amount=float(plan.price),
-            commission_percent=14.5,
+            commission_percent=0,
             commission_amount=commission_amount,
             member_status=member_status,
             payment_status=payment_status,
@@ -309,7 +348,7 @@ def generate_monthly_commissions(
             generated_at=datetime.utcnow(),
             notes=(
                 f"Comisión mensual generada para {month}/{year}. "
-                "Regla: solo socios activos con pago o suscripción válida."
+                f"Regla fija: {get_commission_rule_label(referred_user.membership_level)}."
             ),
         )
 
@@ -321,11 +360,13 @@ def generate_monthly_commissions(
             "ambassador_code": ambassador.ambassador_code,
             "referred_user_id": referred_user.id,
             "referred_user_name": referred_user.name,
+            "membership_level": referred_user.membership_level,
             "plan_id": plan.id,
             "plan_name": plan.name,
             "base_amount": float(plan.price),
-            "commission_percent": 14.5,
+            "commission_percent": 0,
             "commission_amount": commission_amount,
+            "commission_rule": get_commission_rule_label(referred_user.membership_level),
             "month": month,
             "year": year,
         })
@@ -334,7 +375,7 @@ def generate_monthly_commissions(
 
     return {
         "message": "Generación mensual de comisiones completada",
-        "business_rule": "Las comisiones se generan mensualmente. Logística y despachos semanales no afectan el cálculo.",
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7 por socio activo pagado mensualmente.",
         "month": month,
         "year": year,
         "created_count": created_count,
@@ -366,6 +407,11 @@ def get_commissions_by_ambassador(
     return {
         "ambassador_id": ambassador.id,
         "ambassador_code": ambassador.ambassador_code,
+        "bank_name": getattr(ambassador, "bank_name", None),
+        "bank_account_type": getattr(ambassador, "bank_account_type", None),
+        "bank_account_number": getattr(ambassador, "bank_account_number", None),
+        "bank_account_holder": getattr(ambassador, "bank_account_holder", None),
+        "bank_identification": getattr(ambassador, "bank_identification", None),
         "total_items": len(commissions),
         "items": [commission_to_dict(db, c) for c in commissions],
     }
@@ -386,27 +432,21 @@ def get_commissions_summary_by_ambassador(
     ).all()
 
     total_generated = round(sum(c.commission_amount for c in commissions), 2)
-    total_pending = round(
-        sum(c.commission_amount for c in commissions if c.status == "pending"),
-        2,
-    )
-    total_paid = round(
-        sum(c.commission_amount for c in commissions if c.status == "paid"),
-        2,
-    )
-    total_cancelled = round(
-        sum(c.commission_amount for c in commissions if c.status == "cancelled"),
-        2,
-    )
+    total_pending = round(sum(c.commission_amount for c in commissions if c.status == "pending"), 2)
+    total_paid = round(sum(c.commission_amount for c in commissions if c.status == "paid"), 2)
+    total_cancelled = round(sum(c.commission_amount for c in commissions if c.status == "cancelled"), 2)
 
     active_members = len([c for c in commissions if c.member_status == "active"])
-    eligible_members = len([
-        c for c in commissions if c.eligibility_status == "eligible"
-    ])
+    eligible_members = len([c for c in commissions if c.eligibility_status == "eligible"])
 
     return {
         "ambassador_id": ambassador.id,
         "ambassador_code": ambassador.ambassador_code,
+        "bank_name": getattr(ambassador, "bank_name", None),
+        "bank_account_type": getattr(ambassador, "bank_account_type", None),
+        "bank_account_number": getattr(ambassador, "bank_account_number", None),
+        "bank_account_holder": getattr(ambassador, "bank_account_holder", None),
+        "bank_identification": getattr(ambassador, "bank_identification", None),
         "total_generated": total_generated,
         "total_pending": total_pending,
         "total_paid": total_paid,
@@ -414,6 +454,7 @@ def get_commissions_summary_by_ambassador(
         "active_members_count": active_members,
         "eligible_members_count": eligible_members,
         "total_commission_records": len(commissions),
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7.",
     }
 
 
@@ -427,25 +468,12 @@ def get_general_commissions_summary(
     commissions = db.query(Commission).all()
 
     total_generated = round(sum(c.commission_amount for c in commissions), 2)
-    total_pending = round(
-        sum(c.commission_amount for c in commissions if c.status == "pending"),
-        2,
-    )
-    total_paid = round(
-        sum(c.commission_amount for c in commissions if c.status == "paid"),
-        2,
-    )
-    total_cancelled = round(
-        sum(c.commission_amount for c in commissions if c.status == "cancelled"),
-        2,
-    )
+    total_pending = round(sum(c.commission_amount for c in commissions if c.status == "pending"), 2)
+    total_paid = round(sum(c.commission_amount for c in commissions if c.status == "paid"), 2)
+    total_cancelled = round(sum(c.commission_amount for c in commissions if c.status == "cancelled"), 2)
 
-    total_eligible = len([
-        c for c in commissions if c.eligibility_status == "eligible"
-    ])
-    total_not_eligible = len([
-        c for c in commissions if c.eligibility_status != "eligible"
-    ])
+    total_eligible = len([c for c in commissions if c.eligibility_status == "eligible"])
+    total_not_eligible = len([c for c in commissions if c.eligibility_status != "eligible"])
 
     return {
         "total_commissions": len(commissions),
@@ -455,6 +483,7 @@ def get_general_commissions_summary(
         "total_cancelled": total_cancelled,
         "total_eligible_records": total_eligible,
         "total_not_eligible_records": total_not_eligible,
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7.",
     }
 
 
@@ -509,8 +538,16 @@ def get_ambassadors_ranking(
 
         ranking.append({
             "ambassador_id": row.ambassador_id,
+            "ambassador_user_id": ambassador.user_id if ambassador else None,
             "ambassador_code": ambassador.ambassador_code if ambassador else None,
             "ambassador_name": ambassador_user.name if ambassador_user else None,
+            "ambassador_email": ambassador_user.email if ambassador_user else None,
+            "ambassador_phone": ambassador_user.phone if ambassador_user else None,
+            "bank_name": getattr(ambassador, "bank_name", None) if ambassador else None,
+            "bank_account_type": getattr(ambassador, "bank_account_type", None) if ambassador else None,
+            "bank_account_number": getattr(ambassador, "bank_account_number", None) if ambassador else None,
+            "bank_account_holder": getattr(ambassador, "bank_account_holder", None) if ambassador else None,
+            "bank_identification": getattr(ambassador, "bank_identification", None) if ambassador else None,
             "total_records": row.total_records,
             "total_generated": round(float(row.total_generated or 0), 2),
             "total_pending": round(float(row.total_pending or 0), 2),
@@ -519,6 +556,7 @@ def get_ambassadors_ranking(
 
     return {
         "total_ambassadors_in_ranking": len(ranking),
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7.",
         "items": ranking,
     }
 
