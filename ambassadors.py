@@ -20,10 +20,7 @@ def generate_ambassador_code(ambassador_id: int):
     return f"EMB-{ambassador_id:06d}"
 
 
-def require_ambassador_access(
-    ambassador: models.Ambassador,
-    current_user: models.User,
-):
+def require_ambassador_access(ambassador: models.Ambassador, current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
 
@@ -178,27 +175,37 @@ def get_delivery_history_for_user(db: Session, user_id: int):
     ]
 
 
-def draw_text_with_shadow(
-    draw,
-    position,
-    text,
-    font,
-    text_color=(255, 255, 255),
-    shadow_color=(0, 0, 0),
-):
-    x, y = position
-    draw.text((x, y), text, fill=text_color, font=font)
+def ambassador_card_payload(user: models.User, ambassador: models.Ambassador):
+    status = "active" if getattr(ambassador, "is_active", True) else "inactive"
+
+    return {
+        "id": ambassador.id,
+        "ambassador_id": ambassador.id,
+        "user_id": user.id,
+        "name": user.name,
+        "user_name": user.name,
+        "email": user.email,
+        "phone": user.phone,
+        "type": "Embajador Mayu",
+        "card_type": "ambassador",
+        "code": ambassador.ambassador_code,
+        "member_code": ambassador.ambassador_code,
+        "valid_until": "Indefinido",
+        "expires_at": "Indefinido",
+        "status": status,
+        "qr_token": ambassador.ambassador_token,
+        "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
+        "web_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web",
+        "apple_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}",
+        "google_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}",
+    }
 
 
-def draw_spaced_text_with_shadow(
-    draw,
-    position,
-    text,
-    font,
-    spacing=1,
-    text_color=(255, 255, 255),
-    shadow_color=(0, 0, 0),
-):
+def draw_text_with_shadow(draw, position, text, font, text_color=(255, 255, 255)):
+    draw.text(position, text, fill=text_color, font=font)
+
+
+def draw_spaced_text_with_shadow(draw, position, text, font, spacing=1, text_color=(255, 255, 255)):
     x, y = position
     current_x = x
 
@@ -307,6 +314,7 @@ def register_ambassador(data: AmbassadorRegister, db: Session = Depends(get_db))
             "status": ambassador.status,
             "is_active": ambassador.is_active,
         },
+        "card": ambassador_card_payload(user, ambassador),
     }
 
 
@@ -369,6 +377,7 @@ def login_ambassador(payload: AmbassadorLogin, db: Session = Depends(get_db)):
             "status": ambassador.status,
             "is_active": ambassador.is_active,
         },
+        "card": ambassador_card_payload(db_user, ambassador),
     }
 
 
@@ -408,7 +417,8 @@ def get_ambassador_profile(
             "bank_account_number": ambassador.bank_account_number,
             "status": ambassador.status,
             "is_active": ambassador.is_active,
-        }
+        },
+        "card": ambassador_card_payload(user, ambassador),
     }
 
 
@@ -430,15 +440,7 @@ def get_ambassador_card(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario del embajador no encontrado")
 
-    return {
-        "name": user.name,
-        "type": "Embajador Mayu",
-        "code": ambassador.ambassador_code,
-        "valid_until": "Indefinido",
-        "status": ambassador.status,
-        "qr_token": ambassador.ambassador_token,
-        "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
-    }
+    return ambassador_card_payload(user, ambassador)
 
 
 @router.get("/validate/{ambassador_token}", response_class=HTMLResponse)
@@ -450,27 +452,12 @@ def validate_ambassador_card(ambassador_token: str, db: Session = Depends(get_db
     )
 
     if not ambassador:
-        return HTMLResponse(
-            content="""
-            <html><body style="font-family: Arial; background:#111; color:white; text-align:center; padding:40px;">
-            <h1 style="color:#ff4d4f;">Tarjeta inválida</h1>
-            <p>El código QR no corresponde a una tarjeta válida.</p>
-            </body></html>
-            """,
-            status_code=404,
-        )
+        return HTMLResponse("<h1>Tarjeta inválida</h1>", status_code=404)
 
     user = db.query(models.User).filter(models.User.id == ambassador.user_id).first()
 
     if not user:
-        return HTMLResponse(
-            content="""
-            <html><body style="font-family: Arial; background:#111; color:white; text-align:center; padding:40px;">
-            <h1 style="color:#ff4d4f;">Usuario no encontrado</h1>
-            </body></html>
-            """,
-            status_code=404,
-        )
+        return HTMLResponse("<h1>Usuario no encontrado</h1>", status_code=404)
 
     status_text = "ACTIVO" if ambassador.is_active else "INACTIVO"
     status_color = "#22c55e" if ambassador.is_active else "#ef4444"
@@ -521,13 +508,11 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
     bg_path = os.path.join(base_dir, "assets", "embajador_pic.png")
     accent_color = (236, 210, 190)
     text_color = (255, 255, 255)
-    shadow_color = (0, 0, 0)
 
     if os.path.exists(bg_path):
-        image = Image.open(bg_path).convert("RGB")
-        image = image.resize((width, height))
+        image = Image.open(bg_path).convert("RGB").resize((width, height))
     else:
-        image = Image.new("RGB", (20, 20, 20))
+        image = Image.new("RGB", (width, height), (20, 20, 20))
 
     draw = ImageDraw.Draw(image)
 
@@ -551,11 +536,8 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
 
     if os.path.exists(logo_path):
         try:
-            logo = Image.open(logo_path).convert("RGBA")
-            logo = logo.resize((170, 170))
-            logo_x = (width - 170) // 2
-            logo_y = 25
-            image.paste(logo, (logo_x, logo_y), logo)
+            logo = Image.open(logo_path).convert("RGBA").resize((170, 170))
+            image.paste(logo, ((width - 170) // 2, 25), logo)
         except Exception:
             pass
 
@@ -572,22 +554,20 @@ def generate_ambassador_card_image(ambassador_id: int, db: Session = Depends(get
         title_font,
         spacing=spacing,
         text_color=text_color,
-        shadow_color=shadow_color,
     )
 
-    draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 355), "Embajador Mayu", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 400), f"Código: {ambassador.ambassador_code}", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 440), "Válido: Indefinido", info_font, text_color, shadow_color)
-    draw_text_with_shadow(draw, (60, 480), f"Estado: {ambassador.status}", info_font, text_color, shadow_color)
+    draw_text_with_shadow(draw, (60, 305), user.name, name_font, text_color)
+    draw_text_with_shadow(draw, (60, 355), "Embajador Mayu", info_font, text_color)
+    draw_text_with_shadow(draw, (60, 400), f"Código: {ambassador.ambassador_code}", info_font, text_color)
+    draw_text_with_shadow(draw, (60, 440), "Válido: Indefinido", info_font, text_color)
+    draw_text_with_shadow(draw, (60, 480), f"Estado: {ambassador.status}", info_font, text_color)
 
     validation_url = f"{BASE_PUBLIC_URL}/ambassadors/validate/{ambassador.ambassador_token}"
 
-    qr = qrcode.make(validation_url)
-    qr = qr.resize((170, 170))
+    qr = qrcode.make(validation_url).resize((170, 170))
     image.paste(qr, (735, 340))
 
-    file_path = f"ambassador_card_{ambassador_id}.png"
+    file_path = f"/tmp/ambassador_card_{ambassador_id}.png"
     image.save(file_path)
 
     return FileResponse(
@@ -661,15 +641,11 @@ def get_ambassador_dashboard(
     monthly_commission = 0
 
     return {
-        "card": {
-            "name": user.name,
-            "type": "Embajador Mayu",
-            "code": ambassador.ambassador_code,
-            "valid_until": "Indefinido",
-            "status": ambassador.status,
-            "qr_token": ambassador.ambassador_token,
-            "image_url": f"{BASE_PUBLIC_URL}/ambassadors/{ambassador.id}/image",
-        },
+        "ambassador_id": ambassador.id,
+        "user_id": user.id,
+        "name": user.name,
+        "ambassador_name": user.name,
+        "card": ambassador_card_payload(user, ambassador),
         "stats": {
             "total_referrals": total_referrals,
             "active_referrals": active_referrals,
