@@ -73,10 +73,8 @@ def get_db():
 def require_admin_or_superadmin(current_user: User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
-
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
-
     if current_user.role not in {"admin", "superadmin"}:
         raise HTTPException(status_code=403, detail="Acceso solo para admin o superadmin")
 
@@ -118,7 +116,7 @@ def order_is_locked(order: Order):
 
 
 def add_order_tracking_history(db: Session, order: Order, current_user: User, status: str, note: str):
-    history = OrderTrackingHistory(
+    db.add(OrderTrackingHistory(
         order_id=order.id,
         status=status,
         note=note,
@@ -126,8 +124,7 @@ def add_order_tracking_history(db: Session, order: Order, current_user: User, st
         tracking_number=getattr(order, "tracking_number", None),
         tracking_url=getattr(order, "tracking_url", None),
         created_by=current_user.id if current_user else None,
-    )
-    db.add(history)
+    ))
 
 
 def user_to_dict(u: User):
@@ -172,6 +169,46 @@ def ambassador_to_dict(a: Ambassador):
     }
 
 
+def commission_to_admin_dict(c: Commission):
+    ambassador = c.ambassador
+    ambassador_user = ambassador.user if ambassador and ambassador.user else None
+    referred_user = c.referred_user if hasattr(c, "referred_user") else None
+
+    return {
+        "id": c.id,
+        "commission_id": c.id,
+        "ambassador_id": c.ambassador_id,
+        "ambassador_user_id": ambassador.user_id if ambassador else None,
+        "ambassador_name": ambassador_user.name if ambassador_user else None,
+        "ambassador_email": ambassador_user.email if ambassador_user else None,
+        "ambassador_phone": ambassador_user.phone if ambassador_user else None,
+        "ambassador_code": ambassador.ambassador_code if ambassador else None,
+        "bank_name": getattr(ambassador, "bank_name", None) if ambassador else None,
+        "bank_account_type": getattr(ambassador, "bank_account_type", None) if ambassador else None,
+        "bank_account_number": getattr(ambassador, "bank_account_number", None) if ambassador else None,
+        "bank_account_holder": getattr(ambassador, "bank_account_holder", None) if ambassador else None,
+        "bank_identification": getattr(ambassador, "bank_identification", None) if ambassador else None,
+        "payment_notes": getattr(ambassador, "payment_notes", None) if ambassador else None,
+        "referred_user_id": c.referred_user_id,
+        "referred_user_name": referred_user.name if referred_user else None,
+        "referred_user_email": referred_user.email if referred_user else None,
+        "plan_id": c.plan_id,
+        "month": c.month,
+        "year": c.year,
+        "base_amount": c.base_amount,
+        "commission_percent": c.commission_percent,
+        "commission_amount": c.commission_amount,
+        "amount": c.commission_amount,
+        "member_status": c.member_status,
+        "payment_status": c.payment_status,
+        "eligibility_status": c.eligibility_status,
+        "status": c.status,
+        "generated_at": c.generated_at,
+        "paid_at": c.paid_at,
+        "notes": c.notes,
+    }
+
+
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
     selection = (
         db.query(MonthlySelection)
@@ -192,7 +229,6 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
         }
 
     products = []
-
     items = (
         db.query(MonthlySelectionItem)
         .filter(MonthlySelectionItem.monthly_selection_id == selection.id)
@@ -355,12 +391,7 @@ def get_best_selection_for_payment(db: Session, user: User):
     return current_selection
 
 
-def get_or_create_order_for_payment(
-    db: Session,
-    user: User,
-    payment: MembershipPayment,
-    current_user: User,
-):
+def get_or_create_order_for_payment(db: Session, user: User, payment: MembershipPayment, current_user: User):
     if payment.order_id:
         order = db.query(Order).filter(Order.id == payment.order_id).first()
         if order:
@@ -421,14 +452,12 @@ def get_or_create_order_for_payment(
     for item in items:
         product = db.query(Product).filter(Product.id == item.product_id).first()
         if product:
-            db.add(
-                OrderItem(
-                    order_id=order.id,
-                    product_id=product.id,
-                    product_name_snapshot=product.name,
-                    quantity=item.quantity,
-                )
-            )
+            db.add(OrderItem(
+                order_id=order.id,
+                product_id=product.id,
+                product_name_snapshot=product.name,
+                quantity=item.quantity,
+            ))
 
     monthly.editable = False
     payment.order_id = order.id
@@ -464,6 +493,9 @@ def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depend
     total_pending = db.query(func.coalesce(func.sum(Commission.commission_amount), 0)).filter(Commission.status == "pending").scalar()
     total_paid = db.query(func.coalesce(func.sum(Commission.commission_amount), 0)).filter(Commission.status == "paid").scalar()
 
+    pending_commissions_count = db.query(Commission).filter(Commission.status == "pending").count()
+    paid_commissions_count = db.query(Commission).filter(Commission.status == "paid").count()
+
     return {
         "total_socios": total_socios,
         "active_socios": active_socios,
@@ -477,6 +509,9 @@ def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depend
         "total_generated": float(total_generated or 0),
         "total_pending": float(total_pending or 0),
         "total_paid": float(total_paid or 0),
+        "pending_commissions_count": pending_commissions_count,
+        "paid_commissions_count": paid_commissions_count,
+        "commission_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7.",
         "admin_review_window": "lunes a jueves",
         "shipping_window": "viernes",
     }
@@ -496,7 +531,6 @@ def admin_update_member(user_id: int, payload: AdminUpdateMemberRequest, db: Ses
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
     if user.role != "member":
         raise HTTPException(status_code=403, detail="Este endpoint solo permite editar socios")
 
@@ -517,7 +551,6 @@ def admin_update_member(user_id: int, payload: AdminUpdateMemberRequest, db: Ses
 
     if payload.name is not None:
         user.name = payload.name.strip()
-
     if payload.phone is not None:
         user.phone = payload.phone.strip()
 
@@ -533,7 +566,6 @@ def admin_update_member(user_id: int, payload: AdminUpdateMemberRequest, db: Ses
 
     if payload.membership_active is not None:
         user.membership_active = payload.membership_active
-
     if payload.is_active is not None:
         user.is_active = payload.is_active
 
@@ -579,7 +611,6 @@ def update_ambassador(ambassador_id: int, payload: AdminUpdateAmbassadorRequest,
 
     if payload.name is not None:
         user.name = payload.name.strip()
-
     if payload.phone is not None:
         user.phone = payload.phone.strip()
 
@@ -589,15 +620,12 @@ def update_ambassador(ambassador_id: int, payload: AdminUpdateAmbassadorRequest,
             Ambassador.ambassador_code == clean_code,
             Ambassador.id != ambassador.id,
         ).first()
-
         if existing_code:
             raise HTTPException(status_code=400, detail="El código de embajador ya existe")
-
         ambassador.ambassador_code = clean_code
 
     if payload.status is not None:
         ambassador.status = payload.status.strip()
-
     if payload.is_active is not None:
         ambassador.is_active = payload.is_active
         user.is_active = payload.is_active
@@ -632,7 +660,6 @@ def admin_update_user_phone(user_id: int, payload: AdminUpdatePhoneRequest, db: 
         raise HTTPException(status_code=400, detail="El número de celular es obligatorio")
 
     user.phone = clean_phone
-
     db.commit()
     db.refresh(user)
 
@@ -731,7 +758,6 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
 
     if not payment:
         raise HTTPException(status_code=400, detail="La orden no tiene pago vinculado")
-
     if payment.status != "verified" or not payment.admin_verified:
         raise HTTPException(status_code=400, detail="Primero debes verificar el pago")
 
@@ -786,20 +812,55 @@ def get_pending_commissions(db: Session = Depends(get_db), current_user: User = 
     )
 
     return {
-        "items": [
-            {
-                "id": c.id,
-                "ambassador_id": c.ambassador_id,
-                "ambassador_name": c.ambassador.user.name if c.ambassador and c.ambassador.user else None,
-                "amount": c.commission_amount,
-                "commission_amount": c.commission_amount,
-                "month": c.month,
-                "year": c.year,
-                "status": c.status,
-                "generated_at": c.generated_at,
-            }
-            for c in commissions
-        ]
+        "total_items": len(commissions),
+        "total_pending": round(sum(float(c.commission_amount or 0) for c in commissions), 2),
+        "items": [commission_to_admin_dict(c) for c in commissions],
+    }
+
+
+@router.get("/commissions/ranking")
+def get_admin_commissions_ranking(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_admin_or_superadmin(current_user)
+
+    ambassadors = db.query(Ambassador).order_by(Ambassador.id.asc()).all()
+    items = []
+
+    for ambassador in ambassadors:
+        user = ambassador.user
+
+        commissions = db.query(Commission).filter(
+            Commission.ambassador_id == ambassador.id
+        ).all()
+
+        total_generated = round(sum(float(c.commission_amount or 0) for c in commissions), 2)
+        total_pending = round(sum(float(c.commission_amount or 0) for c in commissions if c.status == "pending"), 2)
+        total_paid = round(sum(float(c.commission_amount or 0) for c in commissions if c.status == "paid"), 2)
+
+        items.append({
+            "ambassador_id": ambassador.id,
+            "ambassador_user_id": ambassador.user_id,
+            "ambassador_code": ambassador.ambassador_code,
+            "ambassador_name": user.name if user else None,
+            "ambassador_email": user.email if user else None,
+            "ambassador_phone": user.phone if user else None,
+            "bank_name": getattr(ambassador, "bank_name", None),
+            "bank_account_type": getattr(ambassador, "bank_account_type", None),
+            "bank_account_number": getattr(ambassador, "bank_account_number", None),
+            "bank_account_holder": getattr(ambassador, "bank_account_holder", None),
+            "bank_identification": getattr(ambassador, "bank_identification", None),
+            "payment_notes": getattr(ambassador, "payment_notes", None),
+            "total_records": len(commissions),
+            "total_generated": total_generated,
+            "total_pending": total_pending,
+            "total_paid": total_paid,
+        })
+
+    items.sort(key=lambda x: x["total_pending"], reverse=True)
+
+    return {
+        "total_ambassadors_in_ranking": len(items),
+        "business_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7.",
+        "items": items,
     }
 
 
