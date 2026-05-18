@@ -18,6 +18,21 @@ router = APIRouter()
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
+STAFF_ROLES = {"admin", "supervisor", "logistics", "marketing"}
+
+VISIBLE_ROLES = [
+    "superadmin",
+    "admin",
+    "supervisor",
+    "logistics",
+    "marketing",
+    "ambassador",
+    "member",
+]
+
+PROTECTED_TEAM_ROLES = ["admin", "superadmin", "supervisor", "logistics", "marketing"]
+
+
 class UserCreate(BaseModel):
     name: str
     email: EmailStr
@@ -110,6 +125,10 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def normalize_role(role: str) -> str:
+    return role.strip().lower()
 
 
 def require_superadmin(current_user: models.User):
@@ -533,10 +552,13 @@ def create_staff(
 ):
     require_superadmin(current_user)
 
-    allowed_roles = {"admin", "supervisor", "logistics"}
+    role = normalize_role(payload.role)
 
-    if payload.role not in allowed_roles:
-        raise HTTPException(status_code=400, detail="Rol inválido. Solo se permite admin, supervisor o logistics")
+    if role not in STAFF_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Solo se permite admin, supervisor, logistics o marketing",
+        )
 
     if db.query(models.User).filter(models.User.email == payload.email.strip().lower()).first():
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
@@ -557,7 +579,7 @@ def create_staff(
         reference="N/A",
         delivery_notes="N/A",
         phone_secondary=None,
-        role=payload.role,
+        role=role,
         status="staff",
         membership_level=None,
         membership_active=False,
@@ -587,18 +609,9 @@ def list_staff(
 ):
     require_superadmin(current_user)
 
-    visible_roles = [
-        "superadmin",
-        "admin",
-        "supervisor",
-        "logistics",
-        "ambassador",
-        "member",
-    ]
-
     users = (
         db.query(models.User)
-        .filter(models.User.role.in_(visible_roles))
+        .filter(models.User.role.in_(VISIBLE_ROLES))
         .order_by(models.User.created_at.desc())
         .all()
     )
@@ -632,17 +645,20 @@ def update_staff(
 ):
     require_superadmin(current_user)
 
-    allowed_roles = {"admin", "supervisor", "logistics"}
+    role = normalize_role(payload.role)
 
-    if payload.role not in allowed_roles:
-        raise HTTPException(status_code=400, detail="Rol inválido. Solo se permite admin, supervisor o logistics")
+    if role not in STAFF_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="Rol inválido. Solo se permite admin, supervisor, logistics o marketing",
+        )
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role not in allowed_roles:
+    if user.role not in STAFF_ROLES:
         raise HTTPException(status_code=400, detail="Solo se puede editar usuarios internos")
 
     if db.query(models.User).filter(
@@ -661,7 +677,7 @@ def update_staff(
     user.email = payload.email.strip().lower()
     user.phone = payload.phone.strip()
     user.cedula = payload.cedula.strip()
-    user.role = payload.role
+    user.role = role
 
     db.commit()
     db.refresh(user)
@@ -686,7 +702,7 @@ def reset_staff_password(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "ambassador", "member"}
+    allowed_roles = {"admin", "supervisor", "logistics", "marketing", "ambassador", "member"}
 
     if user.role not in allowed_roles:
         raise HTTPException(status_code=400, detail="No se puede resetear la contraseña de este usuario desde aquí")
@@ -752,7 +768,7 @@ def update_staff_status(
     if user.role == "superadmin":
         raise HTTPException(status_code=403, detail="No se puede desactivar el superadmin desde Control Maestro")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "ambassador", "member"}
+    allowed_roles = {"admin", "supervisor", "logistics", "marketing", "ambassador", "member"}
 
     if user.role not in allowed_roles:
         raise HTTPException(status_code=400, detail="No se puede activar o desactivar este usuario")
@@ -809,7 +825,7 @@ def delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+    if user.role in PROTECTED_TEAM_ROLES:
         raise HTTPException(status_code=403, detail="No puedes eliminar usuarios del sistema Mayu Team")
 
     db.delete(user)
@@ -834,7 +850,7 @@ def delete_user_full(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role in ["admin", "superadmin", "supervisor", "logistics"]:
+    if user.role in PROTECTED_TEAM_ROLES:
         raise HTTPException(status_code=403, detail="No puedes eliminar usuarios internos del sistema")
 
     try:
