@@ -1,3 +1,6 @@
+import os
+import resend
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -6,8 +9,12 @@ from typing import Optional
 
 from database import SessionLocal
 from dependencies import get_current_user
-from models import User, MarketingCampaign, MarketingCampaignRecipient, MarketingEvent
-
+from models import (
+    User,
+    MarketingCampaign,
+    MarketingCampaignRecipient,
+    MarketingEvent,
+)
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
@@ -44,7 +51,72 @@ def require_marketing_user(current_user: User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role != "marketing":
-        raise HTTPException(status_code=403, detail="Acceso solo para marketing")
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para marketing",
+        )
+
+
+def send_marketing_email(
+    to_email: str,
+    subject: str,
+    message: str,
+    image_url: Optional[str] = None,
+):
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    from_email = os.getenv(
+        "FROM_EMAIL",
+        "onboarding@resend.dev",
+    )
+
+    if not resend_api_key:
+        raise Exception("Falta RESEND_API_KEY en Render")
+
+    resend.api_key = resend_api_key
+
+    image_html = ""
+
+    if image_url:
+        image_html = f"""
+        <div style="margin:20px 0;">
+            <img
+                src="{image_url}"
+                style="max-width:100%; border-radius:16px;"
+            />
+        </div>
+        """
+
+    resend.Emails.send({
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "html": f"""
+        <div style="
+            font-family:Arial,sans-serif;
+            max-width:620px;
+            margin:auto;
+            padding:24px;
+        ">
+            <h2>Mayu Wellness Club</h2>
+
+            {image_html}
+
+            <div style="
+                font-size:16px;
+                line-height:1.7;
+                white-space:pre-line;
+            ">
+                {message}
+            </div>
+
+            <br>
+
+            <p>
+                Equipo Mayu Wellness Club
+            </p>
+        </div>
+        """,
+    })
 
 
 class MarketingCampaignCreateRequest(BaseModel):
@@ -146,7 +218,10 @@ def get_audience_users(db: Session, target_group: str):
         query = query.filter(User.role == "ambassador")
 
     else:
-        raise HTTPException(status_code=400, detail="Audiencia inválida")
+        raise HTTPException(
+            status_code=400,
+            detail="Audiencia inválida",
+        )
 
     return query.order_by(User.name.asc()).all()
 
@@ -169,6 +244,7 @@ def add_marketing_event(
         event_metadata=metadata,
         created_at=datetime.utcnow(),
     )
+
     db.add(event)
 
 
@@ -311,9 +387,12 @@ def get_campaigns(
     if channel:
         if channel not in VALID_CHANNELS:
             raise HTTPException(status_code=400, detail="Canal inválido")
+
         query = query.filter(MarketingCampaign.channel == channel)
 
-    campaigns = query.order_by(MarketingCampaign.created_at.desc()).all()
+    campaigns = query.order_by(
+        MarketingCampaign.created_at.desc()
+    ).all()
 
     return {
         "items": [campaign_to_dict(c) for c in campaigns],
@@ -335,19 +414,41 @@ def get_campaign_detail(
     )
 
     if not campaign:
-        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+        raise HTTPException(
+            status_code=404,
+            detail="Campaña no encontrada",
+        )
 
     recipients = (
         db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.campaign_id == campaign.id)
-        .order_by(MarketingCampaignRecipient.id.desc())
+        .filter(
+            MarketingCampaignRecipient.campaign_id == campaign.id
+        )
+        .order_by(
+            MarketingCampaignRecipient.id.desc()
+        )
         .all()
     )
 
-    total_sent = len([r for r in recipients if r.sent_at is not None])
-    total_opened = len([r for r in recipients if r.opened_at is not None])
-    total_clicked = len([r for r in recipients if r.clicked_at is not None])
-    total_read = len([r for r in recipients if r.read_at is not None])
+    total_sent = len([
+        r for r in recipients
+        if r.sent_at is not None
+    ])
+
+    total_opened = len([
+        r for r in recipients
+        if r.opened_at is not None
+    ])
+
+    total_clicked = len([
+        r for r in recipients
+        if r.clicked_at is not None
+    ])
+
+    total_read = len([
+        r for r in recipients
+        if r.read_at is not None
+    ])
 
     return {
         "campaign": campaign_to_dict(campaign),
@@ -361,60 +462,6 @@ def get_campaign_detail(
         "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
         "recipients": [recipient_to_dict(r) for r in recipients],
         "logs": [recipient_to_dict(r) for r in recipients],
-    }
-
-
-@router.put("/campaigns/{campaign_id}")
-def update_campaign(
-    campaign_id: int,
-    payload: MarketingCampaignUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == campaign_id)
-        .first()
-    )
-
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaña no encontrada")
-
-    if payload.title is not None:
-        campaign.title = payload.title.strip()
-
-    if payload.subject is not None:
-        campaign.subject = payload.subject.strip()
-
-    if payload.message is not None:
-        campaign.message = payload.message.strip()
-
-    if payload.image_url is not None:
-        campaign.image_url = payload.image_url.strip() if payload.image_url.strip() else None
-
-    if payload.channel is not None:
-        if payload.channel not in VALID_CHANNELS:
-            raise HTTPException(status_code=400, detail="Canal inválido")
-        campaign.channel = payload.channel
-
-    if payload.target_group is not None:
-        if payload.target_group not in VALID_TARGET_GROUPS:
-            raise HTTPException(status_code=400, detail="Audiencia inválida")
-        campaign.target_group = payload.target_group
-
-    if payload.status is not None:
-        if payload.status not in VALID_CAMPAIGN_STATUS:
-            raise HTTPException(status_code=400, detail="Estado inválido")
-        campaign.status = payload.status
-
-    db.commit()
-    db.refresh(campaign)
-
-    return {
-        "message": "Campaña actualizada correctamente",
-        "campaign": campaign_to_dict(campaign),
     }
 
 
@@ -433,9 +480,15 @@ def send_campaign(
     )
 
     if not campaign:
-        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+        raise HTTPException(
+            status_code=404,
+            detail="Campaña no encontrada",
+        )
 
-    users = get_audience_users(db, campaign.target_group)
+    users = get_audience_users(
+        db,
+        campaign.target_group,
+    )
 
     created_recipients = 0
 
@@ -452,6 +505,24 @@ def send_campaign(
         if existing_recipient:
             continue
 
+        delivery_status = "sent"
+        error_message = None
+        sent_at = datetime.utcnow()
+
+        if campaign.channel == "email":
+            try:
+                send_marketing_email(
+                    to_email=user.email,
+                    subject=campaign.subject or campaign.title,
+                    message=campaign.message,
+                    image_url=getattr(campaign, "image_url", None),
+                )
+
+            except Exception as e:
+                delivery_status = "error"
+                error_message = str(e)
+                sent_at = None
+
         recipient = MarketingCampaignRecipient(
             campaign_id=campaign.id,
             user_id=user.id,
@@ -459,8 +530,9 @@ def send_campaign(
             email_snapshot=user.email,
             phone_snapshot=user.phone,
             role_snapshot=user.role,
-            delivery_status="sent",
-            sent_at=datetime.utcnow(),
+            delivery_status=delivery_status,
+            sent_at=sent_at,
+            error_message=error_message,
         )
 
         db.add(recipient)
@@ -471,7 +543,7 @@ def send_campaign(
             campaign_id=campaign.id,
             recipient_id=recipient.id,
             user_id=user.id,
-            event_type="sent",
+            event_type=delivery_status,
             channel=campaign.channel,
         )
 
@@ -484,13 +556,12 @@ def send_campaign(
     db.refresh(campaign)
 
     return {
-        "message": "Campaña enviada registrada correctamente",
+        "message": "Campaña enviada correctamente",
         "campaign_id": campaign.id,
         "channel": campaign.channel,
         "target_group": campaign.target_group,
         "total_recipients": len(users),
         "new_recipients_created": created_recipients,
-        "note": "Envío registrado. Aquí se conectará el proveedor real de push, email o WhatsApp.",
     }
 
 
@@ -501,12 +572,17 @@ def mark_recipient_opened(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
+        .filter(
+            MarketingCampaignRecipient.id == recipient_id
+        )
         .first()
     )
 
     if not recipient:
-        raise HTTPException(status_code=404, detail="Registro no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Registro no encontrado",
+        )
 
     recipient.opened_at = datetime.utcnow()
     recipient.delivery_status = "opened"
@@ -536,12 +612,17 @@ def mark_recipient_clicked(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
+        .filter(
+            MarketingCampaignRecipient.id == recipient_id
+        )
         .first()
     )
 
     if not recipient:
-        raise HTTPException(status_code=404, detail="Registro no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Registro no encontrado",
+        )
 
     recipient.clicked_at = datetime.utcnow()
     recipient.delivery_status = "clicked"
@@ -571,12 +652,17 @@ def mark_recipient_read(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
+        .filter(
+            MarketingCampaignRecipient.id == recipient_id
+        )
         .first()
     )
 
     if not recipient:
-        raise HTTPException(status_code=404, detail="Registro no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Registro no encontrado",
+        )
 
     recipient.read_at = datetime.utcnow()
     recipient.delivery_status = "read"
