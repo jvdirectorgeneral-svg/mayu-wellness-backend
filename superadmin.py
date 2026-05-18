@@ -20,8 +20,34 @@ from models import (
 
 router = APIRouter(prefix="/superadmin", tags=["superadmin"])
 
-INTERNAL_ROLES = ["admin", "superadmin", "supervisor", "logistics", "marketing"]
-CREATABLE_INTERNAL_ROLES = ["admin", "supervisor", "logistics", "marketing"]
+INTERNAL_ROLES = [
+    "admin",
+    "superadmin",
+    "supervisor",
+    "logistics",
+    "marketing",
+]
+
+CREATABLE_INTERNAL_ROLES = [
+    "admin",
+    "supervisor",
+    "logistics",
+    "marketing",
+]
+
+ROLE_ALIASES = {
+    "admin": "admin",
+    "administrador": "admin",
+
+    "supervisor": "supervisor",
+
+    "logistics": "logistics",
+    "logistica": "logistics",
+    "logística": "logistics",
+
+    "marketing": "marketing",
+    "mercadeo": "marketing",
+}
 
 
 class SuperAdminProfileUpdate(BaseModel):
@@ -76,11 +102,18 @@ def require_superadmin(current_user: User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role != "superadmin":
-        raise HTTPException(status_code=403, detail="Acceso solo para superadmin")
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para superadmin",
+        )
 
 
 def user_to_dict(db: Session, user: User):
-    ambassador = db.query(Ambassador).filter(Ambassador.user_id == user.id).first()
+    ambassador = (
+        db.query(Ambassador)
+        .filter(Ambassador.user_id == user.id)
+        .first()
+    )
 
     return {
         "id": user.id,
@@ -92,7 +125,9 @@ def user_to_dict(db: Session, user: User):
         "is_active": user.is_active,
         "membership_level": user.membership_level,
         "membership_active": user.membership_active,
-        "ambassador_code": ambassador.ambassador_code if ambassador else None,
+        "ambassador_code": (
+            ambassador.ambassador_code if ambassador else None
+        ),
         "created_at": user.created_at,
     }
 
@@ -103,6 +138,7 @@ def get_superadmin_profile(
     current_user: User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
+
     return user_to_dict(db, current_user)
 
 
@@ -114,21 +150,36 @@ def update_superadmin_profile(
 ):
     require_superadmin(current_user)
 
-    user = db.query(User).filter(User.id == current_user.id).first()
+    user = (
+        db.query(User)
+        .filter(User.id == current_user.id)
+        .first()
+    )
 
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
 
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
 
-    if db.query(User).filter(User.email == email, User.id != user.id).first():
+    if (
+        db.query(User)
+        .filter(User.email == email, User.id != user.id)
+        .first()
+    ):
         raise HTTPException(
             status_code=400,
             detail="El correo ya está registrado por otro usuario",
         )
 
-    if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
+    if (
+        db.query(User)
+        .filter(User.cedula == cedula, User.id != user.id)
+        .first()
+    ):
         raise HTTPException(
             status_code=400,
             detail="La cédula ya está registrada por otro usuario",
@@ -156,10 +207,17 @@ def update_superadmin_password(
 ):
     require_superadmin(current_user)
 
-    user = db.query(User).filter(User.id == current_user.id).first()
+    user = (
+        db.query(User)
+        .filter(User.id == current_user.id)
+        .first()
+    )
 
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
 
     if not payload.new_password or not payload.new_password.strip():
         raise HTTPException(
@@ -202,25 +260,39 @@ def create_internal_user(
 ):
     require_superadmin(current_user)
 
-    role = payload.role.strip().lower()
+    raw_role = payload.role.strip().lower()
+
+    role = ROLE_ALIASES.get(raw_role)
+
+    print("ROL RECIBIDO:", payload.role)
+    print("ROL NORMALIZADO:", role)
 
     if role not in CREATABLE_INTERNAL_ROLES:
         raise HTTPException(
             status_code=400,
-            detail="Rol interno inválido. Roles permitidos: admin, supervisor, logistics, marketing",
+            detail=f"Rol interno inválido recibido: {payload.role}",
         )
 
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
 
     if db.query(User).filter(User.email == email).first():
-        raise HTTPException(status_code=400, detail="El correo ya está registrado")
+        raise HTTPException(
+            status_code=400,
+            detail="El correo ya está registrado",
+        )
 
     if db.query(User).filter(User.cedula == cedula).first():
-        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
+        raise HTTPException(
+            status_code=400,
+            detail="La cédula ya está registrada",
+        )
 
     if not payload.password or not payload.password.strip():
-        raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña es obligatoria",
+        )
 
     user = User(
         name=payload.name.strip(),
@@ -244,7 +316,9 @@ def create_internal_user(
     )
 
     db.add(user)
+
     db.commit()
+
     db.refresh(user)
 
     return {
@@ -262,10 +336,17 @@ def update_internal_user(
 ):
     require_superadmin(current_user)
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
 
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
 
     if user.role == "superadmin":
         raise HTTPException(
@@ -280,12 +361,17 @@ def update_internal_user(
         )
 
     if payload.role is not None:
-        role = payload.role.strip().lower()
+        raw_role = payload.role.strip().lower()
+
+        role = ROLE_ALIASES.get(raw_role)
+
+        print("ROL UPDATE RECIBIDO:", payload.role)
+        print("ROL UPDATE NORMALIZADO:", role)
 
         if role not in CREATABLE_INTERNAL_ROLES:
             raise HTTPException(
                 status_code=400,
-                detail="Rol interno inválido. Roles permitidos: admin, supervisor, logistics, marketing",
+                detail=f"Rol interno inválido recibido: {payload.role}",
             )
 
         user.role = role
@@ -293,7 +379,11 @@ def update_internal_user(
     if payload.email is not None:
         email = payload.email.strip().lower()
 
-        if db.query(User).filter(User.email == email, User.id != user.id).first():
+        if (
+            db.query(User)
+            .filter(User.email == email, User.id != user.id)
+            .first()
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="El correo ya está registrado por otro usuario",
@@ -304,7 +394,11 @@ def update_internal_user(
     if payload.cedula is not None:
         cedula = payload.cedula.strip()
 
-        if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
+        if (
+            db.query(User)
+            .filter(User.cedula == cedula, User.id != user.id)
+            .first()
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="La cédula ya está registrada por otro usuario",
@@ -319,183 +413,10 @@ def update_internal_user(
         user.phone = payload.phone.strip()
 
     db.commit()
+
     db.refresh(user)
 
     return {
         "message": "Usuario interno actualizado correctamente",
         "user": user_to_dict(db, user),
     }
-
-
-@router.put("/internal-users/{user_id}/status")
-def update_internal_user_status(
-    user_id: int,
-    payload: UpdateInternalUserStatusRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_superadmin(current_user)
-
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if user.role == "superadmin":
-        raise HTTPException(
-            status_code=403,
-            detail="No puedes desactivar el superadmin",
-        )
-
-    user.is_active = payload.is_active
-
-    db.commit()
-    db.refresh(user)
-
-    return {
-        "message": "Estado actualizado correctamente",
-        "user": user_to_dict(db, user),
-    }
-
-
-@router.put("/users/{user_id}/reset-password")
-def reset_any_user_password(
-    user_id: int,
-    payload: ResetAnyUserPasswordRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_superadmin(current_user)
-
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if not payload.new_password or not payload.new_password.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="La nueva contraseña es obligatoria",
-        )
-
-    user.password = hash_password(payload.new_password.strip())
-
-    db.commit()
-    db.refresh(user)
-
-    return {
-        "message": "Contraseña actualizada correctamente",
-        "user_id": user.id,
-        "name": user.name,
-        "role": user.role,
-    }
-
-
-@router.delete("/users/{user_id}/full-delete")
-def delete_user_full(
-    user_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_superadmin(current_user)
-
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    if user.role in INTERNAL_ROLES:
-        raise HTTPException(
-            status_code=403,
-            detail="No puedes eliminar usuarios internos del sistema",
-        )
-
-    try:
-        orders = db.query(Order).filter(Order.user_id == user_id).all()
-
-        for order in orders:
-            db.query(OrderItem).filter(OrderItem.order_id == order.id).delete(
-                synchronize_session=False
-            )
-
-        db.query(MembershipPayment).filter(
-            MembershipPayment.order_id.in_(
-                db.query(Order.id).filter(Order.user_id == user_id)
-            )
-        ).delete(synchronize_session=False)
-
-        db.query(Order).filter(Order.user_id == user_id).delete(
-            synchronize_session=False
-        )
-
-        db.query(MembershipPayment).filter(
-            MembershipPayment.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        db.query(MembershipPayment).filter(
-            MembershipPayment.admin_verified_by == user_id
-        ).update({"admin_verified_by": None}, synchronize_session=False)
-
-        selections = db.query(MonthlySelection).filter(
-            MonthlySelection.user_id == user_id
-        ).all()
-
-        for selection in selections:
-            db.query(MonthlySelectionItem).filter(
-                MonthlySelectionItem.monthly_selection_id == selection.id
-            ).delete(synchronize_session=False)
-
-        db.query(MonthlySelection).filter(
-            MonthlySelection.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        db.execute(
-            text("DELETE FROM member_cards WHERE user_id = :user_id"),
-            {"user_id": user_id},
-        )
-
-        db.execute(
-            text("DELETE FROM ambassador_referrals WHERE user_id = :user_id"),
-            {"user_id": user_id},
-        )
-
-        ambassador = db.query(Ambassador).filter(
-            Ambassador.user_id == user_id
-        ).first()
-
-        if ambassador:
-            db.execute(
-                text(
-                    "DELETE FROM ambassador_referrals WHERE ambassador_id = :ambassador_id"
-                ),
-                {"ambassador_id": ambassador.id},
-            )
-
-            db.query(Commission).filter(
-                Commission.ambassador_id == ambassador.id
-            ).delete(synchronize_session=False)
-
-            db.query(Ambassador).filter(Ambassador.id == ambassador.id).delete(
-                synchronize_session=False
-            )
-
-        db.query(Commission).filter(
-            Commission.referred_user_id == user_id
-        ).delete(synchronize_session=False)
-
-        db.query(User).filter(User.id == user_id).delete(
-            synchronize_session=False
-        )
-
-        db.commit()
-
-        return {
-            "message": f"Usuario {user_id} eliminado completamente del sistema"
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error eliminando usuario: {str(e)}",
-        )
