@@ -557,7 +557,7 @@ class MarketingCampaign(Base):
     message = Column(Text, nullable=False)
 
     channel = Column(String, nullable=False, default="email")
-    target_group = Column(String, nullable=False, default="all")
+    target_group = Column(String, nullable=False, default="members")
 
     status = Column(String, nullable=False, default="draft")
 
@@ -624,6 +624,20 @@ class MarketingCampaignRecipient(Base):
         back_populates="marketing_recipients",
     )
 
+    events = relationship(
+        "MarketingEvent",
+        back_populates="recipient",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "user_id",
+            name="uq_marketing_campaign_user",
+        ),
+    )
+
 
 class MarketingEvent(Base):
     __tablename__ = "marketing_events"
@@ -658,6 +672,7 @@ class MarketingEvent(Base):
     recipient = relationship(
         "MarketingCampaignRecipient",
         foreign_keys=[recipient_id],
+        back_populates="events",
     )
 
     user = relationship(
