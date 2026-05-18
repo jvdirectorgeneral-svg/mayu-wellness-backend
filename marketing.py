@@ -51,6 +51,7 @@ class MarketingCampaignCreateRequest(BaseModel):
     title: str
     message: str
     subject: Optional[str] = None
+    image_url: Optional[str] = None
     channel: str = "push"
     target_group: str = "members"
     status: str = "draft"
@@ -60,6 +61,7 @@ class MarketingCampaignUpdateRequest(BaseModel):
     title: Optional[str] = None
     message: Optional[str] = None
     subject: Optional[str] = None
+    image_url: Optional[str] = None
     channel: Optional[str] = None
     target_group: Optional[str] = None
     status: Optional[str] = None
@@ -75,6 +77,7 @@ def campaign_to_dict(campaign: MarketingCampaign):
         "title": campaign.title,
         "subject": campaign.subject,
         "message": campaign.message,
+        "image_url": getattr(campaign, "image_url", None),
         "channel": campaign.channel,
         "target_group": campaign.target_group,
         "audience": campaign.target_group,
@@ -108,6 +111,19 @@ def recipient_to_dict(recipient: MarketingCampaignRecipient):
     }
 
 
+def contact_to_dict(user: User, channel: str):
+    return {
+        "id": user.id,
+        "name": user.name,
+        "role": user.role,
+        "membership_active": user.membership_active,
+        "email": user.email,
+        "phone": user.phone,
+        "contact": user.email if channel == "email" else user.phone,
+        "channel": channel,
+    }
+
+
 def get_audience_users(db: Session, target_group: str):
     query = db.query(User).filter(User.is_active == True)
 
@@ -132,7 +148,7 @@ def get_audience_users(db: Session, target_group: str):
     else:
         raise HTTPException(status_code=400, detail="Audiencia inválida")
 
-    return query.all()
+    return query.order_by(User.name.asc()).all()
 
 
 def add_marketing_event(
@@ -219,6 +235,31 @@ def marketing_dashboard(
     }
 
 
+@router.get("/audience-preview")
+def audience_preview(
+    channel: str = "email",
+    target_group: str = "members",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    if channel not in VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail="Canal inválido")
+
+    if target_group not in VALID_TARGET_GROUPS:
+        raise HTTPException(status_code=400, detail="Audiencia inválida")
+
+    users = get_audience_users(db, target_group)
+
+    return {
+        "channel": channel,
+        "target_group": target_group,
+        "total_contacts": len(users),
+        "items": [contact_to_dict(user, channel) for user in users],
+    }
+
+
 @router.post("/campaigns")
 def create_campaign(
     payload: MarketingCampaignCreateRequest,
@@ -240,6 +281,7 @@ def create_campaign(
         title=payload.title.strip(),
         subject=payload.subject.strip() if payload.subject else None,
         message=payload.message.strip(),
+        image_url=payload.image_url.strip() if payload.image_url else None,
         channel=payload.channel,
         target_group=payload.target_group,
         status=payload.status,
@@ -269,7 +311,6 @@ def get_campaigns(
     if channel:
         if channel not in VALID_CHANNELS:
             raise HTTPException(status_code=400, detail="Canal inválido")
-
         query = query.filter(MarketingCampaign.channel == channel)
 
     campaigns = query.order_by(MarketingCampaign.created_at.desc()).all()
@@ -349,6 +390,9 @@ def update_campaign(
 
     if payload.message is not None:
         campaign.message = payload.message.strip()
+
+    if payload.image_url is not None:
+        campaign.image_url = payload.image_url.strip() if payload.image_url.strip() else None
 
     if payload.channel is not None:
         if payload.channel not in VALID_CHANNELS:
