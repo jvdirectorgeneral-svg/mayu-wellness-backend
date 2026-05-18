@@ -13,12 +13,18 @@ router = APIRouter(prefix="/marketing", tags=["marketing"])
 
 
 VALID_CHANNELS = {"push", "email", "whatsapp"}
+
 VALID_TARGET_GROUPS = {
-    "all",
     "members",
     "active_members",
     "inactive_members",
     "ambassadors",
+}
+
+VALID_CAMPAIGN_STATUS = {
+    "draft",
+    "scheduled",
+    "sent",
 }
 
 
@@ -30,18 +36,15 @@ def get_db():
         db.close()
 
 
-def require_marketing_admin_or_superadmin(current_user: User):
+def require_marketing_user(current_user: User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
 
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if current_user.role not in {"superadmin", "admin", "marketing"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para marketing, admin o superadmin",
-        )
+    if current_user.role != "marketing":
+        raise HTTPException(status_code=403, detail="Acceso solo para marketing")
 
 
 class MarketingCampaignCreateRequest(BaseModel):
@@ -49,7 +52,7 @@ class MarketingCampaignCreateRequest(BaseModel):
     message: str
     subject: Optional[str] = None
     channel: str = "push"
-    target_group: str = "all"
+    target_group: str = "members"
     status: str = "draft"
 
 
@@ -126,9 +129,6 @@ def get_audience_users(db: Session, target_group: str):
     elif target_group == "ambassadors":
         query = query.filter(User.role == "ambassador")
 
-    elif target_group == "all":
-        query = query.filter(User.role.in_(["member", "ambassador"]))
-
     else:
         raise HTTPException(status_code=400, detail="Audiencia inválida")
 
@@ -140,9 +140,9 @@ def add_marketing_event(
     campaign_id: int,
     event_type: str,
     channel: str,
-    recipient_id: int | None = None,
-    user_id: int | None = None,
-    metadata: str | None = None,
+    recipient_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    metadata: Optional[str] = None,
 ):
     event = MarketingEvent(
         campaign_id=campaign_id,
@@ -162,7 +162,60 @@ def marketing_test():
         "message": "marketing router ok",
         "available_channels": list(VALID_CHANNELS),
         "available_audiences": list(VALID_TARGET_GROUPS),
-        "note": "Este módulo registra campañas, destinatarios y eventos. Luego conectamos push, email real y WhatsApp.",
+        "available_status": list(VALID_CAMPAIGN_STATUS),
+        "note": "Módulo marketing separado para push, email y WhatsApp.",
+    }
+
+
+@router.get("/dashboard")
+def marketing_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    total_campaigns = db.query(MarketingCampaign).count()
+
+    total_push = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "push"
+    ).count()
+
+    total_email = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "email"
+    ).count()
+
+    total_whatsapp = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "whatsapp"
+    ).count()
+
+    total_sent = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.sent_at.isnot(None)
+    ).count()
+
+    total_opened = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.opened_at.isnot(None)
+    ).count()
+
+    total_clicked = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.clicked_at.isnot(None)
+    ).count()
+
+    total_read = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.read_at.isnot(None)
+    ).count()
+
+    return {
+        "total_campaigns": total_campaigns,
+        "total_push": total_push,
+        "total_email": total_email,
+        "total_whatsapp": total_whatsapp,
+        "total_sent": total_sent,
+        "total_opened": total_opened,
+        "total_clicked": total_clicked,
+        "total_read": total_read,
+        "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
+        "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
+        "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
     }
 
 
@@ -172,13 +225,16 @@ def create_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_marketing_admin_or_superadmin(current_user)
+    require_marketing_user(current_user)
 
     if payload.channel not in VALID_CHANNELS:
         raise HTTPException(status_code=400, detail="Canal inválido")
 
     if payload.target_group not in VALID_TARGET_GROUPS:
         raise HTTPException(status_code=400, detail="Audiencia inválida")
+
+    if payload.status not in VALID_CAMPAIGN_STATUS:
+        raise HTTPException(status_code=400, detail="Estado inválido")
 
     campaign = MarketingCampaign(
         title=payload.title.strip(),
@@ -202,18 +258,25 @@ def create_campaign(
 
 @router.get("/campaigns")
 def get_campaigns(
+    channel: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_marketing_admin_or_superadmin(current_user)
+    require_marketing_user(current_user)
 
-    campaigns = (
-        db.query(MarketingCampaign)
-        .order_by(MarketingCampaign.created_at.desc())
-        .all()
-    )
+    query = db.query(MarketingCampaign)
 
-    return {"items": [campaign_to_dict(c) for c in campaigns]}
+    if channel:
+        if channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail="Canal inválido")
+
+        query = query.filter(MarketingCampaign.channel == channel)
+
+    campaigns = query.order_by(MarketingCampaign.created_at.desc()).all()
+
+    return {
+        "items": [campaign_to_dict(c) for c in campaigns],
+    }
 
 
 @router.get("/campaigns/{campaign_id}")
@@ -222,7 +285,7 @@ def get_campaign_detail(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_marketing_admin_or_superadmin(current_user)
+    require_marketing_user(current_user)
 
     campaign = (
         db.query(MarketingCampaign)
@@ -267,7 +330,7 @@ def update_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_marketing_admin_or_superadmin(current_user)
+    require_marketing_user(current_user)
 
     campaign = (
         db.query(MarketingCampaign)
@@ -298,6 +361,8 @@ def update_campaign(
         campaign.target_group = payload.target_group
 
     if payload.status is not None:
+        if payload.status not in VALID_CAMPAIGN_STATUS:
+            raise HTTPException(status_code=400, detail="Estado inválido")
         campaign.status = payload.status
 
     db.commit()
@@ -315,7 +380,7 @@ def send_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_marketing_admin_or_superadmin(current_user)
+    require_marketing_user(current_user)
 
     campaign = (
         db.query(MarketingCampaign)
@@ -379,10 +444,9 @@ def send_campaign(
         "campaign_id": campaign.id,
         "channel": campaign.channel,
         "target_group": campaign.target_group,
-        "audience": campaign.target_group,
         "total_recipients": len(users),
         "new_recipients_created": created_recipients,
-        "note": "Por ahora registra el envío. Luego conectamos envío real por push, email y WhatsApp.",
+        "note": "Envío registrado. Aquí se conectará el proveedor real de push, email o WhatsApp.",
     }
 
 
