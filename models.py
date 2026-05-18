@@ -555,6 +555,7 @@ class MarketingCampaign(Base):
     title = Column(String, nullable=False)
     subject = Column(String, nullable=True)
     message = Column(Text, nullable=False)
+    image_url = Column(Text, nullable=True)
 
     channel = Column(String, nullable=False, default="email")
     target_group = Column(String, nullable=False, default="members")
