@@ -20,6 +20,7 @@ from payments_paypal import router as payments_paypal_router
 from paypal_subscriptions import router as paypal_subscriptions_router
 from superadmin import router as superadmin_router
 from marketing import router as marketing_router
+from marketing_uploads import router as marketing_uploads_router
 
 from dependencies import get_current_user
 import models
@@ -76,6 +77,7 @@ app.include_router(payments_paypal_router)
 app.include_router(paypal_subscriptions_router)
 app.include_router(superadmin_router)
 app.include_router(marketing_router)
+app.include_router(marketing_uploads_router)
 
 
 # =========================
