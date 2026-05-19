@@ -590,8 +590,19 @@ def run_scheduled_campaigns_cron(
     secret: str,
     db: Session = Depends(get_db),
 ):
-    if not CRON_SECRET or secret != CRON_SECRET:
-        raise HTTPException(status_code=401, detail="No autorizado")
+    cron_secret = os.getenv("MARKETING_CRON_SECRET")
+
+    if not cron_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta MARKETING_CRON_SECRET en Render",
+        )
+
+    if secret != cron_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="No autorizado",
+        )
 
     results = process_scheduled_campaigns(db)
     db.commit()
