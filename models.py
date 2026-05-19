@@ -110,6 +110,12 @@ class User(Base):
         back_populates="user",
     )
 
+    push_tokens = relationship(
+        "PushNotificationToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
 
 class Ambassador(Base):
     __tablename__ = "ambassadors"
@@ -679,4 +685,35 @@ class MarketingEvent(Base):
     user = relationship(
         "User",
         foreign_keys=[user_id],
+    )
+
+
+class PushNotificationToken(Base):
+    __tablename__ = "push_notification_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+
+    token = Column(Text, nullable=False, unique=True)
+
+    platform = Column(String, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    user = relationship(
+        "User",
+        back_populates="push_tokens",
     )
