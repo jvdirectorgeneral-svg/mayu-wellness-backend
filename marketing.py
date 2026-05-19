@@ -1,11 +1,16 @@
 import os
+import json
 import resend
+import requests
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional
+
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 
 from database import SessionLocal
 from dependencies import get_current_user
@@ -14,6 +19,7 @@ from models import (
     MarketingCampaign,
     MarketingCampaignRecipient,
     MarketingEvent,
+    PushNotificationToken,
 )
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
@@ -95,6 +101,76 @@ def send_marketing_email(
     })
 
 
+def get_firebase_access_token():
+    firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+
+    if not firebase_json:
+        raise Exception("Falta FIREBASE_SERVICE_ACCOUNT_JSON en Render")
+
+    service_account_info = json.loads(firebase_json)
+
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/firebase.messaging"],
+    )
+
+    credentials.refresh(Request())
+
+    return credentials.token
+
+
+def send_push_notification(
+    token: str,
+    title: str,
+    message: str,
+    image_url: Optional[str] = None,
+):
+    project_id = os.getenv("FIREBASE_PROJECT_ID")
+
+    if not project_id:
+        raise Exception("Falta FIREBASE_PROJECT_ID en Render")
+
+    access_token = get_firebase_access_token()
+
+    url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+
+    notification = {
+        "title": title,
+        "body": message,
+    }
+
+    if image_url:
+        notification["image"] = image_url
+
+    payload = {
+        "message": {
+            "token": token,
+            "notification": notification,
+            "data": {
+                "title": title,
+                "message": message,
+                "image_url": image_url or "",
+                "source": "mayu_marketing",
+            },
+        }
+    }
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=20,
+    )
+
+    if response.status_code >= 400:
+        raise Exception(f"Firebase push error: {response.text}")
+
+    return response.json()
+
+
 class MarketingCampaignCreateRequest(BaseModel):
     title: str
     message: str
@@ -119,6 +195,11 @@ class MarketingCampaignUpdateRequest(BaseModel):
 
 class MarketingSendRequest(BaseModel):
     campaign_id: int
+
+
+class PushTokenRequest(BaseModel):
+    token: str
+    platform: Optional[str] = None
 
 
 def campaign_to_dict(campaign: MarketingCampaign):
@@ -233,18 +314,42 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         error_message = None
         sent_at = datetime.utcnow()
 
-        if campaign.channel == "email":
-            try:
+        try:
+            if campaign.channel == "email":
                 send_marketing_email(
                     to_email=user.email,
                     subject=campaign.subject or campaign.title,
                     message=campaign.message,
                     image_url=getattr(campaign, "image_url", None),
                 )
-            except Exception as e:
-                delivery_status = "error"
-                error_message = str(e)
-                sent_at = None
+
+            elif campaign.channel == "push":
+                push_tokens = (
+                    db.query(PushNotificationToken)
+                    .filter(
+                        PushNotificationToken.user_id == user.id,
+                        PushNotificationToken.is_active == True,
+                    )
+                    .all()
+                )
+
+                if not push_tokens:
+                    delivery_status = "error"
+                    error_message = "Usuario sin token push registrado"
+                    sent_at = None
+                else:
+                    for push_token in push_tokens:
+                        send_push_notification(
+                            token=push_token.token,
+                            title=campaign.title,
+                            message=campaign.message,
+                            image_url=getattr(campaign, "image_url", None),
+                        )
+
+        except Exception as e:
+            delivery_status = "error"
+            error_message = str(e)
+            sent_at = None
 
         recipient = MarketingCampaignRecipient(
             campaign_id=campaign.id,
@@ -268,6 +373,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
             user_id=user.id,
             event_type=delivery_status,
             channel=campaign.channel,
+            metadata=error_message,
         )
 
         created_recipients += 1
@@ -307,6 +413,52 @@ def process_scheduled_campaigns(db: Session):
     return results
 
 
+@router.post("/push-token")
+def save_push_token(
+    payload: PushTokenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not payload.token or not payload.token.strip():
+        raise HTTPException(status_code=400, detail="Token push requerido")
+
+    existing = (
+        db.query(PushNotificationToken)
+        .filter(PushNotificationToken.token == payload.token.strip())
+        .first()
+    )
+
+    if existing:
+        existing.user_id = current_user.id
+        existing.platform = payload.platform
+        existing.is_active = True
+        existing.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(existing)
+
+        return {
+            "message": "Token push actualizado",
+            "token_id": existing.id,
+        }
+
+    push_token = PushNotificationToken(
+        user_id=current_user.id,
+        token=payload.token.strip(),
+        platform=payload.platform,
+        is_active=True,
+    )
+
+    db.add(push_token)
+    db.commit()
+    db.refresh(push_token)
+
+    return {
+        "message": "Token push guardado",
+        "token_id": push_token.id,
+    }
+
+
 @router.get("/test")
 def marketing_test():
     return {
@@ -314,7 +466,7 @@ def marketing_test():
         "available_channels": list(VALID_CHANNELS),
         "available_audiences": list(VALID_TARGET_GROUPS),
         "available_status": list(VALID_CAMPAIGN_STATUS),
-        "note": "Módulo marketing con campañas inmediatas, programadas y cron automático.",
+        "note": "Módulo marketing con campañas inmediatas, programadas, mailing y push.",
     }
 
 
@@ -339,6 +491,10 @@ def marketing_dashboard(
     total_clicked = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.clicked_at.isnot(None)).count()
     total_read = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.read_at.isnot(None)).count()
 
+    total_push_tokens = db.query(PushNotificationToken).filter(
+        PushNotificationToken.is_active == True
+    ).count()
+
     return {
         "total_campaigns": total_campaigns,
         "total_scheduled": total_scheduled,
@@ -349,6 +505,7 @@ def marketing_dashboard(
         "total_opened": total_opened,
         "total_clicked": total_clicked,
         "total_read": total_read,
+        "total_push_tokens": total_push_tokens,
         "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
         "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
         "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
