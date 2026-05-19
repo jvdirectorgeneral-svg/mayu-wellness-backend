@@ -18,7 +18,6 @@ from models import (
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
-
 VALID_CHANNELS = {"push", "email", "whatsapp"}
 
 VALID_TARGET_GROUPS = {
@@ -64,10 +63,7 @@ def send_marketing_email(
     image_url: Optional[str] = None,
 ):
     resend_api_key = os.getenv("RESEND_API_KEY")
-    from_email = os.getenv(
-        "FROM_EMAIL",
-        "onboarding@resend.dev",
-    )
+    from_email = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
     if not resend_api_key:
         raise Exception("Falta RESEND_API_KEY en Render")
@@ -111,9 +107,7 @@ def send_marketing_email(
 
             <br>
 
-            <p>
-                Equipo Mayu Wellness Club
-            </p>
+            <p>Equipo Mayu Wellness Club</p>
         </div>
         """,
     })
@@ -127,6 +121,7 @@ class MarketingCampaignCreateRequest(BaseModel):
     channel: str = "push"
     target_group: str = "members"
     status: str = "draft"
+    scheduled_at: Optional[datetime] = None
 
 
 class MarketingCampaignUpdateRequest(BaseModel):
@@ -137,6 +132,7 @@ class MarketingCampaignUpdateRequest(BaseModel):
     channel: Optional[str] = None
     target_group: Optional[str] = None
     status: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
 
 
 class MarketingSendRequest(BaseModel):
@@ -248,247 +244,8 @@ def add_marketing_event(
     db.add(event)
 
 
-@router.get("/test")
-def marketing_test():
-    return {
-        "message": "marketing router ok",
-        "available_channels": list(VALID_CHANNELS),
-        "available_audiences": list(VALID_TARGET_GROUPS),
-        "available_status": list(VALID_CAMPAIGN_STATUS),
-        "note": "Módulo marketing separado para push, email y WhatsApp.",
-    }
-
-
-@router.get("/dashboard")
-def marketing_dashboard(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    total_campaigns = db.query(MarketingCampaign).count()
-
-    total_push = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "push"
-    ).count()
-
-    total_email = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "email"
-    ).count()
-
-    total_whatsapp = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "whatsapp"
-    ).count()
-
-    total_sent = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.sent_at.isnot(None)
-    ).count()
-
-    total_opened = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.opened_at.isnot(None)
-    ).count()
-
-    total_clicked = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.clicked_at.isnot(None)
-    ).count()
-
-    total_read = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.read_at.isnot(None)
-    ).count()
-
-    return {
-        "total_campaigns": total_campaigns,
-        "total_push": total_push,
-        "total_email": total_email,
-        "total_whatsapp": total_whatsapp,
-        "total_sent": total_sent,
-        "total_opened": total_opened,
-        "total_clicked": total_clicked,
-        "total_read": total_read,
-        "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
-        "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
-        "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
-    }
-
-
-@router.get("/audience-preview")
-def audience_preview(
-    channel: str = "email",
-    target_group: str = "members",
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    if channel not in VALID_CHANNELS:
-        raise HTTPException(status_code=400, detail="Canal inválido")
-
-    if target_group not in VALID_TARGET_GROUPS:
-        raise HTTPException(status_code=400, detail="Audiencia inválida")
-
-    users = get_audience_users(db, target_group)
-
-    return {
-        "channel": channel,
-        "target_group": target_group,
-        "total_contacts": len(users),
-        "items": [contact_to_dict(user, channel) for user in users],
-    }
-
-
-@router.post("/campaigns")
-def create_campaign(
-    payload: MarketingCampaignCreateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    if payload.channel not in VALID_CHANNELS:
-        raise HTTPException(status_code=400, detail="Canal inválido")
-
-    if payload.target_group not in VALID_TARGET_GROUPS:
-        raise HTTPException(status_code=400, detail="Audiencia inválida")
-
-    if payload.status not in VALID_CAMPAIGN_STATUS:
-        raise HTTPException(status_code=400, detail="Estado inválido")
-
-    campaign = MarketingCampaign(
-        title=payload.title.strip(),
-        subject=payload.subject.strip() if payload.subject else None,
-        message=payload.message.strip(),
-        image_url=payload.image_url.strip() if payload.image_url else None,
-        channel=payload.channel,
-        target_group=payload.target_group,
-        status=payload.status,
-        created_by=current_user.id,
-    )
-
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
-
-    return {
-        "message": "Campaña creada correctamente",
-        "campaign": campaign_to_dict(campaign),
-    }
-
-
-@router.get("/campaigns")
-def get_campaigns(
-    channel: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    query = db.query(MarketingCampaign)
-
-    if channel:
-        if channel not in VALID_CHANNELS:
-            raise HTTPException(status_code=400, detail="Canal inválido")
-
-        query = query.filter(MarketingCampaign.channel == channel)
-
-    campaigns = query.order_by(
-        MarketingCampaign.created_at.desc()
-    ).all()
-
-    return {
-        "items": [campaign_to_dict(c) for c in campaigns],
-    }
-
-
-@router.get("/campaigns/{campaign_id}")
-def get_campaign_detail(
-    campaign_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == campaign_id)
-        .first()
-    )
-
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaña no encontrada",
-        )
-
-    recipients = (
-        db.query(MarketingCampaignRecipient)
-        .filter(
-            MarketingCampaignRecipient.campaign_id == campaign.id
-        )
-        .order_by(
-            MarketingCampaignRecipient.id.desc()
-        )
-        .all()
-    )
-
-    total_sent = len([
-        r for r in recipients
-        if r.sent_at is not None
-    ])
-
-    total_opened = len([
-        r for r in recipients
-        if r.opened_at is not None
-    ])
-
-    total_clicked = len([
-        r for r in recipients
-        if r.clicked_at is not None
-    ])
-
-    total_read = len([
-        r for r in recipients
-        if r.read_at is not None
-    ])
-
-    return {
-        "campaign": campaign_to_dict(campaign),
-        "total_recipients": len(recipients),
-        "total_sent": total_sent,
-        "total_opened": total_opened,
-        "total_clicked": total_clicked,
-        "total_read": total_read,
-        "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
-        "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
-        "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
-        "recipients": [recipient_to_dict(r) for r in recipients],
-        "logs": [recipient_to_dict(r) for r in recipients],
-    }
-
-
-@router.post("/campaigns/send")
-def send_campaign(
-    payload: MarketingSendRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    require_marketing_user(current_user)
-
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == payload.campaign_id)
-        .first()
-    )
-
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaña no encontrada",
-        )
-
-    users = get_audience_users(
-        db,
-        campaign.target_group,
-    )
+def send_campaign_now(db: Session, campaign: MarketingCampaign):
+    users = get_audience_users(db, campaign.target_group)
 
     created_recipients = 0
 
@@ -552,16 +309,349 @@ def send_campaign(
     campaign.status = "sent"
     campaign.sent_at = datetime.utcnow()
 
-    db.commit()
-    db.refresh(campaign)
-
     return {
-        "message": "Campaña enviada correctamente",
         "campaign_id": campaign.id,
         "channel": campaign.channel,
         "target_group": campaign.target_group,
         "total_recipients": len(users),
         "new_recipients_created": created_recipients,
+    }
+
+
+@router.get("/test")
+def marketing_test():
+    return {
+        "message": "marketing router ok",
+        "available_channels": list(VALID_CHANNELS),
+        "available_audiences": list(VALID_TARGET_GROUPS),
+        "available_status": list(VALID_CAMPAIGN_STATUS),
+        "note": "Módulo marketing con campañas inmediatas y programadas.",
+    }
+
+
+@router.get("/dashboard")
+def marketing_dashboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    total_campaigns = db.query(MarketingCampaign).count()
+    total_scheduled = db.query(MarketingCampaign).filter(
+        MarketingCampaign.status == "scheduled"
+    ).count()
+
+    total_push = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "push"
+    ).count()
+
+    total_email = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "email"
+    ).count()
+
+    total_whatsapp = db.query(MarketingCampaign).filter(
+        MarketingCampaign.channel == "whatsapp"
+    ).count()
+
+    total_sent = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.sent_at.isnot(None)
+    ).count()
+
+    total_opened = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.opened_at.isnot(None)
+    ).count()
+
+    total_clicked = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.clicked_at.isnot(None)
+    ).count()
+
+    total_read = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.read_at.isnot(None)
+    ).count()
+
+    return {
+        "total_campaigns": total_campaigns,
+        "total_scheduled": total_scheduled,
+        "total_push": total_push,
+        "total_email": total_email,
+        "total_whatsapp": total_whatsapp,
+        "total_sent": total_sent,
+        "total_opened": total_opened,
+        "total_clicked": total_clicked,
+        "total_read": total_read,
+        "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
+        "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
+        "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
+    }
+
+
+@router.get("/audience-preview")
+def audience_preview(
+    channel: str = "email",
+    target_group: str = "members",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    if channel not in VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail="Canal inválido")
+
+    if target_group not in VALID_TARGET_GROUPS:
+        raise HTTPException(status_code=400, detail="Audiencia inválida")
+
+    users = get_audience_users(db, target_group)
+
+    return {
+        "channel": channel,
+        "target_group": target_group,
+        "total_contacts": len(users),
+        "items": [contact_to_dict(user, channel) for user in users],
+    }
+
+
+@router.post("/campaigns")
+def create_campaign(
+    payload: MarketingCampaignCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    if payload.channel not in VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail="Canal inválido")
+
+    if payload.target_group not in VALID_TARGET_GROUPS:
+        raise HTTPException(status_code=400, detail="Audiencia inválida")
+
+    if payload.status not in VALID_CAMPAIGN_STATUS:
+        raise HTTPException(status_code=400, detail="Estado inválido")
+
+    final_status = payload.status
+
+    if payload.scheduled_at is not None:
+        final_status = "scheduled"
+
+    campaign = MarketingCampaign(
+        title=payload.title.strip(),
+        subject=payload.subject.strip() if payload.subject else None,
+        message=payload.message.strip(),
+        image_url=payload.image_url.strip() if payload.image_url else None,
+        channel=payload.channel,
+        target_group=payload.target_group,
+        status=final_status,
+        scheduled_at=payload.scheduled_at,
+        created_by=current_user.id,
+    )
+
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
+
+    return {
+        "message": "Campaña creada correctamente",
+        "campaign": campaign_to_dict(campaign),
+    }
+
+
+@router.get("/campaigns")
+def get_campaigns(
+    channel: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    query = db.query(MarketingCampaign)
+
+    if channel:
+        if channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail="Canal inválido")
+        query = query.filter(MarketingCampaign.channel == channel)
+
+    if status:
+        if status not in VALID_CAMPAIGN_STATUS:
+            raise HTTPException(status_code=400, detail="Estado inválido")
+        query = query.filter(MarketingCampaign.status == status)
+
+    campaigns = query.order_by(
+        MarketingCampaign.created_at.desc()
+    ).all()
+
+    return {
+        "items": [campaign_to_dict(c) for c in campaigns],
+    }
+
+
+@router.get("/campaigns/{campaign_id}")
+def get_campaign_detail(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.id == campaign_id)
+        .first()
+    )
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    recipients = (
+        db.query(MarketingCampaignRecipient)
+        .filter(MarketingCampaignRecipient.campaign_id == campaign.id)
+        .order_by(MarketingCampaignRecipient.id.desc())
+        .all()
+    )
+
+    total_sent = len([r for r in recipients if r.sent_at is not None])
+    total_opened = len([r for r in recipients if r.opened_at is not None])
+    total_clicked = len([r for r in recipients if r.clicked_at is not None])
+    total_read = len([r for r in recipients if r.read_at is not None])
+
+    return {
+        "campaign": campaign_to_dict(campaign),
+        "total_recipients": len(recipients),
+        "total_sent": total_sent,
+        "total_opened": total_opened,
+        "total_clicked": total_clicked,
+        "total_read": total_read,
+        "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
+        "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
+        "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
+        "recipients": [recipient_to_dict(r) for r in recipients],
+        "logs": [recipient_to_dict(r) for r in recipients],
+    }
+
+
+@router.put("/campaigns/{campaign_id}")
+def update_campaign(
+    campaign_id: int,
+    payload: MarketingCampaignUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.id == campaign_id)
+        .first()
+    )
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    if campaign.status == "sent":
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede editar una campaña ya enviada",
+        )
+
+    if payload.title is not None:
+        campaign.title = payload.title.strip()
+
+    if payload.subject is not None:
+        campaign.subject = payload.subject.strip() if payload.subject.strip() else None
+
+    if payload.message is not None:
+        campaign.message = payload.message.strip()
+
+    if payload.image_url is not None:
+        campaign.image_url = payload.image_url.strip() if payload.image_url.strip() else None
+
+    if payload.channel is not None:
+        if payload.channel not in VALID_CHANNELS:
+            raise HTTPException(status_code=400, detail="Canal inválido")
+        campaign.channel = payload.channel
+
+    if payload.target_group is not None:
+        if payload.target_group not in VALID_TARGET_GROUPS:
+            raise HTTPException(status_code=400, detail="Audiencia inválida")
+        campaign.target_group = payload.target_group
+
+    if payload.scheduled_at is not None:
+        campaign.scheduled_at = payload.scheduled_at
+        campaign.status = "scheduled"
+
+    if payload.status is not None:
+        if payload.status not in VALID_CAMPAIGN_STATUS:
+            raise HTTPException(status_code=400, detail="Estado inválido")
+        campaign.status = payload.status
+
+    db.commit()
+    db.refresh(campaign)
+
+    return {
+        "message": "Campaña actualizada correctamente",
+        "campaign": campaign_to_dict(campaign),
+    }
+
+
+@router.post("/campaigns/send")
+def send_campaign(
+    payload: MarketingSendRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.id == payload.campaign_id)
+        .first()
+    )
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    result = send_campaign_now(db, campaign)
+
+    db.commit()
+    db.refresh(campaign)
+
+    return {
+        "message": "Campaña enviada correctamente",
+        **result,
+    }
+
+
+@router.post("/campaigns/run-scheduled")
+def run_scheduled_campaigns(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    now = datetime.utcnow()
+
+    campaigns = (
+        db.query(MarketingCampaign)
+        .filter(
+            MarketingCampaign.status == "scheduled",
+            MarketingCampaign.scheduled_at.isnot(None),
+            MarketingCampaign.scheduled_at <= now,
+        )
+        .order_by(MarketingCampaign.scheduled_at.asc())
+        .all()
+    )
+
+    results = []
+
+    for campaign in campaigns:
+        result = send_campaign_now(db, campaign)
+        results.append(result)
+
+    db.commit()
+
+    return {
+        "message": "Campañas programadas procesadas",
+        "processed": len(results),
+        "items": results,
     }
 
 
@@ -572,17 +662,12 @@ def mark_recipient_opened(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(
-            MarketingCampaignRecipient.id == recipient_id
-        )
+        .filter(MarketingCampaignRecipient.id == recipient_id)
         .first()
     )
 
     if not recipient:
-        raise HTTPException(
-            status_code=404,
-            detail="Registro no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
 
     recipient.opened_at = datetime.utcnow()
     recipient.delivery_status = "opened"
@@ -612,17 +697,12 @@ def mark_recipient_clicked(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(
-            MarketingCampaignRecipient.id == recipient_id
-        )
+        .filter(MarketingCampaignRecipient.id == recipient_id)
         .first()
     )
 
     if not recipient:
-        raise HTTPException(
-            status_code=404,
-            detail="Registro no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
 
     recipient.clicked_at = datetime.utcnow()
     recipient.delivery_status = "clicked"
@@ -652,17 +732,12 @@ def mark_recipient_read(
 ):
     recipient = (
         db.query(MarketingCampaignRecipient)
-        .filter(
-            MarketingCampaignRecipient.id == recipient_id
-        )
+        .filter(MarketingCampaignRecipient.id == recipient_id)
         .first()
     )
 
     if not recipient:
-        raise HTTPException(
-            status_code=404,
-            detail="Registro no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
 
     recipient.read_at = datetime.utcnow()
     recipient.delivery_status = "read"
