@@ -18,6 +18,8 @@ from models import (
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
+CRON_SECRET = os.getenv("MARKETING_CRON_SECRET")
+
 VALID_CHANNELS = {"push", "email", "whatsapp"}
 
 VALID_TARGET_GROUPS = {
@@ -50,10 +52,7 @@ def require_marketing_user(current_user: User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role != "marketing":
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para marketing",
-        )
+        raise HTTPException(status_code=403, detail="Acceso solo para marketing")
 
 
 def send_marketing_email(
@@ -71,14 +70,10 @@ def send_marketing_email(
     resend.api_key = resend_api_key
 
     image_html = ""
-
     if image_url:
         image_html = f"""
         <div style="margin:20px 0;">
-            <img
-                src="{image_url}"
-                style="max-width:100%; border-radius:16px;"
-            />
+            <img src="{image_url}" style="max-width:100%; border-radius:16px;" />
         </div>
         """
 
@@ -87,26 +82,13 @@ def send_marketing_email(
         "to": [to_email],
         "subject": subject,
         "html": f"""
-        <div style="
-            font-family:Arial,sans-serif;
-            max-width:620px;
-            margin:auto;
-            padding:24px;
-        ">
+        <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
             <h2>Mayu Wellness Club</h2>
-
             {image_html}
-
-            <div style="
-                font-size:16px;
-                line-height:1.7;
-                white-space:pre-line;
-            ">
+            <div style="font-size:16px; line-height:1.7; white-space:pre-line;">
                 {message}
             </div>
-
             <br>
-
             <p>Equipo Mayu Wellness Club</p>
         </div>
         """,
@@ -197,27 +179,14 @@ def get_audience_users(db: Session, target_group: str):
 
     if target_group == "members":
         query = query.filter(User.role == "member")
-
     elif target_group == "active_members":
-        query = query.filter(
-            User.role == "member",
-            User.membership_active == True,
-        )
-
+        query = query.filter(User.role == "member", User.membership_active == True)
     elif target_group == "inactive_members":
-        query = query.filter(
-            User.role == "member",
-            User.membership_active == False,
-        )
-
+        query = query.filter(User.role == "member", User.membership_active == False)
     elif target_group == "ambassadors":
         query = query.filter(User.role == "ambassador")
-
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="Audiencia inválida",
-        )
+        raise HTTPException(status_code=400, detail="Audiencia inválida")
 
     return query.order_by(User.name.asc()).all()
 
@@ -240,13 +209,11 @@ def add_marketing_event(
         event_metadata=metadata,
         created_at=datetime.utcnow(),
     )
-
     db.add(event)
 
 
 def send_campaign_now(db: Session, campaign: MarketingCampaign):
     users = get_audience_users(db, campaign.target_group)
-
     created_recipients = 0
 
     for user in users:
@@ -274,7 +241,6 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                     message=campaign.message,
                     image_url=getattr(campaign, "image_url", None),
                 )
-
             except Exception as e:
                 delivery_status = "error"
                 error_message = str(e)
@@ -318,6 +284,29 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
     }
 
 
+def process_scheduled_campaigns(db: Session):
+    now = datetime.utcnow()
+
+    campaigns = (
+        db.query(MarketingCampaign)
+        .filter(
+            MarketingCampaign.status == "scheduled",
+            MarketingCampaign.scheduled_at.isnot(None),
+            MarketingCampaign.scheduled_at <= now,
+        )
+        .order_by(MarketingCampaign.scheduled_at.asc())
+        .all()
+    )
+
+    results = []
+
+    for campaign in campaigns:
+        result = send_campaign_now(db, campaign)
+        results.append(result)
+
+    return results
+
+
 @router.get("/test")
 def marketing_test():
     return {
@@ -325,7 +314,7 @@ def marketing_test():
         "available_channels": list(VALID_CHANNELS),
         "available_audiences": list(VALID_TARGET_GROUPS),
         "available_status": list(VALID_CAMPAIGN_STATUS),
-        "note": "Módulo marketing con campañas inmediatas y programadas.",
+        "note": "Módulo marketing con campañas inmediatas, programadas y cron automático.",
     }
 
 
@@ -341,33 +330,14 @@ def marketing_dashboard(
         MarketingCampaign.status == "scheduled"
     ).count()
 
-    total_push = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "push"
-    ).count()
+    total_push = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "push").count()
+    total_email = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "email").count()
+    total_whatsapp = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "whatsapp").count()
 
-    total_email = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "email"
-    ).count()
-
-    total_whatsapp = db.query(MarketingCampaign).filter(
-        MarketingCampaign.channel == "whatsapp"
-    ).count()
-
-    total_sent = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.sent_at.isnot(None)
-    ).count()
-
-    total_opened = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.opened_at.isnot(None)
-    ).count()
-
-    total_clicked = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.clicked_at.isnot(None)
-    ).count()
-
-    total_read = db.query(MarketingCampaignRecipient).filter(
-        MarketingCampaignRecipient.read_at.isnot(None)
-    ).count()
+    total_sent = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.sent_at.isnot(None)).count()
+    total_opened = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.opened_at.isnot(None)).count()
+    total_clicked = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.clicked_at.isnot(None)).count()
+    total_read = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.read_at.isnot(None)).count()
 
     return {
         "total_campaigns": total_campaigns,
@@ -427,10 +397,7 @@ def create_campaign(
     if payload.status not in VALID_CAMPAIGN_STATUS:
         raise HTTPException(status_code=400, detail="Estado inválido")
 
-    final_status = payload.status
-
-    if payload.scheduled_at is not None:
-        final_status = "scheduled"
+    final_status = "scheduled" if payload.scheduled_at is not None else payload.status
 
     campaign = MarketingCampaign(
         title=payload.title.strip(),
@@ -475,13 +442,9 @@ def get_campaigns(
             raise HTTPException(status_code=400, detail="Estado inválido")
         query = query.filter(MarketingCampaign.status == status)
 
-    campaigns = query.order_by(
-        MarketingCampaign.created_at.desc()
-    ).all()
+    campaigns = query.order_by(MarketingCampaign.created_at.desc()).all()
 
-    return {
-        "items": [campaign_to_dict(c) for c in campaigns],
-    }
+    return {"items": [campaign_to_dict(c) for c in campaigns]}
 
 
 @router.get("/campaigns/{campaign_id}")
@@ -492,11 +455,7 @@ def get_campaign_detail(
 ):
     require_marketing_user(current_user)
 
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == campaign_id)
-        .first()
-    )
+    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == campaign_id).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
@@ -537,20 +496,13 @@ def update_campaign(
 ):
     require_marketing_user(current_user)
 
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == campaign_id)
-        .first()
-    )
+    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == campaign_id).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
 
     if campaign.status == "sent":
-        raise HTTPException(
-            status_code=400,
-            detail="No se puede editar una campaña ya enviada",
-        )
+        raise HTTPException(status_code=400, detail="No se puede editar una campaña ya enviada")
 
     if payload.title is not None:
         campaign.title = payload.title.strip()
@@ -600,11 +552,7 @@ def send_campaign(
 ):
     require_marketing_user(current_user)
 
-    campaign = (
-        db.query(MarketingCampaign)
-        .filter(MarketingCampaign.id == payload.campaign_id)
-        .first()
-    )
+    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == payload.campaign_id).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
@@ -627,29 +575,29 @@ def run_scheduled_campaigns(
 ):
     require_marketing_user(current_user)
 
-    now = datetime.utcnow()
-
-    campaigns = (
-        db.query(MarketingCampaign)
-        .filter(
-            MarketingCampaign.status == "scheduled",
-            MarketingCampaign.scheduled_at.isnot(None),
-            MarketingCampaign.scheduled_at <= now,
-        )
-        .order_by(MarketingCampaign.scheduled_at.asc())
-        .all()
-    )
-
-    results = []
-
-    for campaign in campaigns:
-        result = send_campaign_now(db, campaign)
-        results.append(result)
-
+    results = process_scheduled_campaigns(db)
     db.commit()
 
     return {
         "message": "Campañas programadas procesadas",
+        "processed": len(results),
+        "items": results,
+    }
+
+
+@router.post("/campaigns/cron/run-scheduled")
+def run_scheduled_campaigns_cron(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    if not CRON_SECRET or secret != CRON_SECRET:
+        raise HTTPException(status_code=401, detail="No autorizado")
+
+    results = process_scheduled_campaigns(db)
+    db.commit()
+
+    return {
+        "message": "Campañas programadas procesadas por cron",
         "processed": len(results),
         "items": results,
     }
@@ -660,11 +608,9 @@ def mark_recipient_opened(
     recipient_id: int,
     db: Session = Depends(get_db),
 ):
-    recipient = (
-        db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
-        .first()
-    )
+    recipient = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.id == recipient_id
+    ).first()
 
     if not recipient:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
@@ -695,11 +641,9 @@ def mark_recipient_clicked(
     recipient_id: int,
     db: Session = Depends(get_db),
 ):
-    recipient = (
-        db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
-        .first()
-    )
+    recipient = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.id == recipient_id
+    ).first()
 
     if not recipient:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
@@ -730,11 +674,9 @@ def mark_recipient_read(
     recipient_id: int,
     db: Session = Depends(get_db),
 ):
-    recipient = (
-        db.query(MarketingCampaignRecipient)
-        .filter(MarketingCampaignRecipient.id == recipient_id)
-        .first()
-    )
+    recipient = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.id == recipient_id
+    ).first()
 
     if not recipient:
         raise HTTPException(status_code=404, detail="Registro no encontrado")
