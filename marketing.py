@@ -73,6 +73,9 @@ def send_marketing_email(
     if not resend_api_key:
         raise Exception("Falta RESEND_API_KEY en Render")
 
+    if not to_email:
+        raise Exception("Usuario sin email")
+
     resend.api_key = resend_api_key
 
     image_html = ""
@@ -130,6 +133,9 @@ def send_push_notification(
     if not project_id:
         raise Exception("Falta FIREBASE_PROJECT_ID en Render")
 
+    if not token:
+        raise Exception("Token push vacío")
+
     access_token = get_firebase_access_token()
 
     url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
@@ -151,6 +157,15 @@ def send_push_notification(
                 "message": message,
                 "image_url": image_url or "",
                 "source": "mayu_marketing",
+                "click_action": "FLUTTER_NOTIFICATION_CLICK",
+            },
+            "apns": {
+                "payload": {
+                    "aps": {
+                        "sound": "default",
+                        "badge": 1,
+                    }
+                }
             },
         }
     }
@@ -295,7 +310,10 @@ def add_marketing_event(
 
 def send_campaign_now(db: Session, campaign: MarketingCampaign):
     users = get_audience_users(db, campaign.target_group)
+
     created_recipients = 0
+    total_success = 0
+    total_errors = 0
 
     for user in users:
         existing_recipient = (
@@ -322,6 +340,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                     message=campaign.message,
                     image_url=getattr(campaign, "image_url", None),
                 )
+                total_success += 1
 
             elif campaign.channel == "push":
                 push_tokens = (
@@ -337,19 +356,55 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                     delivery_status = "error"
                     error_message = "Usuario sin token push registrado"
                     sent_at = None
+                    total_errors += 1
                 else:
+                    token_success = 0
+                    token_errors = []
+
                     for push_token in push_tokens:
-                        send_push_notification(
-                            token=push_token.token,
-                            title=campaign.title,
-                            message=campaign.message,
-                            image_url=getattr(campaign, "image_url", None),
-                        )
+                        try:
+                            send_push_notification(
+                                token=push_token.token,
+                                title=campaign.title,
+                                message=campaign.message,
+                                image_url=getattr(campaign, "image_url", None),
+                            )
+                            token_success += 1
+                        except Exception as token_error:
+                            token_errors.append(str(token_error))
+
+                            error_text = str(token_error).lower()
+                            if (
+                                "not found" in error_text
+                                or "unregistered" in error_text
+                                or "invalid" in error_text
+                                or "registration-token-not-registered" in error_text
+                            ):
+                                push_token.is_active = False
+                                push_token.updated_at = datetime.utcnow()
+
+                    if token_success > 0:
+                        delivery_status = "sent"
+                        sent_at = datetime.utcnow()
+                        total_success += 1
+
+                        if token_errors:
+                            error_message = "Algunos tokens fallaron: " + " | ".join(token_errors[:3])
+                    else:
+                        delivery_status = "error"
+                        error_message = "Todos los tokens push fallaron: " + " | ".join(token_errors[:3])
+                        sent_at = None
+                        total_errors += 1
+
+            elif campaign.channel == "whatsapp":
+                delivery_status = "sent"
+                total_success += 1
 
         except Exception as e:
             delivery_status = "error"
             error_message = str(e)
             sent_at = None
+            total_errors += 1
 
         recipient = MarketingCampaignRecipient(
             campaign_id=campaign.id,
@@ -387,6 +442,8 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         "target_group": campaign.target_group,
         "total_recipients": len(users),
         "new_recipients_created": created_recipients,
+        "total_success": total_success,
+        "total_errors": total_errors,
     }
 
 
@@ -478,9 +535,7 @@ def marketing_dashboard(
     require_marketing_user(current_user)
 
     total_campaigns = db.query(MarketingCampaign).count()
-    total_scheduled = db.query(MarketingCampaign).filter(
-        MarketingCampaign.status == "scheduled"
-    ).count()
+    total_scheduled = db.query(MarketingCampaign).filter(MarketingCampaign.status == "scheduled").count()
 
     total_push = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "push").count()
     total_email = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "email").count()
@@ -491,9 +546,7 @@ def marketing_dashboard(
     total_clicked = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.clicked_at.isnot(None)).count()
     total_read = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.read_at.isnot(None)).count()
 
-    total_push_tokens = db.query(PushNotificationToken).filter(
-        PushNotificationToken.is_active == True
-    ).count()
+    total_push_tokens = db.query(PushNotificationToken).filter(PushNotificationToken.is_active == True).count()
 
     return {
         "total_campaigns": total_campaigns,
