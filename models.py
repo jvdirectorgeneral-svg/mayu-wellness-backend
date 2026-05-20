@@ -700,7 +700,6 @@ class PushNotificationToken(Base):
     )
 
     token = Column(Text, nullable=False, unique=True)
-
     platform = Column(String, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
