@@ -160,12 +160,15 @@ def send_push_notification(
                 "click_action": "FLUTTER_NOTIFICATION_CLICK",
             },
             "apns": {
+                "headers": {
+                    "apns-priority": "10",
+                },
                 "payload": {
                     "aps": {
                         "sound": "default",
                         "badge": 1,
                     }
-                }
+                },
             },
         }
     }
@@ -215,6 +218,12 @@ class MarketingSendRequest(BaseModel):
 class PushTokenRequest(BaseModel):
     token: str
     platform: Optional[str] = None
+
+
+class PushTestRequest(BaseModel):
+    title: str = "Prueba Push Mayu"
+    message: str = "Notificación push de prueba funcionando."
+    image_url: Optional[str] = None
 
 
 def campaign_to_dict(campaign: MarketingCampaign):
@@ -516,6 +525,63 @@ def save_push_token(
     }
 
 
+@router.post("/push-test-me")
+def push_test_me(
+    payload: PushTestRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tokens = (
+        db.query(PushNotificationToken)
+        .filter(
+            PushNotificationToken.user_id == current_user.id,
+            PushNotificationToken.is_active == True,
+        )
+        .all()
+    )
+
+    if not tokens:
+        raise HTTPException(
+            status_code=404,
+            detail="Este usuario no tiene token push activo",
+        )
+
+    sent = 0
+    errors = []
+
+    for item in tokens:
+        try:
+            send_push_notification(
+                token=item.token,
+                title=payload.title,
+                message=payload.message,
+                image_url=payload.image_url,
+            )
+            sent += 1
+        except Exception as e:
+            errors.append(str(e))
+
+            error_text = str(e).lower()
+            if (
+                "not found" in error_text
+                or "unregistered" in error_text
+                or "invalid" in error_text
+                or "registration-token-not-registered" in error_text
+            ):
+                item.is_active = False
+                item.updated_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "message": "Prueba push ejecutada",
+        "user_id": current_user.id,
+        "tokens_found": len(tokens),
+        "sent": sent,
+        "errors": errors,
+    }
+
+
 @router.get("/test")
 def marketing_test():
     return {
@@ -523,7 +589,7 @@ def marketing_test():
         "available_channels": list(VALID_CHANNELS),
         "available_audiences": list(VALID_TARGET_GROUPS),
         "available_status": list(VALID_CAMPAIGN_STATUS),
-        "note": "Módulo marketing con campañas inmediatas, programadas, mailing y push.",
+        "note": "Módulo marketing con campañas inmediatas, programadas, mailing, push y prueba directa.",
     }
 
 
@@ -535,18 +601,30 @@ def marketing_dashboard(
     require_marketing_user(current_user)
 
     total_campaigns = db.query(MarketingCampaign).count()
-    total_scheduled = db.query(MarketingCampaign).filter(MarketingCampaign.status == "scheduled").count()
+    total_scheduled = db.query(MarketingCampaign).filter(
+        MarketingCampaign.status == "scheduled"
+    ).count()
 
     total_push = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "push").count()
     total_email = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "email").count()
     total_whatsapp = db.query(MarketingCampaign).filter(MarketingCampaign.channel == "whatsapp").count()
 
-    total_sent = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.sent_at.isnot(None)).count()
-    total_opened = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.opened_at.isnot(None)).count()
-    total_clicked = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.clicked_at.isnot(None)).count()
-    total_read = db.query(MarketingCampaignRecipient).filter(MarketingCampaignRecipient.read_at.isnot(None)).count()
+    total_sent = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.sent_at.isnot(None)
+    ).count()
+    total_opened = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.opened_at.isnot(None)
+    ).count()
+    total_clicked = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.clicked_at.isnot(None)
+    ).count()
+    total_read = db.query(MarketingCampaignRecipient).filter(
+        MarketingCampaignRecipient.read_at.isnot(None)
+    ).count()
 
-    total_push_tokens = db.query(PushNotificationToken).filter(PushNotificationToken.is_active == True).count()
+    total_push_tokens = db.query(PushNotificationToken).filter(
+        PushNotificationToken.is_active == True
+    ).count()
 
     return {
         "total_campaigns": total_campaigns,
@@ -665,7 +743,9 @@ def get_campaign_detail(
 ):
     require_marketing_user(current_user)
 
-    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == campaign_id).first()
+    campaign = db.query(MarketingCampaign).filter(
+        MarketingCampaign.id == campaign_id
+    ).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
@@ -706,13 +786,18 @@ def update_campaign(
 ):
     require_marketing_user(current_user)
 
-    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == campaign_id).first()
+    campaign = db.query(MarketingCampaign).filter(
+        MarketingCampaign.id == campaign_id
+    ).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
 
     if campaign.status == "sent":
-        raise HTTPException(status_code=400, detail="No se puede editar una campaña ya enviada")
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede editar una campaña ya enviada",
+        )
 
     if payload.title is not None:
         campaign.title = payload.title.strip()
@@ -762,7 +847,9 @@ def send_campaign(
 ):
     require_marketing_user(current_user)
 
-    campaign = db.query(MarketingCampaign).filter(MarketingCampaign.id == payload.campaign_id).first()
+    campaign = db.query(MarketingCampaign).filter(
+        MarketingCampaign.id == payload.campaign_id
+    ).first()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaña no encontrada")
