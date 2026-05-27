@@ -26,5 +26,4 @@ requests
 
 resend
 cloudinary
-
 firebase-admin
