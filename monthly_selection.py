@@ -74,6 +74,51 @@ def format_month_label(month: int, year: int):
     return f"{months.get(month, 'Mes')} {year}"
 
 
+def normalize_name(value: str):
+    return (
+        value.lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+        .replace("ñ", "n")
+        .replace("’", "'")
+        .strip()
+    )
+
+
+OFFICIAL_CBD_PRODUCTS = [
+    "Fórmula del Sueño",
+    "CBD 874 mg",
+    "CBD 4%",
+]
+
+OFFICIAL_WELLNESS_PRODUCTS = [
+    "Chocomedical normal",
+    "Chocomedical + Melena de León",
+    "Té de Hojas de Cannabis",
+    "Aceite esencial de Limón",
+    "Aceite esencial de Naranja",
+]
+
+OFFICIAL_MUSHROOM_PRODUCTS = [
+    "Reishi",
+    "Melena de León",
+    "Lion's Mane",
+    "Turkey Tail",
+    "Chaga",
+]
+
+OFFICIAL_FUNCTIONAL_SUPPORT_PRODUCTS = [
+    "Magnesio Bisglicinato",
+    "MSM",
+    "Koral Jade",
+    "Ashwagandha",
+]
+
+
 def next_month_year(month: int, year: int):
     if month == 12:
         return 1, year + 1
@@ -109,7 +154,11 @@ def product_to_option(p: models.Product):
     }
 
 
-def get_products_by_category(db: Session, category: str):
+def get_products_by_category(
+    db: Session,
+    category: str,
+    allowed_names: list[str] | None = None,
+):
     products = (
         db.query(models.Product)
         .filter(
@@ -119,15 +168,42 @@ def get_products_by_category(db: Session, category: str):
         .order_by(models.Product.name.asc())
         .all()
     )
-    return [product_to_option(p) for p in products]
+
+    if not allowed_names:
+        return [product_to_option(p) for p in products]
+
+    filtered = []
+    allowed_normalized = [normalize_name(name) for name in allowed_names]
+
+    for product in products:
+        product_name_normalized = normalize_name(product.name)
+
+        for allowed in allowed_normalized:
+            if (
+                product_name_normalized == allowed
+                or allowed in product_name_normalized
+                or product_name_normalized in allowed
+            ):
+                filtered.append(product)
+                break
+
+    return [product_to_option(p) for p in filtered]
 
 
 def get_available_editable_sections_by_level(db: Session, level: int):
     coloides = get_products_by_category(db, "coloides")
-    cbd = get_products_by_category(db, "cbd")
-    bienestar = get_products_by_category(db, "bienestar")
-    hongos = get_products_by_category(db, "hongos")
-    soporte = get_products_by_category(db, "soporte_funcional")
+    cbd = get_products_by_category(db, "cbd", OFFICIAL_CBD_PRODUCTS)
+    bienestar = get_products_by_category(
+        db,
+        "bienestar",
+        OFFICIAL_WELLNESS_PRODUCTS,
+    )
+    hongos = get_products_by_category(db, "hongos", OFFICIAL_MUSHROOM_PRODUCTS)
+    soporte = get_products_by_category(
+        db,
+        "soporte_funcional",
+        OFFICIAL_FUNCTIONAL_SUPPORT_PRODUCTS,
+    )
 
     if level == 1:
         return [
@@ -204,7 +280,7 @@ def get_available_editable_sections_by_level(db: Session, level: int):
             },
             {
                 "section_key": "bienestar",
-                "section_name": "Producto bienestar CBD",
+                "section_name": "Producto bienestar a elección",
                 "category": "bienestar",
                 "max_items": 1,
                 "products": bienestar,
