@@ -2,8 +2,10 @@ import os
 import json
 import resend
 import requests
+import cloudinary
+import cloudinary.uploader
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel
@@ -55,6 +57,24 @@ def require_marketing_user(current_user: User):
         raise HTTPException(status_code=403, detail="Acceso solo para marketing")
 
 
+def configure_cloudinary():
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+    api_key = os.getenv("CLOUDINARY_API_KEY")
+    api_secret = os.getenv("CLOUDINARY_API_SECRET")
+
+    if not cloud_name or not api_key or not api_secret:
+        raise Exception(
+            "Faltan CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY o CLOUDINARY_API_SECRET en Render"
+        )
+
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True,
+    )
+
+
 def send_marketing_email(
     to_email: str,
     subject: str,
@@ -75,8 +95,12 @@ def send_marketing_email(
     image_html = ""
     if image_url:
         image_html = f"""
-        <div style="margin:20px 0;">
-            <img src="{image_url}" style="max-width:100%; border-radius:16px;" />
+        <div style="margin:24px 0;">
+            <img
+                src="{image_url}"
+                alt="Flyer Mayu Wellness Club"
+                style="display:block; width:100%; max-width:620px; height:auto; border-radius:16px; margin:auto;"
+            />
         </div>
         """
 
@@ -86,7 +110,7 @@ def send_marketing_email(
         "subject": subject,
         "html": f"""
         <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
-            <h2>Mayu Wellness Club</h2>
+            <h2 style="margin-bottom:16px;">Mayu Wellness Club</h2>
             {image_html}
             <div style="font-size:16px; line-height:1.7; white-space:pre-line;">
                 {message}
@@ -337,9 +361,7 @@ def deactivate_invalid_token_if_needed(push_token: PushNotificationToken, error_
     ):
         push_token.is_active = False
         push_token.updated_at = datetime.utcnow()
-
-
-def send_push_to_latest_user_token(
+        def send_push_to_latest_user_token(
     db: Session,
     user_id: int,
     title: str,
@@ -493,6 +515,51 @@ def process_scheduled_campaigns(db: Session):
         results.append(result)
 
     return results
+
+
+@router.post("/upload-image")
+def upload_marketing_image(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    if not file:
+        raise HTTPException(status_code=400, detail="Archivo requerido")
+
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Solo se permiten imágenes. Tipo recibido: {file.content_type}",
+        )
+
+    try:
+        configure_cloudinary()
+
+        result = cloudinary.uploader.upload(
+            file.file,
+            folder="mayu/marketing",
+            resource_type="image",
+            overwrite=True,
+        )
+
+        image_url = result.get("secure_url")
+
+        if not image_url:
+            raise Exception("Cloudinary no devolvió secure_url")
+
+        return {
+            "message": "Imagen subida correctamente",
+            "image_url": image_url,
+            "public_id": result.get("public_id"),
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo subir la imagen: {str(e)}",
+        )
 
 
 @router.post("/push-token")
@@ -654,7 +721,7 @@ def marketing_test():
         "available_channels": list(VALID_CHANNELS),
         "available_audiences": list(VALID_TARGET_GROUPS),
         "available_status": list(VALID_CAMPAIGN_STATUS),
-        "note": "Módulo marketing con campañas, mailing, push, prueba directa y limpieza de tokens.",
+        "note": "Módulo marketing con campañas, mailing, push, flyer, prueba directa y limpieza de tokens.",
     }
 
 
@@ -698,9 +765,7 @@ def marketing_dashboard(
         "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
         "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
     }
-
-
-@router.get("/audience-preview")
+        @router.get("/audience-preview")
 def audience_preview(
     channel: str = "email",
     target_group: str = "members",
