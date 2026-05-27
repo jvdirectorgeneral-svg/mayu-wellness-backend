@@ -26,6 +26,7 @@ class User(Base):
     cedula = Column(String, unique=True, nullable=False, index=True)
     city = Column(String, nullable=False)
     address = Column(String, nullable=False)
+    birth_date = Column(DateTime, nullable=True)
     reference = Column(String, nullable=False)
     delivery_notes = Column(Text, nullable=False)
     phone_secondary = Column(String, nullable=True)
