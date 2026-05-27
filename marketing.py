@@ -494,6 +494,8 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         "total_success": total_success,
         "total_errors": total_errors,
     }
+
+
 def process_scheduled_campaigns(db: Session):
     now = datetime.utcnow()
 
@@ -515,6 +517,224 @@ def process_scheduled_campaigns(db: Session):
         results.append(result)
 
     return results
+
+
+def send_birthday_email(to_email: str, user_name: str):
+    subject = "🎉 Feliz cumpleaños de parte de Mayu Wellness Club"
+
+    message = f"""
+Hola {user_name},
+
+Hoy queremos desearte un muy feliz cumpleaños 🎉
+
+Gracias por ser parte de Mayu Wellness Club.
+Que este nuevo ciclo esté lleno de salud, bienestar, energía y conexión con la vida.
+
+Con cariño,
+Equipo Mayu Wellness Club
+"""
+
+    send_marketing_email(
+        to_email=to_email,
+        subject=subject,
+        message=message,
+        image_url=None,
+    )
+
+
+def process_birthday_notifications(db: Session):
+    today = datetime.utcnow().date()
+
+    users = (
+        db.query(User)
+        .filter(
+            User.is_active == True,
+            User.birth_date.isnot(None),
+        )
+        .all()
+    )
+
+    birthday_users = []
+
+    for user in users:
+        if user.birth_date.month == today.month and user.birth_date.day == today.day:
+            birthday_users.append(user)
+
+    campaign_title = f"Cumpleaños automático {today.isoformat()}"
+
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.title == campaign_title)
+        .first()
+    )
+
+    if not campaign:
+        campaign = MarketingCampaign(
+            title=campaign_title,
+            subject="🎉 Feliz cumpleaños de parte de Mayu Wellness Club",
+            message="Mensaje automático de cumpleaños para socios Mayu Wellness Club.",
+            image_url=None,
+            channel="email",
+            target_group="members",
+            status="sent",
+            created_by=None,
+            created_at=datetime.utcnow(),
+            sent_at=datetime.utcnow(),
+        )
+
+        db.add(campaign)
+        db.flush()
+
+    total_email_success = 0
+    total_push_success = 0
+    total_errors = 0
+    skipped_existing = 0
+
+    for user in birthday_users:
+        existing_recipient = (
+            db.query(MarketingCampaignRecipient)
+            .filter(
+                MarketingCampaignRecipient.campaign_id == campaign.id,
+                MarketingCampaignRecipient.user_id == user.id,
+            )
+            .first()
+        )
+
+        if existing_recipient:
+            skipped_existing += 1
+            continue
+
+        recipient = MarketingCampaignRecipient(
+            campaign_id=campaign.id,
+            user_id=user.id,
+            name_snapshot=user.name,
+            email_snapshot=user.email,
+            phone_snapshot=user.phone,
+            role_snapshot=user.role,
+            delivery_status="pending",
+            sent_at=None,
+            error_message=None,
+        )
+
+        db.add(recipient)
+        db.flush()
+
+        errors = []
+
+        try:
+            send_birthday_email(
+                to_email=user.email,
+                user_name=user.name,
+            )
+
+            total_email_success += 1
+
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="birthday_email_sent",
+                channel="email",
+                metadata=None,
+            )
+
+        except Exception as e:
+            errors.append(f"email: {str(e)}")
+
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="birthday_email_error",
+                channel="email",
+                metadata=str(e),
+            )
+
+        try:
+            send_push_to_latest_user_token(
+                db=db,
+                user_id=user.id,
+                title="🎉 ¡Feliz cumpleaños!",
+                message=f"Hola {user.name}, Mayu Wellness Club te desea un día lleno de salud y bienestar.",
+                image_url=None,
+            )
+
+            total_push_success += 1
+
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="birthday_push_sent",
+                channel="push",
+                metadata=None,
+            )
+
+        except Exception as e:
+            errors.append(f"push: {str(e)}")
+
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="birthday_push_error",
+                channel="push",
+                metadata=str(e),
+            )
+
+        if errors:
+            total_errors += 1
+            recipient.delivery_status = "partial_error"
+            recipient.error_message = " | ".join(errors)
+        else:
+            recipient.delivery_status = "sent"
+
+        recipient.sent_at = datetime.utcnow()
+
+    campaign.status = "sent"
+    campaign.sent_at = datetime.utcnow()
+
+    return {
+        "birthday_users": len(birthday_users),
+        "email_success": total_email_success,
+        "push_success": total_push_success,
+        "errors": total_errors,
+        "skipped_existing": skipped_existing,
+        "campaign_id": campaign.id,
+    }
+
+
+@router.post("/birthday/cron/run")
+def run_birthday_cron(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    cron_secret = os.getenv("MARKETING_CRON_SECRET")
+
+    if not cron_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta MARKETING_CRON_SECRET en Render",
+        )
+
+    if secret != cron_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="No autorizado",
+        )
+
+    result = process_birthday_notifications(db)
+
+    db.commit()
+
+    return {
+        "message": "Cumpleaños procesados correctamente",
+        **result,
+    }
 
 
 @router.post("/upload-image")
@@ -1138,4 +1358,4 @@ def mark_log_clicked(
     log_id: int,
     db: Session = Depends(get_db),
 ):
-    return mark_recipient_clicked(log_id, db)        
+    return mark_recipient_clicked(log_id, db)
