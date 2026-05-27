@@ -361,7 +361,9 @@ def deactivate_invalid_token_if_needed(push_token: PushNotificationToken, error_
     ):
         push_token.is_active = False
         push_token.updated_at = datetime.utcnow()
-        def send_push_to_latest_user_token(
+
+
+def send_push_to_latest_user_token(
     db: Session,
     user_id: int,
     title: str,
@@ -492,8 +494,6 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         "total_success": total_success,
         "total_errors": total_errors,
     }
-
-
 def process_scheduled_campaigns(db: Session):
     now = datetime.utcnow()
 
@@ -765,7 +765,9 @@ def marketing_dashboard(
         "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
         "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
     }
-        @router.get("/audience-preview")
+
+
+@router.get("/audience-preview")
 def audience_preview(
     channel: str = "email",
     target_group: str = "members",
@@ -1136,4 +1138,4 @@ def mark_log_clicked(
     log_id: int,
     db: Session = Depends(get_db),
 ):
-    return mark_recipient_clicked(log_id, db)
+    return mark_recipient_clicked(log_id, db)        
