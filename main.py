@@ -49,6 +49,8 @@ app.add_middleware(
     allow_origins=[
         "https://mayuclub.com",
         "https://www.mayuclub.com",
+        "https://mayuwellnesclub.com",
+        "https://www.mayuwellnesclub.com",
     ],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
