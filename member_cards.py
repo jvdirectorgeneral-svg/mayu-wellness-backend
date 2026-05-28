@@ -171,9 +171,9 @@ def get_card_visual_data(db: Session | None, user, card):
         "member_code": card.member_code,
         "bg_file": "card_oro.jpg",
         "wallet_file": "wallet_oro.png",
-        "fallback_color": (212, 175, 55),
+        "fallback_color": (15, 23, 42),
         "accent_color": (255, 236, 170),
-        "hex_color": "#B8860B",
+        "hex_color": "#0F172A",
     }
 
 
@@ -468,20 +468,11 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
         else:
             create_wallet_icon(target)
 
-    for filename, size in [
-        ("thumbnail.png", (90, 90)),
-        ("thumbnail@2x.png", (180, 180)),
-    ]:
-        target = os.path.join(pass_dir, filename)
-
-        if os.path.exists(wallet_image_path):
-            cover_image_to_canvas(wallet_image_path, target, size, visual["fallback_color"])
-        elif os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
-        else:
-            create_wallet_icon(target)
-
     if os.path.exists(wallet_image_path):
+        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background.png"), (180, 220), visual["fallback_color"])
+        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background@2x.png"), (360, 440), visual["fallback_color"])
+        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background@3x.png"), (540, 660), visual["fallback_color"])
+
         cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip.png"), (375, 123), visual["fallback_color"])
         cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip@2x.png"), (750, 246), visual["fallback_color"])
 
@@ -592,7 +583,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "description": CLUB_NAME,
             "logoText": CLUB_NAME.upper(),
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": rgb_string(visual["fallback_color"]),
+            "backgroundColor": "rgb(15,23,42)",
             "labelColor": rgb_string(visual["accent_color"]),
             "suppressStripShine": True,
             "sharingProhibited": False,
@@ -701,11 +692,11 @@ def build_google_wallet_save_url(user, card):
     visual = get_card_visual_data(None, user, card)
 
     class_id = f"{issuer_id}.{class_suffix}"
-    object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}".replace("-", "_").lower()
+    object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}".replace("-", "_").lower()
     object_id = f"{issuer_id}.{object_suffix}"
 
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
-    full_card_image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image?v={card.id}-{card.level_snapshot}-{card.status}"
+    full_card_image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image?v={card.id}-{card.level_snapshot}-{card.status}-{uuid.uuid4()}"
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
     card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
 
@@ -731,15 +722,16 @@ def build_google_wallet_save_url(user, card):
                 },
             }
         ],
-        "cardTitle": {"defaultValue": {"language": "es", "value": level_text(user, card)}},
+        "cardTitle": {"defaultValue": {"language": "es", "value": CLUB_NAME}},
         "header": {"defaultValue": {"language": "es", "value": user.name}},
-        "subheader": {"defaultValue": {"language": "es", "value": card.member_code}},
+        "subheader": {"defaultValue": {"language": "es", "value": f"{level_text(user, card)} · {card.member_code}"}},
         "barcode": {
             "type": "QR_CODE",
             "value": validate_url,
             "alternateText": card.member_code,
         },
         "textModulesData": [
+            {"id": "membership", "header": "Membresía", "body": level_text(user, card)},
             {"id": "status", "header": "Estado", "body": "Activo" if card.status == "active" else "Inactivo"},
             {"id": "code", "header": "Código", "body": card.member_code},
             {"id": "valid", "header": "Vigencia", "body": CARD_VALIDITY_TEXT},
