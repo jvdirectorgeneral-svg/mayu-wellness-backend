@@ -418,9 +418,15 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
 
         if os.path.exists(logo_path):
             try:
-                img = Image.open(logo_path).convert("RGBA").resize(size)
+                img = Image.open(logo_path).convert("RGBA")
+                img.thumbnail(size, Image.LANCZOS)
+
                 canvas = Image.new("RGBA", size, (0, 0, 0, 0))
-                canvas.paste(img, ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2), img)
+                canvas.paste(
+                    img,
+                    ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2),
+                    img,
+                )
                 canvas.save(target)
             except Exception:
                 create_wallet_icon(target)
@@ -428,10 +434,19 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
             create_wallet_icon(target)
 
     if os.path.exists(strip_source):
-        strip = Image.open(strip_source).convert("RGB").resize((1125, 369))
-        strip.save(os.path.join(pass_dir, "strip.png"))
+        strip = Image.open(strip_source).convert("RGB")
 
-        strip_2x = strip.resize((2250, 738))
+        target_size = (375, 123)
+        strip.thumbnail(target_size, Image.LANCZOS)
+
+        canvas = Image.new("RGB", target_size, visual["fallback_color"])
+        canvas.paste(
+            strip,
+            ((target_size[0] - strip.size[0]) // 2, (target_size[1] - strip.size[1]) // 2),
+        )
+        canvas.save(os.path.join(pass_dir, "strip.png"))
+
+        strip_2x = canvas.resize((750, 246), Image.LANCZOS)
         strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
 
 
@@ -530,32 +545,55 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     try:
         validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
         card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
+        visual = get_card_visual_data(db, user, card)
 
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": card.member_code,
+            "serialNumber": f"{card.member_code}-{card.id}-{card.level_snapshot}-{card.status}",
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": CLUB_NAME,
             "logoText": CLUB_NAME,
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(255,255,255)",
-            "labelColor": "rgb(255,255,255)",
+            "backgroundColor": "rgb(15,23,42)",
+            "labelColor": "rgb(255,236,170)",
             "suppressStripShine": True,
             "sharingProhibited": False,
             "generic": {
-                "primaryFields": [{"key": "club", "label": "CLUB", "value": CLUB_NAME}],
+                "primaryFields": [
+                    {
+                        "key": "name",
+                        "label": "SOCIO MAYU",
+                        "value": user.name,
+                    }
+                ],
                 "secondaryFields": [
-                    {"key": "name", "label": "SOCIO", "value": user.name},
-                    {"key": "level", "label": "TIPO", "value": level_text(user, card)},
+                    {
+                        "key": "level",
+                        "label": "MEMBRESÍA",
+                        "value": level_text(user, card),
+                    },
+                    {
+                        "key": "status",
+                        "label": "ESTADO",
+                        "value": "Activo" if card.status == "active" else "Inactivo",
+                    },
                 ],
                 "auxiliaryFields": [
-                    {"key": "status", "label": "ESTADO", "value": "Activo" if card.status == "active" else "Inactivo"},
-                    {"key": "code", "label": "CÓDIGO", "value": card.member_code},
+                    {
+                        "key": "code",
+                        "label": "CÓDIGO",
+                        "value": card.member_code,
+                    },
+                    {
+                        "key": "valid",
+                        "label": "VIGENCIA",
+                        "value": CARD_VALIDITY_TEXT,
+                    },
                 ],
                 "backFields": [
-                    {"key": "valid", "label": "Vigencia", "value": CARD_VALIDITY_TEXT},
+                    {"key": "valid_back", "label": "Vigencia", "value": CARD_VALIDITY_TEXT},
                     {"key": "email", "label": "Email", "value": user.email},
                     {"key": "phone", "label": "Celular", "value": user.phone or "-"},
                     {"key": "web", "label": "Tarjeta web", "value": card_web_url},
@@ -579,7 +617,11 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         output_path = os.path.join(temp_dir, f"mayu_wallet_{user_id}.pkpass")
         zip_pkpass(pass_dir, output_path)
 
-        return FileResponse(path=output_path, media_type="application/vnd.apple.pkpass", filename=f"mayu_wallet_{user_id}.pkpass")
+        return FileResponse(
+            path=output_path,
+            media_type="application/vnd.apple.pkpass",
+            filename=f"mayu_wallet_{user_id}.pkpass",
+        )
 
     except HTTPException:
         raise
