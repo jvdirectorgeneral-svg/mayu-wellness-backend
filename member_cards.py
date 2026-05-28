@@ -386,17 +386,57 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     return FileResponse(path=file_path, media_type="image/png", content_disposition_type="inline")
 
 
+def rgb_string(color_tuple):
+    return f"rgb({color_tuple[0]},{color_tuple[1]},{color_tuple[2]})"
+
+
 def create_wallet_icon(output_path: str):
-    img = Image.new("RGB", (180, 180), (13, 148, 136))
+    img = Image.new("RGB", (180, 180), (15, 23, 42))
     draw = ImageDraw.Draw(img)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 46)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
     except Exception:
         font = ImageFont.load_default()
 
-    draw.text((18, 65), "MAYU", fill=(255, 255, 255), font=font)
+    draw.text((22, 68), "MAYU", fill=(255, 236, 170), font=font)
     img.save(output_path)
+
+
+def fit_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_color=(15, 23, 42)):
+    img = Image.open(source_path).convert("RGBA")
+    img.thumbnail(size, Image.LANCZOS)
+
+    canvas = Image.new("RGBA", size, bg_color + (255,))
+    canvas.paste(
+        img,
+        ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2),
+        img,
+    )
+    canvas.convert("RGB").save(target_path)
+
+
+def cover_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_color=(15, 23, 42)):
+    img = Image.open(source_path).convert("RGB")
+    img_ratio = img.width / img.height
+    target_ratio = size[0] / size[1]
+
+    if img_ratio > target_ratio:
+        new_height = size[1]
+        new_width = int(new_height * img_ratio)
+    else:
+        new_width = size[0]
+        new_height = int(new_width / img_ratio)
+
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - size[0]) // 2
+    top = (new_height - size[1]) // 2
+    img = img.crop((left, top, left + size[0], top + size[1]))
+
+    canvas = Image.new("RGB", size, bg_color)
+    canvas.paste(img, (0, 0))
+    canvas.save(target_path)
 
 
 def copy_or_create_wallet_images(pass_dir: str, user, card):
@@ -404,50 +444,46 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
 
     visual = get_card_visual_data(None, user, card)
-    strip_source = os.path.join(base_dir, "assets", visual["wallet_file"])
+    wallet_image_path = os.path.join(base_dir, "assets", visual["wallet_file"])
 
     for filename, size in [
         ("icon.png", (29, 29)),
         ("icon@2x.png", (58, 58)),
-        ("logo.png", (160, 50)),
-        ("logo@2x.png", (320, 100)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
+        else:
+            create_wallet_icon(target)
+
+    for filename, size in [
+        ("logo.png", (70, 26)),
+        ("logo@2x.png", (140, 52)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
+        else:
+            create_wallet_icon(target)
+
+    for filename, size in [
         ("thumbnail.png", (90, 90)),
         ("thumbnail@2x.png", (180, 180)),
     ]:
         target = os.path.join(pass_dir, filename)
 
-        if os.path.exists(logo_path):
-            try:
-                img = Image.open(logo_path).convert("RGBA")
-                img.thumbnail(size, Image.LANCZOS)
-
-                canvas = Image.new("RGBA", size, (0, 0, 0, 0))
-                canvas.paste(
-                    img,
-                    ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2),
-                    img,
-                )
-                canvas.save(target)
-            except Exception:
-                create_wallet_icon(target)
+        if os.path.exists(wallet_image_path):
+            cover_image_to_canvas(wallet_image_path, target, size, visual["fallback_color"])
+        elif os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
         else:
             create_wallet_icon(target)
 
-    if os.path.exists(strip_source):
-        strip = Image.open(strip_source).convert("RGB")
-
-        target_size = (375, 123)
-        strip.thumbnail(target_size, Image.LANCZOS)
-
-        canvas = Image.new("RGB", target_size, visual["fallback_color"])
-        canvas.paste(
-            strip,
-            ((target_size[0] - strip.size[0]) // 2, (target_size[1] - strip.size[1]) // 2),
-        )
-        canvas.save(os.path.join(pass_dir, "strip.png"))
-
-        strip_2x = canvas.resize((750, 246), Image.LANCZOS)
-        strip_2x.save(os.path.join(pass_dir, "strip@2x.png"))
+    if os.path.exists(wallet_image_path):
+        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip.png"), (375, 123), visual["fallback_color"])
+        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip@2x.png"), (750, 246), visual["fallback_color"])
 
 
 def load_wwdr_certificate(path: str):
@@ -550,14 +586,14 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": f"{card.member_code}-{card.id}-{card.level_snapshot}-{card.status}",
+            "serialNumber": f"{card.member_code}-{card.id}-{card.level_snapshot}-{card.status}-{uuid.uuid4()}",
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": CLUB_NAME,
-            "logoText": CLUB_NAME,
+            "logoText": CLUB_NAME.upper(),
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(15,23,42)",
-            "labelColor": "rgb(255,236,170)",
+            "backgroundColor": rgb_string(visual["fallback_color"]),
+            "labelColor": rgb_string(visual["accent_color"]),
             "suppressStripShine": True,
             "sharingProhibited": False,
             "generic": {
