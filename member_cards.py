@@ -469,12 +469,18 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
             create_wallet_icon(target)
 
     if os.path.exists(wallet_image_path):
-        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background.png"), (180, 220), visual["fallback_color"])
-        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background@2x.png"), (360, 440), visual["fallback_color"])
-        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "background@3x.png"), (540, 660), visual["fallback_color"])
-
-        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip.png"), (375, 123), visual["fallback_color"])
-        cover_image_to_canvas(wallet_image_path, os.path.join(pass_dir, "strip@2x.png"), (750, 246), visual["fallback_color"])
+        cover_image_to_canvas(
+            wallet_image_path,
+            os.path.join(pass_dir, "strip.png"),
+            (375, 123),
+            visual["fallback_color"],
+        )
+        cover_image_to_canvas(
+            wallet_image_path,
+            os.path.join(pass_dir, "strip@2x.png"),
+            (750, 246),
+            visual["fallback_color"],
+        )
 
 
 def load_wwdr_certificate(path: str):
@@ -584,10 +590,10 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "logoText": CLUB_NAME.upper(),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(15,23,42)",
-            "labelColor": rgb_string(visual["accent_color"]),
+            "labelColor": "rgb(255,236,170)",
             "suppressStripShine": True,
             "sharingProhibited": False,
-            "generic": {
+            "storeCard": {
                 "primaryFields": [
                     {
                         "key": "name",
