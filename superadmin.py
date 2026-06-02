@@ -258,7 +258,12 @@ def get_internal_users(
 ):
     require_superadmin(current_user)
 
-    users = db.query(User).order_by(User.id.asc()).all()
+    users = (
+        db.query(User)
+        .filter(User.role.in_(INTERNAL_ROLES))
+        .order_by(User.id.asc())
+        .all()
+    )
 
     return {
         "items": [user_to_dict(db, user) for user in users],
