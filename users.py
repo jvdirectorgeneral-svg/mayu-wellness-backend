@@ -18,7 +18,14 @@ router = APIRouter()
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
-STAFF_ROLES = {"admin", "supervisor", "logistics", "marketing"}
+STAFF_ROLES = {
+    "admin",
+    "supervisor",
+    "logistics",
+    "marketing",
+    "pharmacy_admin",
+    "education_admin",
+}
 
 VISIBLE_ROLES = [
     "superadmin",
@@ -26,11 +33,21 @@ VISIBLE_ROLES = [
     "supervisor",
     "logistics",
     "marketing",
+    "pharmacy_admin",
+    "education_admin",
     "ambassador",
     "member",
 ]
 
-PROTECTED_TEAM_ROLES = ["admin", "superadmin", "supervisor", "logistics", "marketing"]
+PROTECTED_TEAM_ROLES = [
+    "admin",
+    "superadmin",
+    "supervisor",
+    "logistics",
+    "marketing",
+    "pharmacy_admin",
+    "education_admin",
+]
 
 
 class UserCreate(BaseModel):
@@ -557,7 +574,7 @@ def create_staff(
     if role not in STAFF_ROLES:
         raise HTTPException(
             status_code=400,
-            detail="Rol inválido. Solo se permite admin, supervisor, logistics o marketing",
+            detail="Rol inválido. Solo se permite admin, supervisor, logistics, marketing, pharmacy_admin o education_admin",
         )
 
     if db.query(models.User).filter(models.User.email == payload.email.strip().lower()).first():
@@ -650,7 +667,7 @@ def update_staff(
     if role not in STAFF_ROLES:
         raise HTTPException(
             status_code=400,
-            detail="Rol inválido. Solo se permite admin, supervisor, logistics o marketing",
+            detail="Rol inválido. Solo se permite admin, supervisor, logistics, marketing, pharmacy_admin o education_admin",
         )
 
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -702,7 +719,16 @@ def reset_staff_password(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "marketing", "ambassador", "member"}
+    allowed_roles = {
+        "admin",
+        "supervisor",
+        "logistics",
+        "marketing",
+        "pharmacy_admin",
+        "education_admin",
+        "ambassador",
+        "member",
+    }
 
     if user.role not in allowed_roles:
         raise HTTPException(status_code=400, detail="No se puede resetear la contraseña de este usuario desde aquí")
@@ -768,7 +794,16 @@ def update_staff_status(
     if user.role == "superadmin":
         raise HTTPException(status_code=403, detail="No se puede desactivar el superadmin desde Control Maestro")
 
-    allowed_roles = {"admin", "supervisor", "logistics", "marketing", "ambassador", "member"}
+    allowed_roles = {
+        "admin",
+        "supervisor",
+        "logistics",
+        "marketing",
+        "pharmacy_admin",
+        "education_admin",
+        "ambassador",
+        "member",
+    }
 
     if user.role not in allowed_roles:
         raise HTTPException(status_code=400, detail="No se puede activar o desactivar este usuario")
