@@ -26,6 +26,8 @@ INTERNAL_ROLES = [
     "supervisor",
     "logistics",
     "marketing",
+    "pharmacy_admin",
+    "education_admin",
 ]
 
 CREATABLE_INTERNAL_ROLES = [
@@ -33,6 +35,8 @@ CREATABLE_INTERNAL_ROLES = [
     "supervisor",
     "logistics",
     "marketing",
+    "pharmacy_admin",
+    "education_admin",
 ]
 
 ROLE_ALIASES = {
@@ -47,6 +51,17 @@ ROLE_ALIASES = {
 
     "marketing": "marketing",
     "mercadeo": "marketing",
+
+    "pharmacy_admin": "pharmacy_admin",
+    "farmacia": "pharmacy_admin",
+    "farmaciamayu": "pharmacy_admin",
+    "farmacia_mayu": "pharmacy_admin",
+
+    "education_admin": "education_admin",
+    "educacion": "education_admin",
+    "educación": "education_admin",
+    "educacion_mayu": "education_admin",
+    "mayu_educacion": "education_admin",
 }
 
 
