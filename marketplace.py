@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+
 from database import SessionLocal
 from dependencies import get_current_user
 import models
@@ -70,11 +71,7 @@ def require_pharmacy_admin(current_user: models.User):
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if current_user.role not in {
-        "superadmin",
-        "admin",
-        "pharmacy_admin",
-    }:
+    if current_user.role not in {"superadmin", "admin", "pharmacy_admin"}:
         raise HTTPException(
             status_code=403,
             detail="Acceso solo para Farmacia Mayu",
@@ -92,16 +89,11 @@ def category_to_dict(category: models.MarketplaceCategory):
 
 
 def product_to_dict(product: models.MarketplaceProduct):
-    category_name = None
-
-    if product.category_rel:
-        category_name = product.category_rel.name
-
     return {
         "id": product.id,
         "name": product.name,
         "category_id": product.category_id,
-        "category_name": category_name,
+        "category_name": product.category_rel.name if product.category_rel else None,
         "price": product.price,
         "stock": product.stock,
         "image_url": product.image_url,
@@ -208,10 +200,7 @@ def update_category(
         name = payload.name.strip()
 
         if not name:
-            raise HTTPException(
-                status_code=400,
-                detail="El nombre es obligatorio",
-            )
+            raise HTTPException(status_code=400, detail="El nombre es obligatorio")
 
         duplicate = (
             db.query(models.MarketplaceCategory)
@@ -242,6 +231,44 @@ def update_category(
     return {
         "message": "Categoría actualizada correctamente",
         "category": category_to_dict(category),
+    }
+
+
+@router.delete("/categories/{category_id}")
+def delete_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+
+    category = (
+        db.query(models.MarketplaceCategory)
+        .filter(models.MarketplaceCategory.id == category_id)
+        .first()
+    )
+
+    if not category:
+        raise HTTPException(status_code=404, detail="Categoría no encontrada")
+
+    has_products = (
+        db.query(models.MarketplaceProduct)
+        .filter(models.MarketplaceProduct.category_id == category_id)
+        .first()
+    )
+
+    if has_products:
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes borrar una categoría que tiene productos. Primero mueve o elimina esos productos.",
+        )
+
+    db.delete(category)
+    db.commit()
+
+    return {
+        "message": "Categoría eliminada correctamente",
+        "category_id": category_id,
     }
 
 
@@ -308,10 +335,7 @@ def create_product(
         )
 
         if not category:
-            raise HTTPException(
-                status_code=404,
-                detail="Categoría no encontrada",
-            )
+            raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
     product = models.MarketplaceProduct(
         name=name,
@@ -368,16 +392,13 @@ def update_product(
             )
 
             if not category:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Categoría no encontrada",
-                )
+                raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
             product.category_id = payload.category_id
         else:
             product.category_id = None
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in payload.dict(exclude_unset=True).items():
         if field == "category_id":
             continue
 
@@ -398,4 +419,30 @@ def update_product(
     return {
         "message": "Producto actualizado correctamente",
         "product": product_to_dict(product),
+    }
+
+
+@router.delete("/products/{product_id}")
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+
+    product = (
+        db.query(models.MarketplaceProduct)
+        .filter(models.MarketplaceProduct.id == product_id)
+        .first()
+    )
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    db.delete(product)
+    db.commit()
+
+    return {
+        "message": "Producto eliminado correctamente",
+        "product_id": product_id,
     }
