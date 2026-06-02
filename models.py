@@ -117,6 +117,17 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
+    marketplace_products_created = relationship(
+        "MarketplaceProduct",
+        foreign_keys="MarketplaceProduct.created_by",
+        back_populates="creator",
+    )
+
+    marketplace_orders = relationship(
+        "MarketplaceOrder",
+        back_populates="user",
+    )
+
 
 class Ambassador(Base):
     __tablename__ = "ambassadors"
@@ -716,4 +727,155 @@ class PushNotificationToken(Base):
     user = relationship(
         "User",
         back_populates="push_tokens",
+    )
+
+
+class MarketplaceCategory(Base):
+    __tablename__ = "marketplace_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+
+    active = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    products = relationship(
+        "MarketplaceProduct",
+        back_populates="category_rel",
+    )
+
+
+class MarketplaceProduct(Base):
+    __tablename__ = "marketplace_products"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, nullable=False, index=True)
+    category_id = Column(
+        Integer,
+        ForeignKey("marketplace_categories.id"),
+        nullable=True,
+    )
+
+    price = Column(Float, nullable=False)
+    stock = Column(Integer, default=0, nullable=False)
+
+    image_url = Column(Text, nullable=True)
+
+    short_description = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    benefits = Column(Text, nullable=True)
+    ingredients = Column(Text, nullable=True)
+    suggested_dose = Column(Text, nullable=True)
+    usage_instructions = Column(Text, nullable=True)
+    warnings = Column(Text, nullable=True)
+
+    presentation = Column(String, nullable=True)
+
+    active = Column(Boolean, default=True, nullable=False)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    category_rel = relationship(
+        "MarketplaceCategory",
+        back_populates="products",
+    )
+
+    creator = relationship(
+        "User",
+        foreign_keys=[created_by],
+        back_populates="marketplace_products_created",
+    )
+
+    order_items = relationship(
+        "MarketplaceOrderItem",
+        back_populates="product",
+    )
+
+
+class MarketplaceOrder(Base):
+    __tablename__ = "marketplace_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    order_code = Column(String, unique=True, nullable=False, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    customer_name = Column(String, nullable=False)
+    customer_phone = Column(String, nullable=False)
+    customer_email = Column(String, nullable=True)
+
+    city = Column(String, nullable=True)
+    address = Column(Text, nullable=True)
+    delivery_notes = Column(Text, nullable=True)
+
+    subtotal = Column(Float, nullable=False, default=0)
+    total = Column(Float, nullable=False, default=0)
+    currency = Column(String, nullable=False, default="USD")
+
+    payment_method = Column(String, nullable=False, default="whatsapp")
+    payment_status = Column(String, nullable=False, default="pending")
+    status = Column(String, nullable=False, default="created")
+
+    whatsapp_message = Column(Text, nullable=True)
+
+    payphone_transaction_id = Column(String, nullable=True, index=True)
+    payphone_payment_url = Column(Text, nullable=True)
+    raw_payment_payload = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    paid_at = Column(DateTime, nullable=True)
+
+    user = relationship(
+        "User",
+        back_populates="marketplace_orders",
+    )
+
+    items = relationship(
+        "MarketplaceOrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+
+
+class MarketplaceOrderItem(Base):
+    __tablename__ = "marketplace_order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    order_id = Column(
+        Integer,
+        ForeignKey("marketplace_orders.id"),
+        nullable=False,
+    )
+
+    product_id = Column(
+        Integer,
+        ForeignKey("marketplace_products.id"),
+        nullable=False,
+    )
+
+    product_name_snapshot = Column(String, nullable=False)
+    unit_price_snapshot = Column(Float, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+    total_snapshot = Column(Float, nullable=False)
+
+    order = relationship(
+        "MarketplaceOrder",
+        back_populates="items",
+    )
+
+    product = relationship(
+        "MarketplaceProduct",
+        back_populates="order_items",
     )
