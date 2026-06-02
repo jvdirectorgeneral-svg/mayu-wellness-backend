@@ -128,6 +128,12 @@ class User(Base):
         back_populates="user",
     )
 
+    education_resources_created = relationship(
+        "EducationResource",
+        foreign_keys="EducationResource.created_by",
+        back_populates="creator",
+    )
+
 
 class Ambassador(Base):
     __tablename__ = "ambassadors"
@@ -878,4 +884,77 @@ class MarketplaceOrderItem(Base):
     product = relationship(
         "MarketplaceProduct",
         back_populates="order_items",
+    )
+
+
+class EducationCategory(Base):
+    __tablename__ = "education_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+
+    active = Column(Boolean, default=True, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    resources = relationship(
+        "EducationResource",
+        back_populates="category_rel",
+    )
+
+
+class EducationResource(Base):
+    __tablename__ = "education_resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    title = Column(String, nullable=False, index=True)
+
+    category_id = Column(
+        Integer,
+        ForeignKey("education_categories.id"),
+        nullable=True,
+    )
+
+    resource_type = Column(String, nullable=False, default="pdf")
+
+    file_url = Column(Text, nullable=True)
+    external_url = Column(Text, nullable=True)
+    cover_image_url = Column(Text, nullable=True)
+
+    description = Column(Text, nullable=True)
+    content_text = Column(Text, nullable=True)
+
+    plant_common_name = Column(String, nullable=True)
+    plant_scientific_name = Column(String, nullable=True)
+    plant_family = Column(String, nullable=True)
+    plant_origin = Column(String, nullable=True)
+    plant_uses = Column(Text, nullable=True)
+    plant_parts_used = Column(Text, nullable=True)
+    plant_preparation = Column(Text, nullable=True)
+    plant_warnings = Column(Text, nullable=True)
+
+    active = Column(Boolean, default=True, nullable=False)
+    free_for_members = Column(Boolean, default=True, nullable=False)
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    category_rel = relationship(
+        "EducationCategory",
+        back_populates="resources",
+    )
+
+    creator = relationship(
+        "User",
+        foreign_keys=[created_by],
+        back_populates="education_resources_created",
     )
