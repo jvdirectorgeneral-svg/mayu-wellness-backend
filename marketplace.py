@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+import os
+import cloudinary
+import cloudinary.uploader
 
 from database import SessionLocal
 from dependencies import get_current_user
@@ -110,6 +113,44 @@ def product_to_dict(product: models.MarketplaceProduct):
         "created_at": product.created_at,
         "updated_at": product.updated_at,
     }
+
+
+@router.post("/upload-image")
+def upload_marketplace_image(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+
+    if file.content_type not in ["image/jpeg", "image/png", "image/webp"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se permiten imágenes JPG, PNG o WEBP",
+        )
+
+    try:
+        cloudinary.config(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        )
+
+        result = cloudinary.uploader.upload(
+            file.file,
+            folder="mayu_marketplace",
+            resource_type="image",
+        )
+
+        return {
+            "message": "Imagen subida correctamente",
+            "image_url": result.get("secure_url"),
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error subiendo imagen: {str(e)}",
+        )
 
 
 @router.get("/categories")
