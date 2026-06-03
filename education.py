@@ -106,7 +106,10 @@ def configure_cloudinary():
     api_secret = os.getenv("CLOUDINARY_API_SECRET")
 
     if not cloud_name or not api_key or not api_secret:
-        raise HTTPException(status_code=500, detail="Faltan variables CLOUDINARY en Render")
+        raise HTTPException(
+            status_code=500,
+            detail="Faltan variables CLOUDINARY en Render",
+        )
 
     cloudinary.config(
         cloud_name=cloud_name,
@@ -153,6 +156,14 @@ def get_user_from_token_param(token: Optional[str], db: Session):
     return None
 
 
+def is_team_user(current_user: models.User):
+    return current_user.role in {
+        "superadmin",
+        "admin",
+        "education_admin",
+    }
+
+
 def require_education_admin(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -161,29 +172,38 @@ def require_education_admin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role not in {"superadmin", "admin", "education_admin"}:
-        raise HTTPException(status_code=403, detail="Acceso solo para Mayu Educación")
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para Mayu Educación",
+        )
 
 
-def require_member_or_team(current_user: models.User):
+def require_active_member_or_team(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
 
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if current_user.role not in {
-        "superadmin",
-        "admin",
-        "education_admin",
-        "member",
-        "ambassador",
-    }:
-        raise HTTPException(status_code=403, detail="Acceso solo para socios Mayu")
+    if is_team_user(current_user):
+        return
+
+    if current_user.role not in {"member", "ambassador"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para socios Mayu",
+        )
+
+    if not getattr(current_user, "membership_active", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Tu membresía no está activa. Regulariza tu pago para acceder a Mayu Educación.",
+        )
 
 
 def generate_access_code():
     alphabet = string.ascii_uppercase + string.digits
-    return "MAYU-" + "".join(secrets.choice(alphabet) for _ in range(10))
+    return "MAYU-EDU-" + "".join(secrets.choice(alphabet) for _ in range(10))
 
 
 def get_valid_access_code(db: Session, resource_id: int, access_code: Optional[str]):
@@ -281,7 +301,11 @@ def resource_to_dict(resource: models.EducationResource, public: bool = False):
 def cloudinary_pdf_page_url(url: str, page: int):
     if "/upload/" not in url:
         return url
-    return url.replace("/upload/", f"/upload/f_jpg,pg_{page},q_auto/")
+
+    return url.replace(
+        "/upload/",
+        f"/upload/f_jpg,pg_{page},q_auto,w_1400/",
+    )
 
 
 @router.get("/categories")
@@ -289,7 +313,7 @@ def get_public_categories(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_member_or_team(current_user)
+    require_active_member_or_team(current_user)
 
     categories = (
         db.query(models.EducationCategory)
@@ -389,7 +413,10 @@ def update_category(
         )
 
         if duplicate:
-            raise HTTPException(status_code=400, detail="Ya existe otra categoría con ese nombre")
+            raise HTTPException(
+                status_code=400,
+                detail="Ya existe otra categoría con ese nombre",
+            )
 
         category.name = name
 
@@ -454,7 +481,7 @@ def get_public_resources(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_member_or_team(current_user)
+    require_active_member_or_team(current_user)
 
     query = (
         db.query(models.EducationResource)
@@ -555,7 +582,7 @@ def get_public_resource_detail(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_member_or_team(current_user)
+    require_active_member_or_team(current_user)
 
     resource = (
         db.query(models.EducationResource)
@@ -582,14 +609,17 @@ def view_protected_resource(
     access = None
 
     if current_user:
-        require_member_or_team(current_user)
+        require_active_member_or_team(current_user)
         viewer_name = current_user.name or "Usuario Mayu"
         viewer_email = current_user.email or ""
     else:
         access = get_valid_access_code(db, resource_id, access_code)
 
         if not access:
-            raise HTTPException(status_code=401, detail="Acceso no autorizado o código caducado")
+            raise HTTPException(
+                status_code=401,
+                detail="Acceso no autorizado o código caducado",
+            )
 
         viewer_name = access.buyer_name or "Comprador Mayu Educación"
         viewer_email = access.buyer_email or access.code
@@ -613,7 +643,6 @@ def view_protected_resource(
     title = escape(resource.title or "Contenido Mayu")
     user_name = escape(viewer_name)
     user_email = escape(viewer_email)
-
     safe_url = escape(file_url or external_url)
 
     if resource_type in {"plant_card", "plant_registry"} and not safe_url:
@@ -631,7 +660,10 @@ def view_protected_resource(
         </div>
         """
     elif not safe_url:
-        raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
+        raise HTTPException(
+            status_code=404,
+            detail="Este contenido no tiene archivo o enlace disponible",
+        )
     elif resource_type == "video":
         viewer = f"""
         <div class="video-wrap">
@@ -646,12 +678,16 @@ def view_protected_resource(
         """
     elif resource_type in {"pdf", "document"}:
         pages_html = ""
+
         for page in range(1, 81):
             page_url = escape(cloudinary_pdf_page_url(file_url or external_url, page))
             pages_html += f"""
-            <img src="{page_url}" draggable="false"
-              onerror="this.style.display='none';"
-              style="width:100%;margin-bottom:18px;border-radius:14px;user-select:none;" />
+            <div class="page-wrap">
+              <img src="{page_url}" draggable="false"
+                onerror="this.parentElement.style.display='none';"
+                style="width:100%;margin-bottom:18px;border-radius:14px;user-select:none;" />
+              <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
+            </div>
             """
 
         viewer = f"""
@@ -661,8 +697,11 @@ def view_protected_resource(
         """
     else:
         viewer = f"""
-        <img src="{safe_url}" draggable="false"
-          style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
+        <div class="page-wrap">
+          <img src="{safe_url}" draggable="false"
+            style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
+          <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
+        </div>
         """
 
     html = f"""
@@ -701,7 +740,7 @@ def view_protected_resource(
           inset: 0;
           pointer-events: none;
           z-index: 9999;
-          opacity: 0.14;
+          opacity: 0.10;
           background-image: repeating-linear-gradient(
             -35deg,
             transparent 0px,
@@ -723,20 +762,24 @@ def view_protected_resource(
           text-align: center;
           white-space: pre-line;
         }}
-        .video-wrap {{
+        .video-wrap, .page-wrap {{
           position: relative;
         }}
-        .video-watermark {{
+        .video-watermark, .page-watermark {{
           position: absolute;
-          top: 38%;
+          top: 40%;
           left: 50%;
           transform: translate(-50%, -50%) rotate(-25deg);
-          color: rgba(255,255,255,0.28);
+          color: rgba(0, 128, 128, 0.26);
           font-weight: bold;
-          font-size: 32px;
+          font-size: 30px;
           text-align: center;
           pointer-events: none;
           z-index: 20;
+          text-shadow: 0 2px 8px rgba(255,255,255,0.40);
+        }}
+        .video-watermark {{
+          color: rgba(255,255,255,0.30);
           text-shadow: 0 2px 8px rgba(0,0,0,0.35);
         }}
         .notice {{
@@ -995,4 +1038,7 @@ async def upload_education_file(
         raise
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo subir el archivo: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo subir el archivo: {str(e)}",
+        )
