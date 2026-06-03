@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from html import escape
-from jose import jwt, JWTError
+from jose import jwt
 
 from database import SessionLocal
 from dependencies import get_current_user, SECRET_KEY, ALGORITHM
@@ -79,23 +79,27 @@ def get_db():
         db.close()
 
 
-def get_user_from_token_param(
-    token: Optional[str],
-    db: Session,
-):
+def get_user_from_token_param(token: Optional[str], db: Session):
     if not token:
         return None
 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get("sub")
 
-        if not email:
-            return None
+        email = payload.get("sub") or payload.get("email")
+        user_id = payload.get("user_id") or payload.get("id")
 
-        return db.query(models.User).filter(models.User.email == email).first()
+        if email:
+            user = db.query(models.User).filter(models.User.email == email).first()
+            if user:
+                return user
 
-    except JWTError:
+        if user_id:
+            return db.query(models.User).filter(models.User.id == int(user_id)).first()
+
+        return None
+
+    except Exception:
         return None
 
 
