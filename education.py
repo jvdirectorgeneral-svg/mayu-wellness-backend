@@ -86,7 +86,8 @@ def get_user_from_token_param(token: Optional[str], db: Session):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
-        email = payload.get("sub") or payload.get("email")
+        email = payload.get("email")
+        sub = payload.get("sub")
         user_id = payload.get("user_id") or payload.get("id")
 
         if email:
@@ -95,7 +96,19 @@ def get_user_from_token_param(token: Optional[str], db: Session):
                 return user
 
         if user_id:
-            return db.query(models.User).filter(models.User.id == int(user_id)).first()
+            user = db.query(models.User).filter(models.User.id == int(user_id)).first()
+            if user:
+                return user
+
+        if sub:
+            if str(sub).isdigit():
+                user = db.query(models.User).filter(models.User.id == int(sub)).first()
+                if user:
+                    return user
+
+            user = db.query(models.User).filter(models.User.email == sub).first()
+            if user:
+                return user
 
         return None
 
