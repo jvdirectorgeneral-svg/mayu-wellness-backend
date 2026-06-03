@@ -5,14 +5,17 @@ from pydantic import BaseModel
 from typing import Optional
 from html import escape
 from jose import jwt
+from datetime import datetime
+import secrets
+import string
+import os
+
+import cloudinary
+import cloudinary.uploader
 
 from database import SessionLocal
 from dependencies import get_current_user, SECRET_KEY, ALGORITHM
 import models
-
-import os
-import cloudinary
-import cloudinary.uploader
 
 router = APIRouter(prefix="/education", tags=["education"])
 
@@ -33,11 +36,15 @@ class EducationResourceCreate(BaseModel):
     title: str
     category_id: Optional[int] = None
     resource_type: str = "pdf"
+
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
+
+    price: float = 0
     description: Optional[str] = None
     content_text: Optional[str] = None
+
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -46,6 +53,7 @@ class EducationResourceCreate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
+
     active: bool = True
     free_for_members: bool = True
 
@@ -54,11 +62,15 @@ class EducationResourceUpdate(BaseModel):
     title: Optional[str] = None
     category_id: Optional[int] = None
     resource_type: Optional[str] = None
+
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
+
+    price: Optional[float] = None
     description: Optional[str] = None
     content_text: Optional[str] = None
+
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -67,8 +79,17 @@ class EducationResourceUpdate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
+
     active: Optional[bool] = None
     free_for_members: Optional[bool] = None
+
+
+class EducationAccessCodeCreate(BaseModel):
+    resource_id: int
+    buyer_name: Optional[str] = None
+    buyer_email: Optional[str] = None
+    buyer_phone: Optional[str] = None
+    max_uses: int = 30
 
 
 def get_db():
@@ -77,6 +98,22 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def configure_cloudinary():
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+    api_key = os.getenv("CLOUDINARY_API_KEY")
+    api_secret = os.getenv("CLOUDINARY_API_SECRET")
+
+    if not cloud_name or not api_key or not api_secret:
+        raise HTTPException(status_code=500, detail="Faltan variables CLOUDINARY en Render")
+
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True,
+    )
 
 
 def get_user_from_token_param(token: Optional[str], db: Session):
@@ -110,10 +147,10 @@ def get_user_from_token_param(token: Optional[str], db: Session):
             if user:
                 return user
 
-        return None
-
     except Exception:
         return None
+
+    return None
 
 
 def require_education_admin(current_user: models.User):
@@ -124,10 +161,7 @@ def require_education_admin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role not in {"superadmin", "admin", "education_admin"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para Mayu Educación",
-        )
+        raise HTTPException(status_code=403, detail="Acceso solo para Mayu Educación")
 
 
 def require_member_or_team(current_user: models.User):
@@ -144,29 +178,54 @@ def require_member_or_team(current_user: models.User):
         "member",
         "ambassador",
     }:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para socios Mayu",
-        )
+        raise HTTPException(status_code=403, detail="Acceso solo para socios Mayu")
 
 
-def configure_cloudinary():
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-    api_key = os.getenv("CLOUDINARY_API_KEY")
-    api_secret = os.getenv("CLOUDINARY_API_SECRET")
+def generate_access_code():
+    alphabet = string.ascii_uppercase + string.digits
+    return "MAYU-" + "".join(secrets.choice(alphabet) for _ in range(10))
 
-    if not cloud_name or not api_key or not api_secret:
+
+def get_valid_access_code(db: Session, resource_id: int, access_code: Optional[str]):
+    if not access_code:
+        return None
+
+    if not hasattr(models, "EducationAccessCode"):
         raise HTTPException(
             status_code=500,
-            detail="Faltan variables CLOUDINARY en Render",
+            detail="Falta crear el modelo EducationAccessCode en models.py",
         )
 
-    cloudinary.config(
-        cloud_name=cloud_name,
-        api_key=api_key,
-        api_secret=api_secret,
-        secure=True,
+    code = (
+        db.query(models.EducationAccessCode)
+        .filter(models.EducationAccessCode.code == access_code.strip())
+        .filter(models.EducationAccessCode.resource_id == resource_id)
+        .first()
     )
+
+    if not code:
+        return None
+
+    if getattr(code, "status", "active") != "active":
+        return None
+
+    if getattr(code, "uses_count", 0) >= getattr(code, "max_uses", 30):
+        code.status = "expired"
+        db.commit()
+        return None
+
+    return code
+
+
+def consume_access_code(db: Session, code):
+    code.uses_count = (code.uses_count or 0) + 1
+    code.last_used_at = datetime.utcnow()
+
+    if code.uses_count >= code.max_uses:
+        code.status = "expired"
+
+    db.commit()
+    db.refresh(code)
 
 
 def category_to_dict(category: models.EducationCategory):
@@ -180,6 +239,8 @@ def category_to_dict(category: models.EducationCategory):
 
 
 def resource_to_dict(resource: models.EducationResource, public: bool = False):
+    price = getattr(resource, "price", 0) or 0
+
     data = {
         "id": resource.id,
         "title": resource.title,
@@ -187,6 +248,8 @@ def resource_to_dict(resource: models.EducationResource, public: bool = False):
         "category_name": resource.category_rel.name if resource.category_rel else None,
         "resource_type": resource.resource_type,
         "cover_image_url": resource.cover_image_url,
+        "price": price,
+        "is_paid": price > 0,
         "description": resource.description,
         "content_text": resource.content_text,
         "plant_common_name": resource.plant_common_name,
@@ -213,6 +276,12 @@ def resource_to_dict(resource: models.EducationResource, public: bool = False):
         data["external_url"] = resource.external_url
 
     return data
+
+
+def cloudinary_pdf_page_url(url: str, page: int):
+    if "/upload/" not in url:
+        return url
+    return url.replace("/upload/", f"/upload/f_jpg,pg_{page},q_auto/")
 
 
 @router.get("/categories")
@@ -320,10 +389,7 @@ def update_category(
         )
 
         if duplicate:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe otra categoría con ese nombre",
-            )
+            raise HTTPException(status_code=400, detail="Ya existe otra categoría con ese nombre")
 
         category.name = name
 
@@ -400,9 +466,7 @@ def get_public_resources(
         query = query.filter(models.EducationResource.category_id == category_id)
 
     if resource_type and resource_type.strip():
-        query = query.filter(
-            models.EducationResource.resource_type == resource_type.strip()
-        )
+        query = query.filter(models.EducationResource.resource_type == resource_type.strip())
 
     if search and search.strip():
         clean_search = f"%{search.strip()}%"
@@ -411,6 +475,78 @@ def get_public_resources(
     resources = query.order_by(models.EducationResource.id.desc()).all()
 
     return {"items": [resource_to_dict(r, public=True) for r in resources]}
+
+
+@router.get("/store/resources")
+def get_store_resources(
+    category_id: Optional[int] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.EducationResource).filter(models.EducationResource.active == True)
+
+    if category_id:
+        query = query.filter(models.EducationResource.category_id == category_id)
+
+    if search and search.strip():
+        clean_search = f"%{search.strip()}%"
+        query = query.filter(models.EducationResource.title.ilike(clean_search))
+
+    resources = query.order_by(models.EducationResource.id.desc()).all()
+
+    return {"items": [resource_to_dict(r, public=True) for r in resources]}
+
+
+@router.post("/store/access-codes")
+def create_access_code(
+    payload: EducationAccessCodeCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_education_admin(current_user)
+
+    if not hasattr(models, "EducationAccessCode"):
+        raise HTTPException(
+            status_code=500,
+            detail="Falta crear el modelo EducationAccessCode en models.py",
+        )
+
+    resource = (
+        db.query(models.EducationResource)
+        .filter(models.EducationResource.id == payload.resource_id)
+        .first()
+    )
+
+    if not resource:
+        raise HTTPException(status_code=404, detail="Contenido no encontrado")
+
+    code_value = generate_access_code()
+
+    access = models.EducationAccessCode(
+        resource_id=payload.resource_id,
+        code=code_value,
+        buyer_name=payload.buyer_name,
+        buyer_email=payload.buyer_email,
+        buyer_phone=payload.buyer_phone,
+        max_uses=payload.max_uses,
+        uses_count=0,
+        status="active",
+        created_at=datetime.utcnow(),
+    )
+
+    db.add(access)
+    db.commit()
+    db.refresh(access)
+
+    return {
+        "message": "Código de acceso creado correctamente",
+        "code": access.code,
+        "resource_id": access.resource_id,
+        "max_uses": access.max_uses,
+        "uses_count": access.uses_count,
+        "status": access.status,
+        "view_url": f"/education/resources/{access.resource_id}/view?access_code={access.code}",
+    }
 
 
 @router.get("/resources/{resource_id}")
@@ -439,69 +575,94 @@ def get_public_resource_detail(
 def view_protected_resource(
     resource_id: int,
     token: Optional[str] = Query(default=None),
+    access_code: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
     current_user = get_user_from_token_param(token, db)
+    access = None
 
-    if not current_user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    if current_user:
+        require_member_or_team(current_user)
+        viewer_name = current_user.name or "Usuario Mayu"
+        viewer_email = current_user.email or ""
+    else:
+        access = get_valid_access_code(db, resource_id, access_code)
 
-    require_member_or_team(current_user)
+        if not access:
+            raise HTTPException(status_code=401, detail="Acceso no autorizado o código caducado")
+
+        viewer_name = access.buyer_name or "Comprador Mayu Educación"
+        viewer_email = access.buyer_email or access.code
 
     resource = (
         db.query(models.EducationResource)
         .filter(models.EducationResource.id == resource_id)
         .filter(models.EducationResource.active == True)
-        .filter(models.EducationResource.free_for_members == True)
         .first()
     )
 
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
+    if not current_user and access:
+        consume_access_code(db, access)
+
     file_url = resource.file_url or ""
     external_url = resource.external_url or ""
     resource_type = resource.resource_type or ""
     title = escape(resource.title or "Contenido Mayu")
-    user_name = escape(current_user.name or "Usuario Mayu")
-    user_email = escape(current_user.email or "")
+    user_name = escape(viewer_name)
+    user_email = escape(viewer_email)
 
     safe_url = escape(file_url or external_url)
 
-    if not safe_url:
-        raise HTTPException(
-            status_code=404,
-            detail="Este contenido no tiene archivo o enlace disponible",
-        )
-
-    if resource_type == "video":
-        viewer = f"""
-        <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
-          oncontextmenu="return false;"
-          style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
-          <source src="{safe_url}">
-          Tu navegador no puede reproducir este video.
-        </video>
-        """
-    elif resource_type == "image":
-        viewer = f"""
-        <img src="{safe_url}" draggable="false"
-          style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
-        """
-    elif resource_type == "link":
+    if resource_type in {"plant_card", "plant_registry"} and not safe_url:
         viewer = f"""
         <div class="box">
-          <p>Este recurso es un enlace externo protegido desde Mayu Educación.</p>
-          <a href="{safe_url}" target="_blank" rel="noopener noreferrer">Abrir recurso externo</a>
+          <h3>{escape(resource.plant_common_name or resource.title or "Ficha Mayu")}</h3>
+          <p><strong>Nombre científico:</strong> {escape(resource.plant_scientific_name or "-")}</p>
+          <p><strong>Familia:</strong> {escape(resource.plant_family or "-")}</p>
+          <p><strong>Origen:</strong> {escape(resource.plant_origin or "-")}</p>
+          <p><strong>Partes usadas:</strong> {escape(resource.plant_parts_used or "-")}</p>
+          <p><strong>Usos:</strong> {escape(resource.plant_uses or "-")}</p>
+          <p><strong>Preparación:</strong> {escape(resource.plant_preparation or "-")}</p>
+          <p><strong>Advertencias:</strong> {escape(resource.plant_warnings or "-")}</p>
+          <p>{escape(resource.content_text or "")}</p>
+        </div>
+        """
+    elif not safe_url:
+        raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
+    elif resource_type == "video":
+        viewer = f"""
+        <div class="video-wrap">
+          <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
+            oncontextmenu="return false;"
+            style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
+            <source src="{safe_url}">
+            Tu navegador no puede reproducir este video.
+          </video>
+          <div class="video-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
+        </div>
+        """
+    elif resource_type in {"pdf", "document"}:
+        pages_html = ""
+        for page in range(1, 81):
+            page_url = escape(cloudinary_pdf_page_url(file_url or external_url, page))
+            pages_html += f"""
+            <img src="{page_url}" draggable="false"
+              onerror="this.style.display='none';"
+              style="width:100%;margin-bottom:18px;border-radius:14px;user-select:none;" />
+            """
+
+        viewer = f"""
+        <div oncontextmenu="return false;">
+          {pages_html}
         </div>
         """
     else:
         viewer = f"""
-        <iframe
-          src="{safe_url}#toolbar=0&navpanes=0&scrollbar=1"
-          style="width:100%;height:82vh;border:0;border-radius:16px;background:white;"
-          oncontextmenu="return false;">
-        </iframe>
+        <img src="{safe_url}" draggable="false"
+          style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
         """
 
     html = f"""
@@ -562,6 +723,22 @@ def view_protected_resource(
           text-align: center;
           white-space: pre-line;
         }}
+        .video-wrap {{
+          position: relative;
+        }}
+        .video-watermark {{
+          position: absolute;
+          top: 38%;
+          left: 50%;
+          transform: translate(-50%, -50%) rotate(-25deg);
+          color: rgba(255,255,255,0.28);
+          font-weight: bold;
+          font-size: 32px;
+          text-align: center;
+          pointer-events: none;
+          z-index: 20;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.35);
+        }}
         .notice {{
           max-width: 1100px;
           margin: 12px auto 0 auto;
@@ -571,11 +748,7 @@ def view_protected_resource(
         }}
         .box {{
           padding: 24px;
-          text-align: center;
-        }}
-        a {{
-          color: teal;
-          font-weight: bold;
+          line-height: 1.55;
         }}
       </style>
       <script>
@@ -599,7 +772,7 @@ def view_protected_resource(
 
       <div class="header">
         <h2>{title}</h2>
-        <p>Uso exclusivo para socios Mayu Educación.</p>
+        <p>Uso exclusivo Mayu Educación.</p>
       </div>
 
       <div class="viewer">
@@ -677,6 +850,9 @@ def create_resource(
         created_by=current_user.id,
     )
 
+    if hasattr(resource, "price"):
+        resource.price = payload.price
+
     db.add(resource)
     db.commit()
     db.refresh(resource)
@@ -724,14 +900,14 @@ def update_resource(
         if field == "category_id":
             continue
 
+        if field == "price" and not hasattr(resource, "price"):
+            continue
+
         if field == "title" and value is not None:
             value = value.strip()
 
             if not value:
-                raise HTTPException(
-                    status_code=400,
-                    detail="El título es obligatorio",
-                )
+                raise HTTPException(status_code=400, detail="El título es obligatorio")
 
         if field == "resource_type" and value is not None:
             value = value.strip()
@@ -784,15 +960,18 @@ async def upload_education_file(
     try:
         content_type = file.content_type or ""
         filename = file.filename or "archivo"
+        lower_filename = filename.lower()
 
-        resource_type = "raw"
+        if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
+            raise HTTPException(
+                status_code=400,
+                detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.",
+            )
 
-        if content_type.startswith("image/"):
-            resource_type = "image"
-        elif content_type.startswith("video/"):
+        if content_type.startswith("video/"):
             resource_type = "video"
         else:
-            resource_type = "raw"
+            resource_type = "image"
 
         result = cloudinary.uploader.upload(
             file.file,
@@ -812,8 +991,8 @@ async def upload_education_file(
             "content_type": content_type,
         }
 
+    except HTTPException:
+        raise
+
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo subir el archivo: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"No se pudo subir el archivo: {str(e)}")
