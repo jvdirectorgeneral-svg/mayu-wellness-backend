@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from html import escape
+from jose import jwt, JWTError
 
 from database import SessionLocal
-from dependencies import get_current_user
+from dependencies import get_current_user, SECRET_KEY, ALGORITHM
 import models
 
 import os
@@ -76,6 +77,26 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_user_from_token_param(
+    token: Optional[str],
+    db: Session,
+):
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+
+        if not email:
+            return None
+
+        return db.query(models.User).filter(models.User.email == email).first()
+
+    except JWTError:
+        return None
 
 
 def require_education_admin(current_user: models.User):
@@ -400,9 +421,14 @@ def get_public_resource_detail(
 @router.get("/resources/{resource_id}/view", response_class=HTMLResponse)
 def view_protected_resource(
     resource_id: int,
+    token: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
+    current_user = get_user_from_token_param(token, db)
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     require_member_or_team(current_user)
 
     resource = (
