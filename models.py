@@ -924,6 +924,8 @@ class EducationResource(Base):
     external_url = Column(Text, nullable=True)
     cover_image_url = Column(Text, nullable=True)
 
+    price = Column(Float, default=0, nullable=False)
+
     description = Column(Text, nullable=True)
     content_text = Column(Text, nullable=True)
 
@@ -958,3 +960,31 @@ class EducationResource(Base):
         foreign_keys=[created_by],
         back_populates="education_resources_created",
     )
+
+
+class EducationAccessCode(Base):
+    __tablename__ = "education_access_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    resource_id = Column(
+        Integer,
+        ForeignKey("education_resources.id"),
+        nullable=False,
+    )
+
+    code = Column(String, unique=True, index=True, nullable=False)
+
+    buyer_name = Column(String, nullable=True)
+    buyer_email = Column(String, nullable=True)
+    buyer_phone = Column(String, nullable=True)
+
+    max_uses = Column(Integer, default=30, nullable=False)
+    uses_count = Column(Integer, default=0, nullable=False)
+
+    status = Column(String, default="active", nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+    resource = relationship("EducationResource")
