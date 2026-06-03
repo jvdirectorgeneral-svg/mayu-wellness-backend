@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from html import escape
 
 from database import SessionLocal
 from dependencies import get_current_user
@@ -13,10 +15,6 @@ import cloudinary.uploader
 
 router = APIRouter(prefix="/education", tags=["education"])
 
-
-# =========================
-# SCHEMAS
-# =========================
 
 class EducationCategoryCreate(BaseModel):
     name: str
@@ -34,14 +32,11 @@ class EducationResourceCreate(BaseModel):
     title: str
     category_id: Optional[int] = None
     resource_type: str = "pdf"
-
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
-
     description: Optional[str] = None
     content_text: Optional[str] = None
-
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -50,7 +45,6 @@ class EducationResourceCreate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
-
     active: bool = True
     free_for_members: bool = True
 
@@ -59,14 +53,11 @@ class EducationResourceUpdate(BaseModel):
     title: Optional[str] = None
     category_id: Optional[int] = None
     resource_type: Optional[str] = None
-
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
-
     description: Optional[str] = None
     content_text: Optional[str] = None
-
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -75,14 +66,9 @@ class EducationResourceUpdate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
-
     active: Optional[bool] = None
     free_for_members: Optional[bool] = None
 
-
-# =========================
-# DB
-# =========================
 
 def get_db():
     db = SessionLocal()
@@ -92,10 +78,6 @@ def get_db():
         db.close()
 
 
-# =========================
-# PERMISOS
-# =========================
-
 def require_education_admin(current_user: models.User):
     if not current_user:
         raise HTTPException(status_code=401, detail="No autenticado")
@@ -103,11 +85,7 @@ def require_education_admin(current_user: models.User):
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if current_user.role not in {
-        "superadmin",
-        "admin",
-        "education_admin",
-    }:
+    if current_user.role not in {"superadmin", "admin", "education_admin"}:
         raise HTTPException(
             status_code=403,
             detail="Acceso solo para Mayu Educación",
@@ -134,10 +112,6 @@ def require_member_or_team(current_user: models.User):
         )
 
 
-# =========================
-# CLOUDINARY
-# =========================
-
 def configure_cloudinary():
     cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
     api_key = os.getenv("CLOUDINARY_API_KEY")
@@ -157,10 +131,6 @@ def configure_cloudinary():
     )
 
 
-# =========================
-# SERIALIZADORES
-# =========================
-
 def category_to_dict(category: models.EducationCategory):
     return {
         "id": category.id,
@@ -171,15 +141,13 @@ def category_to_dict(category: models.EducationCategory):
     }
 
 
-def resource_to_dict(resource: models.EducationResource):
-    return {
+def resource_to_dict(resource: models.EducationResource, public: bool = False):
+    data = {
         "id": resource.id,
         "title": resource.title,
         "category_id": resource.category_id,
         "category_name": resource.category_rel.name if resource.category_rel else None,
         "resource_type": resource.resource_type,
-        "file_url": resource.file_url,
-        "external_url": resource.external_url,
         "cover_image_url": resource.cover_image_url,
         "description": resource.description,
         "content_text": resource.content_text,
@@ -196,12 +164,18 @@ def resource_to_dict(resource: models.EducationResource):
         "created_by": resource.created_by,
         "created_at": resource.created_at,
         "updated_at": resource.updated_at,
+        "protected_view_url": f"/education/resources/{resource.id}/view",
     }
 
+    if public:
+        data["file_url"] = None
+        data["external_url"] = resource.external_url if resource.resource_type == "link" else None
+    else:
+        data["file_url"] = resource.file_url
+        data["external_url"] = resource.external_url
 
-# =========================
-# CATEGORÍAS PÚBLICAS / SOCIOS
-# =========================
+    return data
+
 
 @router.get("/categories")
 def get_public_categories(
@@ -219,10 +193,6 @@ def get_public_categories(
 
     return {"items": [category_to_dict(c) for c in categories]}
 
-
-# =========================
-# CATEGORÍAS ADMIN
-# =========================
 
 @router.get("/admin/categories")
 def get_admin_categories(
@@ -372,10 +342,6 @@ def delete_category(
     }
 
 
-# =========================
-# RECURSOS PÚBLICOS / SOCIOS
-# =========================
-
 @router.get("/resources")
 def get_public_resources(
     category_id: Optional[int] = None,
@@ -406,7 +372,7 @@ def get_public_resources(
 
     resources = query.order_by(models.EducationResource.id.desc()).all()
 
-    return {"items": [resource_to_dict(r) for r in resources]}
+    return {"items": [resource_to_dict(r, public=True) for r in resources]}
 
 
 @router.get("/resources/{resource_id}")
@@ -428,12 +394,184 @@ def get_public_resource_detail(
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
-    return resource_to_dict(resource)
+    return resource_to_dict(resource, public=True)
 
 
-# =========================
-# RECURSOS ADMIN
-# =========================
+@router.get("/resources/{resource_id}/view", response_class=HTMLResponse)
+def view_protected_resource(
+    resource_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_member_or_team(current_user)
+
+    resource = (
+        db.query(models.EducationResource)
+        .filter(models.EducationResource.id == resource_id)
+        .filter(models.EducationResource.active == True)
+        .filter(models.EducationResource.free_for_members == True)
+        .first()
+    )
+
+    if not resource:
+        raise HTTPException(status_code=404, detail="Contenido no encontrado")
+
+    file_url = resource.file_url or ""
+    external_url = resource.external_url or ""
+    resource_type = resource.resource_type or ""
+    title = escape(resource.title or "Contenido Mayu")
+    user_name = escape(current_user.name or "Usuario Mayu")
+    user_email = escape(current_user.email or "")
+
+    safe_url = escape(file_url or external_url)
+
+    if not safe_url:
+        raise HTTPException(
+            status_code=404,
+            detail="Este contenido no tiene archivo o enlace disponible",
+        )
+
+    if resource_type == "video":
+        viewer = f"""
+        <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
+          oncontextmenu="return false;"
+          style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
+          <source src="{safe_url}">
+          Tu navegador no puede reproducir este video.
+        </video>
+        """
+    elif resource_type == "image":
+        viewer = f"""
+        <img src="{safe_url}" draggable="false"
+          style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
+        """
+    elif resource_type == "link":
+        viewer = f"""
+        <div class="box">
+          <p>Este recurso es un enlace externo protegido desde Mayu Educación.</p>
+          <a href="{safe_url}" target="_blank" rel="noopener noreferrer">Abrir recurso externo</a>
+        </div>
+        """
+    else:
+        viewer = f"""
+        <iframe
+          src="https://docs.google.com/gview?embedded=1&url={safe_url}"
+          style="width:100%;height:82vh;border:0;border-radius:16px;background:white;"
+          oncontextmenu="return false;">
+        </iframe>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>{title}</title>
+      <style>
+        body {{
+          margin: 0;
+          padding: 18px;
+          background: #f4f4f1;
+          font-family: Arial, sans-serif;
+          color: #1e1e1e;
+          user-select: none;
+          -webkit-user-select: none;
+        }}
+        .header {{
+          max-width: 1100px;
+          margin: 0 auto 14px auto;
+        }}
+        .viewer {{
+          max-width: 1100px;
+          margin: 0 auto;
+          position: relative;
+          background: white;
+          border-radius: 18px;
+          padding: 12px;
+          box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+          overflow: hidden;
+        }}
+        .watermark {{
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          z-index: 9999;
+          opacity: 0.14;
+          background-image: repeating-linear-gradient(
+            -35deg,
+            transparent 0px,
+            transparent 90px,
+            rgba(0, 128, 128, 0.18) 92px,
+            rgba(0, 128, 128, 0.18) 94px
+          );
+        }}
+        .watermark-text {{
+          position: fixed;
+          top: 45%;
+          left: 50%;
+          transform: translate(-50%, -50%) rotate(-25deg);
+          pointer-events: none;
+          z-index: 10000;
+          font-size: 32px;
+          font-weight: bold;
+          color: rgba(0, 128, 128, 0.22);
+          text-align: center;
+          white-space: pre-line;
+        }}
+        .notice {{
+          max-width: 1100px;
+          margin: 12px auto 0 auto;
+          font-size: 12px;
+          color: #555;
+          text-align: center;
+        }}
+        .box {{
+          padding: 24px;
+          text-align: center;
+        }}
+        a {{
+          color: teal;
+          font-weight: bold;
+        }}
+      </style>
+      <script>
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.addEventListener('keydown', function(e) {{
+          if (
+            e.key === 'PrintScreen' ||
+            (e.ctrlKey && ['s','p','u'].includes(e.key.toLowerCase())) ||
+            (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(e.key.toLowerCase()))
+          ) {{
+            e.preventDefault();
+            alert('Contenido protegido por Mayu Educación');
+            return false;
+          }}
+        }});
+      </script>
+    </head>
+    <body>
+      <div class="watermark"></div>
+      <div class="watermark-text">MAYU EDUCACIÓN\\n{user_name}\\n{user_email}</div>
+
+      <div class="header">
+        <h2>{title}</h2>
+        <p>Uso exclusivo para socios Mayu Educación.</p>
+      </div>
+
+      <div class="viewer">
+        {viewer}
+      </div>
+
+      <div class="notice">
+        Contenido protegido. No está permitida su descarga, copia, distribución ni reproducción no autorizada.
+      </div>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html)
+
 
 @router.get("/admin/resources")
 def get_admin_resources(
@@ -448,7 +586,7 @@ def get_admin_resources(
         .all()
     )
 
-    return {"items": [resource_to_dict(r) for r in resources]}
+    return {"items": [resource_to_dict(r, public=False) for r in resources]}
 
 
 @router.post("/resources")
@@ -502,7 +640,7 @@ def create_resource(
 
     return {
         "message": "Contenido educativo creado correctamente",
-        "resource": resource_to_dict(resource),
+        "resource": resource_to_dict(resource, public=False),
     }
 
 
@@ -562,7 +700,7 @@ def update_resource(
 
     return {
         "message": "Contenido educativo actualizado correctamente",
-        "resource": resource_to_dict(resource),
+        "resource": resource_to_dict(resource, public=False),
     }
 
 
@@ -591,10 +729,6 @@ def delete_resource(
         "resource_id": resource_id,
     }
 
-
-# =========================
-# SUBIDA DE ARCHIVOS
-# =========================
 
 @router.post("/upload-file")
 async def upload_education_file(
