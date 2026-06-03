@@ -498,7 +498,7 @@ def view_protected_resource(
     else:
         viewer = f"""
         <iframe
-          src="{safe_url}"
+          src="{safe_url}#toolbar=0&navpanes=0&scrollbar=1"
           style="width:100%;height:82vh;border:0;border-radius:16px;background:white;"
           oncontextmenu="return false;">
         </iframe>
@@ -798,7 +798,8 @@ async def upload_education_file(
             file.file,
             folder="mayu_education",
             resource_type=resource_type,
-            public_id=None,
+            use_filename=True,
+            unique_filename=True,
             overwrite=False,
         )
 
