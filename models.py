@@ -826,6 +826,11 @@ class MarketplaceOrder(Base):
     delivery_notes = Column(Text, nullable=True)
 
     subtotal = Column(Float, nullable=False, default=0)
+
+    discount_code = Column(String, nullable=True)
+    discount_percent = Column(Float, nullable=False, default=0)
+    discount_amount = Column(Float, nullable=False, default=0)
+
     total = Column(Float, nullable=False, default=0)
     currency = Column(String, nullable=False, default="USD")
 
