@@ -498,7 +498,7 @@ def view_protected_resource(
     else:
         viewer = f"""
         <iframe
-          src="https://docs.google.com/gview?embedded=1&url={safe_url}"
+          src="{safe_url}"
           style="width:100%;height:82vh;border:0;border-radius:16px;background:white;"
           oncontextmenu="return false;">
         </iframe>
