@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
+from datetime import datetime
 import os
 import cloudinary
 import cloudinary.uploader
@@ -59,6 +60,23 @@ class ProductUpdate(BaseModel):
     active: Optional[bool] = None
 
 
+class MarketplaceOrderItemCreate(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+class MarketplaceOrderCreate(BaseModel):
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    delivery_notes: Optional[str] = None
+    items: List[MarketplaceOrderItemCreate]
+    discount_code: Optional[str] = None
+    payment_method: str = "whatsapp"
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -112,6 +130,109 @@ def product_to_dict(product: models.MarketplaceProduct):
         "created_by": product.created_by,
         "created_at": product.created_at,
         "updated_at": product.updated_at,
+    }
+
+
+def order_to_dict(order: models.MarketplaceOrder):
+    return {
+        "id": order.id,
+        "order_code": order.order_code,
+        "user_id": order.user_id,
+        "customer_name": order.customer_name,
+        "customer_phone": order.customer_phone,
+        "customer_email": order.customer_email,
+        "city": order.city,
+        "address": order.address,
+        "delivery_notes": order.delivery_notes,
+        "subtotal": order.subtotal,
+        "discount_code": getattr(order, "discount_code", None),
+        "discount_percent": getattr(order, "discount_percent", 0),
+        "discount_amount": getattr(order, "discount_amount", 0),
+        "total": order.total,
+        "currency": order.currency,
+        "payment_method": order.payment_method,
+        "payment_status": order.payment_status,
+        "status": order.status,
+        "whatsapp_message": order.whatsapp_message,
+        "payphone_transaction_id": order.payphone_transaction_id,
+        "payphone_payment_url": order.payphone_payment_url,
+        "created_at": order.created_at,
+        "paid_at": order.paid_at,
+        "items": [
+            {
+                "id": item.id,
+                "product_id": item.product_id,
+                "product_name": item.product_name_snapshot,
+                "unit_price": item.unit_price_snapshot,
+                "quantity": item.quantity,
+                "total": item.total_snapshot,
+            }
+            for item in order.items
+        ],
+    }
+
+
+def generate_order_code():
+    now = datetime.utcnow()
+    return f"MP-MAYU-{now.strftime('%Y%m%d%H%M%S')}"
+
+
+def validate_member_discount_code(db: Session, discount_code: Optional[str]):
+    if not discount_code or not discount_code.strip():
+        return None
+
+    code = discount_code.strip()
+
+    member_card = (
+        db.query(models.MemberCard)
+        .filter(
+            (models.MemberCard.member_code == code)
+            | (models.MemberCard.qr_token == code)
+        )
+        .first()
+    )
+
+    if not member_card:
+        raise HTTPException(
+            status_code=400,
+            detail="Código de socio no válido",
+        )
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.id == member_card.user_id)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=400,
+            detail="Socio no encontrado",
+        )
+
+    if not getattr(user, "is_active", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Usuario inactivo. No aplica descuento.",
+        )
+
+    if not getattr(user, "membership_active", False):
+        raise HTTPException(
+            status_code=403,
+            detail="La membresía no está activa. No aplica descuento.",
+        )
+
+    if member_card.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail="Tarjeta de socio inactiva. No aplica descuento.",
+        )
+
+    return {
+        "user": user,
+        "member_card": member_card,
+        "discount_code": code,
+        "discount_percent": 10.0,
     }
 
 
@@ -487,3 +608,175 @@ def delete_product(
         "message": "Producto eliminado correctamente",
         "product_id": product_id,
     }
+
+
+@router.post("/orders")
+def create_marketplace_order(
+    payload: MarketplaceOrderCreate,
+    db: Session = Depends(get_db),
+):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="El carrito está vacío")
+
+    customer_name = payload.customer_name.strip()
+    customer_phone = payload.customer_phone.strip()
+
+    if not customer_name:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    if not customer_phone:
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    subtotal = 0.0
+    order_items_data = []
+
+    for item in payload.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="La cantidad debe ser mayor a cero",
+            )
+
+        product = (
+            db.query(models.MarketplaceProduct)
+            .filter(models.MarketplaceProduct.id == item.product_id)
+            .filter(models.MarketplaceProduct.active == True)
+            .first()
+        )
+
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Producto {item.product_id} no encontrado",
+            )
+
+        if product.stock < item.quantity:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stock insuficiente para {product.name}",
+            )
+
+        line_total = float(product.price) * int(item.quantity)
+        subtotal += line_total
+
+        order_items_data.append(
+            {
+                "product": product,
+                "quantity": item.quantity,
+                "line_total": line_total,
+            }
+        )
+
+    discount_info = validate_member_discount_code(db, payload.discount_code)
+
+    discount_code = None
+    discount_percent = 0.0
+    discount_amount = 0.0
+    user_id = None
+
+    if discount_info:
+        discount_code = discount_info["discount_code"]
+        discount_percent = discount_info["discount_percent"]
+        discount_amount = round(subtotal * (discount_percent / 100), 2)
+        user_id = discount_info["user"].id
+
+    total = round(subtotal - discount_amount, 2)
+
+    order = models.MarketplaceOrder(
+        order_code=generate_order_code(),
+        user_id=user_id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        customer_email=payload.customer_email,
+        city=payload.city,
+        address=payload.address,
+        delivery_notes=payload.delivery_notes,
+        subtotal=round(subtotal, 2),
+        discount_code=discount_code,
+        discount_percent=discount_percent,
+        discount_amount=discount_amount,
+        total=total,
+        currency="USD",
+        payment_method=payload.payment_method,
+        payment_status="pending",
+        status="created",
+    )
+
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+
+    for item_data in order_items_data:
+        product = item_data["product"]
+        quantity = item_data["quantity"]
+        line_total = item_data["line_total"]
+
+        order_item = models.MarketplaceOrderItem(
+            order_id=order.id,
+            product_id=product.id,
+            product_name_snapshot=product.name,
+            unit_price_snapshot=product.price,
+            quantity=quantity,
+            total_snapshot=round(line_total, 2),
+        )
+
+        product.stock = product.stock - quantity
+
+        db.add(order_item)
+
+    whatsapp_lines = [
+        f"Hola Mayu, deseo confirmar mi pedido {order.order_code}.",
+        f"Cliente: {order.customer_name}",
+        f"Teléfono: {order.customer_phone}",
+        f"Subtotal: ${order.subtotal:.2f} USD",
+    ]
+
+    if discount_amount > 0:
+        whatsapp_lines.append(
+            f"Descuento socio Mayu Club 10%: -${discount_amount:.2f} USD"
+        )
+
+    whatsapp_lines.append(f"Total: ${order.total:.2f} USD")
+
+    order.whatsapp_message = "\n".join(whatsapp_lines)
+
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "message": "Orden creada correctamente",
+        "order": order_to_dict(order),
+    }
+
+
+@router.get("/orders/{order_id}")
+def get_marketplace_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+):
+    order = (
+        db.query(models.MarketplaceOrder)
+        .filter(models.MarketplaceOrder.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    return order_to_dict(order)
+
+
+@router.get("/admin/orders")
+def get_admin_orders(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+
+    orders = (
+        db.query(models.MarketplaceOrder)
+        .order_by(models.MarketplaceOrder.id.desc())
+        .all()
+    )
+
+    return {"items": [order_to_dict(o) for o in orders]}
