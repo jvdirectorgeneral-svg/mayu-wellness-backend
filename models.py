@@ -134,6 +134,11 @@ class User(Base):
         back_populates="creator",
     )
 
+    education_orders = relationship(
+        "EducationOrder",
+        back_populates="user",
+    )
+
 
 class Ambassador(Base):
     __tablename__ = "ambassadors"
@@ -753,6 +758,7 @@ class MarketplaceCategory(Base):
         back_populates="category_rel",
     )
 
+
 class MarketplaceProduct(Base):
     __tablename__ = "marketplace_products"
 
@@ -806,6 +812,7 @@ class MarketplaceProduct(Base):
         "MarketplaceOrderItem",
         back_populates="product",
     )
+
 
 class MarketplaceOrder(Base):
     __tablename__ = "marketplace_orders"
@@ -965,6 +972,11 @@ class EducationResource(Base):
         back_populates="education_resources_created",
     )
 
+    order_items = relationship(
+        "EducationOrderItem",
+        back_populates="resource",
+    )
+
 
 class EducationAccessCode(Base):
     __tablename__ = "education_access_codes"
@@ -992,3 +1004,82 @@ class EducationAccessCode(Base):
     last_used_at = Column(DateTime, nullable=True)
 
     resource = relationship("EducationResource")
+
+
+class EducationOrder(Base):
+    __tablename__ = "education_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    order_code = Column(String, unique=True, nullable=False, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    buyer_name = Column(String, nullable=False)
+    buyer_phone = Column(String, nullable=False)
+    buyer_email = Column(String, nullable=True)
+
+    subtotal = Column(Float, nullable=False, default=0)
+    total = Column(Float, nullable=False, default=0)
+    currency = Column(String, nullable=False, default="USD")
+
+    payment_method = Column(String, nullable=False, default="whatsapp")
+    payment_status = Column(String, nullable=False, default="pending")
+    status = Column(String, nullable=False, default="created")
+
+    whatsapp_message = Column(Text, nullable=True)
+
+    payphone_transaction_id = Column(String, nullable=True, index=True)
+    payphone_payment_url = Column(Text, nullable=True)
+    raw_payment_payload = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    paid_at = Column(DateTime, nullable=True)
+
+    user = relationship(
+        "User",
+        back_populates="education_orders",
+    )
+
+    items = relationship(
+        "EducationOrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+
+
+class EducationOrderItem(Base):
+    __tablename__ = "education_order_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    order_id = Column(
+        Integer,
+        ForeignKey("education_orders.id"),
+        nullable=False,
+    )
+
+    resource_id = Column(
+        Integer,
+        ForeignKey("education_resources.id"),
+        nullable=False,
+    )
+
+    resource_title_snapshot = Column(String, nullable=False)
+    resource_type_snapshot = Column(String, nullable=True)
+
+    unit_price_snapshot = Column(Float, nullable=False, default=0)
+    quantity = Column(Integer, nullable=False, default=1)
+    total_snapshot = Column(Float, nullable=False, default=0)
+
+    access_code = Column(String, nullable=True)
+
+    order = relationship(
+        "EducationOrder",
+        back_populates="items",
+    )
+
+    resource = relationship(
+        "EducationResource",
+        back_populates="order_items",
+    )
