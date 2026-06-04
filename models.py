@@ -753,7 +753,6 @@ class MarketplaceCategory(Base):
         back_populates="category_rel",
     )
 
-
 class MarketplaceProduct(Base):
     __tablename__ = "marketplace_products"
 
@@ -770,6 +769,7 @@ class MarketplaceProduct(Base):
     stock = Column(Integer, default=0, nullable=False)
 
     image_url = Column(Text, nullable=True)
+    video_url = Column(Text, nullable=True)
 
     short_description = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
@@ -806,7 +806,6 @@ class MarketplaceProduct(Base):
         "MarketplaceOrderItem",
         back_populates="product",
     )
-
 
 class MarketplaceOrder(Base):
     __tablename__ = "marketplace_orders"
