@@ -32,6 +32,7 @@ class ProductCreate(BaseModel):
     price: float = 0
     stock: int = 0
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
     short_description: Optional[str] = None
     description: Optional[str] = None
     benefits: Optional[str] = None
@@ -49,6 +50,7 @@ class ProductUpdate(BaseModel):
     price: Optional[float] = None
     stock: Optional[int] = None
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
     short_description: Optional[str] = None
     description: Optional[str] = None
     benefits: Optional[str] = None
@@ -93,10 +95,7 @@ def require_pharmacy_admin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role not in {"superadmin", "admin", "pharmacy_admin"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para Farmacia Mayu",
-        )
+        raise HTTPException(status_code=403, detail="Acceso solo para Farmacia Mayu")
 
 
 def category_to_dict(category: models.MarketplaceCategory):
@@ -118,6 +117,7 @@ def product_to_dict(product: models.MarketplaceProduct):
         "price": product.price,
         "stock": product.stock,
         "image_url": product.image_url,
+        "video_url": getattr(product, "video_url", None),
         "short_description": product.short_description,
         "description": product.description,
         "benefits": product.benefits,
@@ -193,40 +193,21 @@ def validate_member_discount_code(db: Session, discount_code: Optional[str]):
     )
 
     if not member_card:
-        raise HTTPException(
-            status_code=400,
-            detail="Código de socio no válido",
-        )
+        raise HTTPException(status_code=400, detail="Código de socio no válido")
 
-    user = (
-        db.query(models.User)
-        .filter(models.User.id == member_card.user_id)
-        .first()
-    )
+    user = db.query(models.User).filter(models.User.id == member_card.user_id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=400,
-            detail="Socio no encontrado",
-        )
+        raise HTTPException(status_code=400, detail="Socio no encontrado")
 
     if not getattr(user, "is_active", True):
-        raise HTTPException(
-            status_code=403,
-            detail="Usuario inactivo. No aplica descuento.",
-        )
+        raise HTTPException(status_code=403, detail="Usuario inactivo. No aplica descuento.")
 
     if not getattr(user, "membership_active", False):
-        raise HTTPException(
-            status_code=403,
-            detail="La membresía no está activa. No aplica descuento.",
-        )
+        raise HTTPException(status_code=403, detail="La membresía no está activa. No aplica descuento.")
 
     if member_card.status != "active":
-        raise HTTPException(
-            status_code=403,
-            detail="Tarjeta de socio inactiva. No aplica descuento.",
-        )
+        raise HTTPException(status_code=403, detail="Tarjeta de socio inactiva. No aplica descuento.")
 
     return {
         "user": user,
@@ -244,10 +225,7 @@ def upload_marketplace_image(
     require_pharmacy_admin(current_user)
 
     if file.content_type not in ["image/jpeg", "image/png", "image/webp"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se permiten imágenes JPG, PNG o WEBP",
-        )
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes JPG, PNG o WEBP")
 
     try:
         cloudinary.config(
@@ -268,10 +246,7 @@ def upload_marketplace_image(
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error subiendo imagen: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Error subiendo imagen: {str(e)}")
 
 
 @router.get("/categories")
@@ -374,10 +349,7 @@ def update_category(
         )
 
         if duplicate:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe otra categoría con ese nombre",
-            )
+            raise HTTPException(status_code=400, detail="Ya existe otra categoría con ese nombre")
 
         category.name = name
 
@@ -440,10 +412,7 @@ def get_public_products(
     search: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    query = (
-        db.query(models.MarketplaceProduct)
-        .filter(models.MarketplaceProduct.active == True)
-    )
+    query = db.query(models.MarketplaceProduct).filter(models.MarketplaceProduct.active == True)
 
     if category_id:
         query = query.filter(models.MarketplaceProduct.category_id == category_id)
@@ -484,10 +453,7 @@ def create_product(
     name = payload.name.strip()
 
     if not name:
-        raise HTTPException(
-            status_code=400,
-            detail="El nombre del producto es obligatorio",
-        )
+        raise HTTPException(status_code=400, detail="El nombre del producto es obligatorio")
 
     if payload.category_id:
         category = (
@@ -505,6 +471,7 @@ def create_product(
         price=payload.price,
         stock=payload.stock,
         image_url=payload.image_url,
+        video_url=payload.video_url,
         short_description=payload.short_description,
         description=payload.description,
         benefits=payload.benefits,
@@ -568,10 +535,7 @@ def update_product(
             value = value.strip()
 
             if not value:
-                raise HTTPException(
-                    status_code=400,
-                    detail="El nombre del producto es obligatorio",
-                )
+                raise HTTPException(status_code=400, detail="El nombre del producto es obligatorio")
 
         setattr(product, field, value)
 
@@ -632,10 +596,7 @@ def create_marketplace_order(
 
     for item in payload.items:
         if item.quantity <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="La cantidad debe ser mayor a cero",
-            )
+            raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
 
         product = (
             db.query(models.MarketplaceProduct)
@@ -645,16 +606,10 @@ def create_marketplace_order(
         )
 
         if not product:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Producto {item.product_id} no encontrado",
-            )
+            raise HTTPException(status_code=404, detail=f"Producto {item.product_id} no encontrado")
 
         if product.stock < item.quantity:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Stock insuficiente para {product.name}",
-            )
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
 
         line_total = float(product.price) * int(item.quantity)
         subtotal += line_total
@@ -721,7 +676,6 @@ def create_marketplace_order(
         )
 
         product.stock = product.stock - quantity
-
         db.add(order_item)
 
     whatsapp_lines = [
@@ -732,9 +686,8 @@ def create_marketplace_order(
     ]
 
     if discount_amount > 0:
-        whatsapp_lines.append(
-            f"Descuento socio Mayu Club 10%: -${discount_amount:.2f} USD"
-        )
+        whatsapp_lines.append(f"Código socio Mayu Club: {discount_code}")
+        whatsapp_lines.append(f"Descuento socio Mayu Club 10%: -${discount_amount:.2f} USD")
 
     whatsapp_lines.append(f"Total: ${order.total:.2f} USD")
 
