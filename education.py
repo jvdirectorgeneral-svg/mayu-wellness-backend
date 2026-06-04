@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from html import escape
 from jose import jwt
 from datetime import datetime
@@ -90,6 +90,19 @@ class EducationAccessCodeCreate(BaseModel):
     buyer_email: Optional[str] = None
     buyer_phone: Optional[str] = None
     max_uses: int = 30
+
+
+class EducationCartItemCreate(BaseModel):
+    resource_id: int
+    quantity: int = 1
+
+
+class EducationOrderCreate(BaseModel):
+    buyer_name: str
+    buyer_email: Optional[str] = None
+    buyer_phone: str
+    items: List[EducationCartItemCreate]
+    payment_method: str = "whatsapp"
 
 
 def get_db():
@@ -204,6 +217,15 @@ def require_active_member_or_team(current_user: models.User):
 def generate_access_code():
     alphabet = string.ascii_uppercase + string.digits
     return "MAYU-EDU-" + "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+def generate_education_order_code():
+    now = datetime.utcnow()
+    random_code = "".join(
+        secrets.choice(string.ascii_uppercase + string.digits)
+        for _ in range(6)
+    )
+    return f"EDU-MAYU-{now.strftime('%Y%m%d%H%M%S')}-{random_code}"
 
 
 def get_valid_access_code(db: Session, resource_id: int, access_code: Optional[str]):
@@ -522,6 +544,108 @@ def get_store_resources(
     resources = query.order_by(models.EducationResource.id.desc()).all()
 
     return {"items": [resource_to_dict(r, public=True) for r in resources]}
+
+
+@router.post("/store/orders")
+def create_education_store_order(
+    payload: EducationOrderCreate,
+    db: Session = Depends(get_db),
+):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="El carrito está vacío")
+
+    buyer_name = payload.buyer_name.strip()
+    buyer_phone = payload.buyer_phone.strip()
+
+    if not buyer_name:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    if not buyer_phone:
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    order_code = generate_education_order_code()
+    subtotal = 0.0
+    items_data = []
+
+    for item in payload.items:
+        if item.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="La cantidad debe ser mayor a cero",
+            )
+
+        resource = (
+            db.query(models.EducationResource)
+            .filter(models.EducationResource.id == item.resource_id)
+            .filter(models.EducationResource.active == True)
+            .first()
+        )
+
+        if not resource:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Contenido {item.resource_id} no encontrado",
+            )
+
+        unit_price = float(getattr(resource, "price", 0) or 0)
+        line_total = unit_price * int(item.quantity)
+        subtotal += line_total
+
+        items_data.append(
+            {
+                "resource_id": resource.id,
+                "title": resource.title,
+                "resource_type": resource.resource_type,
+                "unit_price": round(unit_price, 2),
+                "quantity": item.quantity,
+                "total": round(line_total, 2),
+            }
+        )
+
+    total = round(subtotal, 2)
+
+    whatsapp_lines = [
+        f"Hola Mayu Educación, deseo confirmar mi pedido {order_code}.",
+        f"Cliente: {buyer_name}",
+        f"Teléfono: {buyer_phone}",
+    ]
+
+    if payload.buyer_email and payload.buyer_email.strip():
+        whatsapp_lines.append(f"Email: {payload.buyer_email.strip()}")
+
+    whatsapp_lines.append("")
+    whatsapp_lines.append("Contenidos solicitados:")
+
+    for item in items_data:
+        whatsapp_lines.append(
+            f"- {item['title']} | Cantidad: {item['quantity']} | "
+            f"Precio: ${item['unit_price']:.2f} | Subtotal: ${item['total']:.2f}"
+        )
+
+    whatsapp_lines.append("")
+    whatsapp_lines.append(f"Total: ${total:.2f} USD")
+    whatsapp_lines.append("Vengo desde el Marketplace Mayu Educación.")
+
+    whatsapp_message = "\n".join(whatsapp_lines)
+
+    return {
+        "message": "Orden educativa creada correctamente",
+        "order": {
+            "order_code": order_code,
+            "buyer_name": buyer_name,
+            "buyer_phone": buyer_phone,
+            "buyer_email": payload.buyer_email,
+            "subtotal": round(subtotal, 2),
+            "total": total,
+            "currency": "USD",
+            "payment_method": payload.payment_method,
+            "payment_status": "pending",
+            "status": "created",
+            "whatsapp_message": whatsapp_message,
+            "items": items_data,
+            "created_at": datetime.utcnow(),
+        },
+    }
 
 
 @router.post("/store/access-codes")
