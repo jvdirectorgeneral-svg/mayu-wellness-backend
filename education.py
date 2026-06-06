@@ -255,6 +255,37 @@ def get_public_categories(db: Session = Depends(get_db)):
     return {"items": [category_to_dict(c) for c in categories]}
 
 
+@router.get("/resources")
+def get_public_resources(
+    category_id: Optional[int] = None,
+    resource_type: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = (
+        db.query(models.EducationResource)
+        .filter(models.EducationResource.active == True)
+        .filter(models.EducationResource.free_for_members == True)
+    )
+
+    if category_id:
+        query = query.filter(models.EducationResource.category_id == category_id)
+
+    if resource_type and resource_type.strip():
+        query = query.filter(
+            models.EducationResource.resource_type == resource_type.strip()
+        )
+
+    if search and search.strip():
+        query = query.filter(
+            models.EducationResource.title.ilike(f"%{search.strip()}%")
+        )
+
+    resources = query.order_by(models.EducationResource.id.desc()).all()
+
+    return {"items": [resource_to_dict(r, public=True) for r in resources]}
+
+
 @router.get("/admin/categories")
 def get_admin_categories(
     db: Session = Depends(get_db),
@@ -697,20 +728,6 @@ def view_protected_resource(
           line-height: 1.55;
         }}
       </style>
-      <script>
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.addEventListener('keydown', function(e) {{
-          if (
-            e.key === 'PrintScreen' ||
-            (e.ctrlKey && ['s','p','u'].includes(e.key.toLowerCase())) ||
-            (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(e.key.toLowerCase()))
-          ) {{
-            e.preventDefault();
-            alert('Contenido protegido por Mayu Educación');
-            return false;
-          }}
-        }});
-      </script>
     </head>
     <body oncontextmenu="return false;">
       <div class="viewer">
