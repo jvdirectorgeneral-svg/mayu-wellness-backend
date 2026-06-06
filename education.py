@@ -36,15 +36,12 @@ class EducationResourceCreate(BaseModel):
     title: str
     category_id: Optional[int] = None
     resource_type: str = "pdf"
-
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
-
     price: float = 0
     description: Optional[str] = None
     content_text: Optional[str] = None
-
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -53,7 +50,6 @@ class EducationResourceCreate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
-
     active: bool = True
     free_for_members: bool = True
 
@@ -62,15 +58,12 @@ class EducationResourceUpdate(BaseModel):
     title: Optional[str] = None
     category_id: Optional[int] = None
     resource_type: Optional[str] = None
-
     file_url: Optional[str] = None
     external_url: Optional[str] = None
     cover_image_url: Optional[str] = None
-
     price: Optional[float] = None
     description: Optional[str] = None
     content_text: Optional[str] = None
-
     plant_common_name: Optional[str] = None
     plant_scientific_name: Optional[str] = None
     plant_family: Optional[str] = None
@@ -79,7 +72,6 @@ class EducationResourceUpdate(BaseModel):
     plant_parts_used: Optional[str] = None
     plant_preparation: Optional[str] = None
     plant_warnings: Optional[str] = None
-
     active: Optional[bool] = None
     free_for_members: Optional[bool] = None
 
@@ -90,6 +82,11 @@ class EducationAccessCodeCreate(BaseModel):
     buyer_email: Optional[str] = None
     buyer_phone: Optional[str] = None
     max_uses: int = 30
+
+
+class EducationAccessCodeValidate(BaseModel):
+    resource_id: int
+    access_code: str
 
 
 class EducationCartItemCreate(BaseModel):
@@ -114,104 +111,12 @@ def get_db():
 
 
 def configure_cloudinary():
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-    api_key = os.getenv("CLOUDINARY_API_KEY")
-    api_secret = os.getenv("CLOUDINARY_API_SECRET")
-
-    if not cloud_name or not api_key or not api_secret:
-        raise HTTPException(
-            status_code=500,
-            detail="Faltan variables CLOUDINARY en Render",
-        )
-
     cloudinary.config(
-        cloud_name=cloud_name,
-        api_key=api_key,
-        api_secret=api_secret,
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        api_key=os.getenv("CLOUDINARY_API_KEY"),
+        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
         secure=True,
     )
-
-
-def get_user_from_token_param(token: Optional[str], db: Session):
-    if not token:
-        return None
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
-        email = payload.get("email")
-        sub = payload.get("sub")
-        user_id = payload.get("user_id") or payload.get("id")
-
-        if email:
-            user = db.query(models.User).filter(models.User.email == email).first()
-            if user:
-                return user
-
-        if user_id:
-            user = db.query(models.User).filter(models.User.id == int(user_id)).first()
-            if user:
-                return user
-
-        if sub:
-            if str(sub).isdigit():
-                user = db.query(models.User).filter(models.User.id == int(sub)).first()
-                if user:
-                    return user
-
-            user = db.query(models.User).filter(models.User.email == sub).first()
-            if user:
-                return user
-
-    except Exception:
-        return None
-
-    return None
-
-
-def is_team_user(current_user: models.User):
-    return current_user.role in {
-        "superadmin",
-        "admin",
-        "education_admin",
-    }
-
-
-def require_education_admin(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    if current_user.role not in {"superadmin", "admin", "education_admin"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para Mayu Educación",
-        )
-
-
-def require_active_member_or_team(current_user: models.User):
-    if not current_user:
-        raise HTTPException(status_code=401, detail="No autenticado")
-
-    if not getattr(current_user, "is_active", True):
-        raise HTTPException(status_code=403, detail="Usuario inactivo")
-
-    if is_team_user(current_user):
-        return
-
-    if current_user.role not in {"member", "ambassador"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para socios Mayu",
-        )
-
-    if not getattr(current_user, "membership_active", False):
-        raise HTTPException(
-            status_code=403,
-            detail="Tu membresía no está activa. Regulariza tu pago para acceder a Mayu Educación.",
-        )
 
 
 def generate_access_code():
@@ -221,56 +126,19 @@ def generate_access_code():
 
 def generate_education_order_code():
     now = datetime.utcnow()
-    random_code = "".join(
-        secrets.choice(string.ascii_uppercase + string.digits)
-        for _ in range(6)
-    )
+    random_code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     return f"EDU-MAYU-{now.strftime('%Y%m%d%H%M%S')}-{random_code}"
 
 
-def get_valid_access_code(db: Session, resource_id: int, access_code: Optional[str]):
-    if not access_code:
-        return None
+def require_education_admin(current_user: models.User):
+    if not current_user or not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario no autorizado")
 
-    if not hasattr(models, "EducationAccessCode"):
-        raise HTTPException(
-            status_code=500,
-            detail="Falta crear el modelo EducationAccessCode en models.py",
-        )
-
-    code = (
-        db.query(models.EducationAccessCode)
-        .filter(models.EducationAccessCode.code == access_code.strip())
-        .filter(models.EducationAccessCode.resource_id == resource_id)
-        .first()
-    )
-
-    if not code:
-        return None
-
-    if getattr(code, "status", "active") != "active":
-        return None
-
-    if getattr(code, "uses_count", 0) >= getattr(code, "max_uses", 30):
-        code.status = "expired"
-        db.commit()
-        return None
-
-    return code
+    if current_user.role not in {"superadmin", "admin", "education_admin"}:
+        raise HTTPException(status_code=403, detail="Acceso solo para Mayu Educación")
 
 
-def consume_access_code(db: Session, code):
-    code.uses_count = (code.uses_count or 0) + 1
-    code.last_used_at = datetime.utcnow()
-
-    if code.uses_count >= code.max_uses:
-        code.status = "expired"
-
-    db.commit()
-    db.refresh(code)
-
-
-def category_to_dict(category: models.EducationCategory):
+def category_to_dict(category):
     return {
         "id": category.id,
         "name": category.name,
@@ -280,10 +148,10 @@ def category_to_dict(category: models.EducationCategory):
     }
 
 
-def resource_to_dict(resource: models.EducationResource, public: bool = False):
+def resource_to_dict(resource, public: bool = False):
     price = getattr(resource, "price", 0) or 0
 
-    data = {
+    return {
         "id": resource.id,
         "title": resource.title,
         "category_id": resource.category_id,
@@ -304,46 +172,62 @@ def resource_to_dict(resource: models.EducationResource, public: bool = False):
         "plant_warnings": resource.plant_warnings,
         "active": resource.active,
         "free_for_members": resource.free_for_members,
+        "file_url": None if public else resource.file_url,
+        "external_url": resource.external_url if resource.resource_type == "link" else (None if public else resource.external_url),
+        "protected_view_url": f"/education/resources/{resource.id}/view",
         "created_by": resource.created_by,
         "created_at": resource.created_at,
         "updated_at": resource.updated_at,
-        "protected_view_url": f"/education/resources/{resource.id}/view",
     }
 
-    if public:
-        data["file_url"] = None
-        data["external_url"] = resource.external_url if resource.resource_type == "link" else None
-    else:
-        data["file_url"] = resource.file_url
-        data["external_url"] = resource.external_url
 
-    return data
+def get_valid_access_code(db: Session, resource_id: int, access_code: Optional[str]):
+    if not access_code:
+        return None
+
+    code = (
+        db.query(models.EducationAccessCode)
+        .filter(models.EducationAccessCode.code == access_code.strip())
+        .filter(models.EducationAccessCode.resource_id == resource_id)
+        .first()
+    )
+
+    if not code or code.status != "active":
+        return None
+
+    if code.uses_count >= code.max_uses:
+        code.status = "expired"
+        db.commit()
+        return None
+
+    return code
+
+
+def consume_access_code(db: Session, code):
+    code.uses_count += 1
+    code.last_used_at = datetime.utcnow()
+
+    if code.uses_count >= code.max_uses:
+        code.status = "expired"
+
+    db.commit()
+    db.refresh(code)
 
 
 def cloudinary_pdf_page_url(url: str, page: int):
     if "/upload/" not in url:
         return url
-
-    return url.replace(
-        "/upload/",
-        f"/upload/f_jpg,pg_{page},q_auto,w_1400/",
-    )
+    return url.replace("/upload/", f"/upload/f_jpg,pg_{page},q_auto,w_1400/")
 
 
 @router.get("/categories")
-def get_public_categories(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    require_active_member_or_team(current_user)
-
+def get_public_categories(db: Session = Depends(get_db)):
     categories = (
         db.query(models.EducationCategory)
         .filter(models.EducationCategory.active == True)
         .order_by(models.EducationCategory.name.asc())
         .all()
     )
-
     return {"items": [category_to_dict(c) for c in categories]}
 
 
@@ -353,13 +237,7 @@ def get_admin_categories(
     current_user: models.User = Depends(get_current_user),
 ):
     require_education_admin(current_user)
-
-    categories = (
-        db.query(models.EducationCategory)
-        .order_by(models.EducationCategory.id.desc())
-        .all()
-    )
-
+    categories = db.query(models.EducationCategory).order_by(models.EducationCategory.id.desc()).all()
     return {"items": [category_to_dict(c) for c in categories]}
 
 
@@ -371,22 +249,8 @@ def create_category(
 ):
     require_education_admin(current_user)
 
-    name = payload.name.strip()
-
-    if not name:
-        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
-
-    existing = (
-        db.query(models.EducationCategory)
-        .filter(models.EducationCategory.name == name)
-        .first()
-    )
-
-    if existing:
-        raise HTTPException(status_code=400, detail="La categoría ya existe")
-
     category = models.EducationCategory(
-        name=name,
+        name=payload.name.strip(),
         description=payload.description,
         active=payload.active,
     )
@@ -395,10 +259,7 @@ def create_category(
     db.commit()
     db.refresh(category)
 
-    return {
-        "message": "Categoría educativa creada correctamente",
-        "category": category_to_dict(category),
-    }
+    return {"message": "Categoría educativa creada correctamente", "category": category_to_dict(category)}
 
 
 @router.put("/categories/{category_id}")
@@ -410,51 +271,18 @@ def update_category(
 ):
     require_education_admin(current_user)
 
-    category = (
-        db.query(models.EducationCategory)
-        .filter(models.EducationCategory.id == category_id)
-        .first()
-    )
+    category = db.query(models.EducationCategory).filter(models.EducationCategory.id == category_id).first()
 
     if not category:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
-    if payload.name is not None:
-        name = payload.name.strip()
-
-        if not name:
-            raise HTTPException(status_code=400, detail="El nombre es obligatorio")
-
-        duplicate = (
-            db.query(models.EducationCategory)
-            .filter(
-                models.EducationCategory.name == name,
-                models.EducationCategory.id != category_id,
-            )
-            .first()
-        )
-
-        if duplicate:
-            raise HTTPException(
-                status_code=400,
-                detail="Ya existe otra categoría con ese nombre",
-            )
-
-        category.name = name
-
-    if payload.description is not None:
-        category.description = payload.description
-
-    if payload.active is not None:
-        category.active = payload.active
+    for field, value in payload.dict(exclude_unset=True).items():
+        setattr(category, field, value.strip() if isinstance(value, str) else value)
 
     db.commit()
     db.refresh(category)
 
-    return {
-        "message": "Categoría educativa actualizada correctamente",
-        "category": category_to_dict(category),
-    }
+    return {"message": "Categoría educativa actualizada correctamente", "category": category_to_dict(category)}
 
 
 @router.delete("/categories/{category_id}")
@@ -465,65 +293,15 @@ def delete_category(
 ):
     require_education_admin(current_user)
 
-    category = (
-        db.query(models.EducationCategory)
-        .filter(models.EducationCategory.id == category_id)
-        .first()
-    )
+    category = db.query(models.EducationCategory).filter(models.EducationCategory.id == category_id).first()
 
     if not category:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
 
-    has_resources = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.category_id == category_id)
-        .first()
-    )
-
-    if has_resources:
-        raise HTTPException(
-            status_code=400,
-            detail="No puedes borrar una categoría que tiene contenidos. Primero mueve o elimina esos contenidos.",
-        )
-
     db.delete(category)
     db.commit()
 
-    return {
-        "message": "Categoría educativa eliminada correctamente",
-        "category_id": category_id,
-    }
-
-
-@router.get("/resources")
-def get_public_resources(
-    category_id: Optional[int] = None,
-    resource_type: Optional[str] = None,
-    search: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    require_active_member_or_team(current_user)
-
-    query = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.active == True)
-        .filter(models.EducationResource.free_for_members == True)
-    )
-
-    if category_id:
-        query = query.filter(models.EducationResource.category_id == category_id)
-
-    if resource_type and resource_type.strip():
-        query = query.filter(models.EducationResource.resource_type == resource_type.strip())
-
-    if search and search.strip():
-        clean_search = f"%{search.strip()}%"
-        query = query.filter(models.EducationResource.title.ilike(clean_search))
-
-    resources = query.order_by(models.EducationResource.id.desc()).all()
-
-    return {"items": [resource_to_dict(r, public=True) for r in resources]}
+    return {"message": "Categoría educativa eliminada correctamente", "category_id": category_id}
 
 
 @router.get("/store/resources")
@@ -538,11 +316,9 @@ def get_store_resources(
         query = query.filter(models.EducationResource.category_id == category_id)
 
     if search and search.strip():
-        clean_search = f"%{search.strip()}%"
-        query = query.filter(models.EducationResource.title.ilike(clean_search))
+        query = query.filter(models.EducationResource.title.ilike(f"%{search.strip()}%"))
 
     resources = query.order_by(models.EducationResource.id.desc()).all()
-
     return {"items": [resource_to_dict(r, public=True) for r in resources]}
 
 
@@ -554,26 +330,11 @@ def create_education_store_order(
     if not payload.items:
         raise HTTPException(status_code=400, detail="El carrito está vacío")
 
-    buyer_name = payload.buyer_name.strip()
-    buyer_phone = payload.buyer_phone.strip()
-
-    if not buyer_name:
-        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
-
-    if not buyer_phone:
-        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
-
     order_code = generate_education_order_code()
     subtotal = 0.0
     items_data = []
 
     for item in payload.items:
-        if item.quantity <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="La cantidad debe ser mayor a cero",
-            )
-
         resource = (
             db.query(models.EducationResource)
             .filter(models.EducationResource.id == item.resource_id)
@@ -582,66 +343,55 @@ def create_education_store_order(
         )
 
         if not resource:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Contenido {item.resource_id} no encontrado",
-            )
+            raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
-        unit_price = float(getattr(resource, "price", 0) or 0)
-        line_total = unit_price * int(item.quantity)
+        unit_price = float(resource.price or 0)
+        line_total = unit_price * item.quantity
         subtotal += line_total
 
-        items_data.append(
-            {
-                "resource_id": resource.id,
-                "title": resource.title,
-                "resource_type": resource.resource_type,
-                "unit_price": round(unit_price, 2),
-                "quantity": item.quantity,
-                "total": round(line_total, 2),
-            }
-        )
+        items_data.append({
+            "resource_id": resource.id,
+            "title": resource.title,
+            "unit_price": round(unit_price, 2),
+            "quantity": item.quantity,
+            "total": round(line_total, 2),
+        })
 
     total = round(subtotal, 2)
 
     whatsapp_lines = [
         f"Hola Mayu Educación, deseo confirmar mi pedido {order_code}.",
-        f"Cliente: {buyer_name}",
-        f"Teléfono: {buyer_phone}",
+        f"Cliente: {payload.buyer_name}",
+        f"Teléfono: {payload.buyer_phone}",
     ]
 
-    if payload.buyer_email and payload.buyer_email.strip():
-        whatsapp_lines.append(f"Email: {payload.buyer_email.strip()}")
+    if payload.buyer_email:
+        whatsapp_lines.append(f"Email: {payload.buyer_email}")
 
     whatsapp_lines.append("")
     whatsapp_lines.append("Contenidos solicitados:")
 
     for item in items_data:
         whatsapp_lines.append(
-            f"- {item['title']} | Cantidad: {item['quantity']} | "
-            f"Precio: ${item['unit_price']:.2f} | Subtotal: ${item['total']:.2f}"
+            f"- {item['title']} | Cantidad: {item['quantity']} | Subtotal: ${item['total']:.2f}"
         )
 
     whatsapp_lines.append("")
     whatsapp_lines.append(f"Total: ${total:.2f} USD")
-    whatsapp_lines.append("Vengo desde el Marketplace Mayu Educación.")
-
-    whatsapp_message = "\n".join(whatsapp_lines)
 
     return {
         "message": "Orden educativa creada correctamente",
         "order": {
             "order_code": order_code,
-            "buyer_name": buyer_name,
-            "buyer_phone": buyer_phone,
+            "buyer_name": payload.buyer_name,
             "buyer_email": payload.buyer_email,
+            "buyer_phone": payload.buyer_phone,
             "subtotal": round(subtotal, 2),
             "total": total,
             "currency": "USD",
-            "payment_method": payload.payment_method,
             "payment_status": "pending",
             "status": "created",
-            "whatsapp_message": whatsapp_message,
+            "whatsapp_message": "\n".join(whatsapp_lines),
             "items": items_data,
             "created_at": datetime.utcnow(),
         },
@@ -656,33 +406,20 @@ def create_access_code(
 ):
     require_education_admin(current_user)
 
-    if not hasattr(models, "EducationAccessCode"):
-        raise HTTPException(
-            status_code=500,
-            detail="Falta crear el modelo EducationAccessCode en models.py",
-        )
-
-    resource = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.id == payload.resource_id)
-        .first()
-    )
+    resource = db.query(models.EducationResource).filter(models.EducationResource.id == payload.resource_id).first()
 
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
-    code_value = generate_access_code()
-
     access = models.EducationAccessCode(
         resource_id=payload.resource_id,
-        code=code_value,
+        code=generate_access_code(),
         buyer_name=payload.buyer_name,
         buyer_email=payload.buyer_email,
         buyer_phone=payload.buyer_phone,
         max_uses=payload.max_uses,
         uses_count=0,
         status="active",
-        created_at=datetime.utcnow(),
     )
 
     db.add(access)
@@ -700,53 +437,37 @@ def create_access_code(
     }
 
 
-@router.get("/resources/{resource_id}")
-def get_public_resource_detail(
-    resource_id: int,
+@router.post("/store/access-codes/validate")
+def validate_access_code(
+    payload: EducationAccessCodeValidate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
-    require_active_member_or_team(current_user)
+    access = get_valid_access_code(db, payload.resource_id, payload.access_code)
 
-    resource = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.id == resource_id)
-        .filter(models.EducationResource.active == True)
-        .filter(models.EducationResource.free_for_members == True)
-        .first()
-    )
+    if not access:
+        raise HTTPException(status_code=401, detail="Código inválido, caducado o sin accesos disponibles")
 
-    if not resource:
-        raise HTTPException(status_code=404, detail="Contenido no encontrado")
-
-    return resource_to_dict(resource, public=True)
+    return {
+        "message": "Código válido",
+        "resource_id": access.resource_id,
+        "code": access.code,
+        "uses_count": access.uses_count,
+        "max_uses": access.max_uses,
+        "remaining_uses": access.max_uses - access.uses_count,
+        "view_url": f"/education/resources/{access.resource_id}/view?access_code={access.code}",
+    }
 
 
 @router.get("/resources/{resource_id}/view", response_class=HTMLResponse)
 def view_protected_resource(
     resource_id: int,
-    token: Optional[str] = Query(default=None),
     access_code: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    current_user = get_user_from_token_param(token, db)
-    access = None
+    access = get_valid_access_code(db, resource_id, access_code)
 
-    if current_user:
-        require_active_member_or_team(current_user)
-        viewer_name = current_user.name or "Usuario Mayu"
-        viewer_email = current_user.email or ""
-    else:
-        access = get_valid_access_code(db, resource_id, access_code)
-
-        if not access:
-            raise HTTPException(
-                status_code=401,
-                detail="Acceso no autorizado o código caducado",
-            )
-
-        viewer_name = access.buyer_name or "Comprador Mayu Educación"
-        viewer_email = access.buyer_email or access.code
+    if not access:
+        raise HTTPException(status_code=401, detail="Acceso no autorizado o código caducado")
 
     resource = (
         db.query(models.EducationResource)
@@ -758,16 +479,15 @@ def view_protected_resource(
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
-    if not current_user and access:
-        consume_access_code(db, access)
+    consume_access_code(db, access)
 
     file_url = resource.file_url or ""
     external_url = resource.external_url or ""
+    safe_url = escape(file_url or external_url)
     resource_type = resource.resource_type or ""
     title = escape(resource.title or "Contenido Mayu")
-    user_name = escape(viewer_name)
-    user_email = escape(viewer_email)
-    safe_url = escape(file_url or external_url)
+    user_name = escape(access.buyer_name or "Comprador Mayu Educación")
+    user_email = escape(access.buyer_email or access.code)
 
     if resource_type in {"plant_card", "plant_registry"} and not safe_url:
         viewer = f"""
@@ -784,25 +504,17 @@ def view_protected_resource(
         </div>
         """
     elif not safe_url:
-        raise HTTPException(
-            status_code=404,
-            detail="Este contenido no tiene archivo o enlace disponible",
-        )
+        raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
     elif resource_type == "video":
         viewer = f"""
-        <div class="video-wrap">
-          <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
-            oncontextmenu="return false;"
-            style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
-            <source src="{safe_url}">
-            Tu navegador no puede reproducir este video.
-          </video>
-          <div class="video-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
-        </div>
+        <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
+          oncontextmenu="return false;"
+          style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
+          <source src="{safe_url}">
+        </video>
         """
     elif resource_type in {"pdf", "document"}:
         pages_html = ""
-
         for page in range(1, 81):
             page_url = escape(cloudinary_pdf_page_url(file_url or external_url, page))
             pages_html += f"""
@@ -813,19 +525,11 @@ def view_protected_resource(
               <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
             </div>
             """
-
-        viewer = f"""
-        <div oncontextmenu="return false;">
-          {pages_html}
-        </div>
-        """
+        viewer = pages_html
     else:
         viewer = f"""
-        <div class="page-wrap">
-          <img src="{safe_url}" draggable="false"
-            style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
-          <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
-        </div>
+        <img src="{safe_url}" draggable="false"
+          style="width:100%;max-height:80vh;object-fit:contain;border-radius:16px;user-select:none;" />
         """
 
     html = f"""
@@ -843,111 +547,40 @@ def view_protected_resource(
           font-family: Arial, sans-serif;
           color: #1e1e1e;
           user-select: none;
-          -webkit-user-select: none;
-        }}
-        .header {{
-          max-width: 1100px;
-          margin: 0 auto 14px auto;
         }}
         .viewer {{
           max-width: 1100px;
           margin: 0 auto;
-          position: relative;
           background: white;
           border-radius: 18px;
           padding: 12px;
           box-shadow: 0 4px 18px rgba(0,0,0,0.08);
-          overflow: hidden;
         }}
-        .watermark {{
-          position: fixed;
-          inset: 0;
-          pointer-events: none;
-          z-index: 9999;
-          opacity: 0.10;
-          background-image: repeating-linear-gradient(
-            -35deg,
-            transparent 0px,
-            transparent 90px,
-            rgba(0, 128, 128, 0.18) 92px,
-            rgba(0, 128, 128, 0.18) 94px
-          );
-        }}
-        .watermark-text {{
-          position: fixed;
-          top: 45%;
-          left: 50%;
-          transform: translate(-50%, -50%) rotate(-25deg);
-          pointer-events: none;
-          z-index: 10000;
-          font-size: 32px;
-          font-weight: bold;
-          color: rgba(0, 128, 128, 0.22);
-          text-align: center;
-          white-space: pre-line;
-        }}
-        .video-wrap, .page-wrap {{
+        .page-wrap {{
           position: relative;
         }}
-        .video-watermark, .page-watermark {{
+        .page-watermark {{
           position: absolute;
           top: 40%;
           left: 50%;
           transform: translate(-50%, -50%) rotate(-25deg);
-          color: rgba(0, 128, 128, 0.26);
+          color: rgba(0,128,128,0.26);
           font-weight: bold;
           font-size: 30px;
           text-align: center;
           pointer-events: none;
-          z-index: 20;
-          text-shadow: 0 2px 8px rgba(255,255,255,0.40);
-        }}
-        .video-watermark {{
-          color: rgba(255,255,255,0.30);
-          text-shadow: 0 2px 8px rgba(0,0,0,0.35);
-        }}
-        .notice {{
-          max-width: 1100px;
-          margin: 12px auto 0 auto;
-          font-size: 12px;
-          color: #555;
-          text-align: center;
         }}
         .box {{
           padding: 24px;
           line-height: 1.55;
         }}
       </style>
-      <script>
-        document.addEventListener('contextmenu', event => event.preventDefault());
-        document.addEventListener('keydown', function(e) {{
-          if (
-            e.key === 'PrintScreen' ||
-            (e.ctrlKey && ['s','p','u'].includes(e.key.toLowerCase())) ||
-            (e.ctrlKey && e.shiftKey && ['i','j','c'].includes(e.key.toLowerCase()))
-          ) {{
-            e.preventDefault();
-            alert('Contenido protegido por Mayu Educación');
-            return false;
-          }}
-        }});
-      </script>
     </head>
-    <body>
-      <div class="watermark"></div>
-      <div class="watermark-text">MAYU EDUCACIÓN\\n{user_name}\\n{user_email}</div>
-
-      <div class="header">
-        <h2>{title}</h2>
-        <p>Uso exclusivo Mayu Educación.</p>
-      </div>
-
+    <body oncontextmenu="return false;">
       <div class="viewer">
+        <h2>{title}</h2>
+        <p>Acceso protegido Mayu Educación. Usos restantes después de este ingreso: {max(access.max_uses - access.uses_count, 0)}</p>
         {viewer}
-      </div>
-
-      <div class="notice">
-        Contenido protegido. No está permitida su descarga, copia, distribución ni reproducción no autorizada.
       </div>
     </body>
     </html>
@@ -962,13 +595,7 @@ def get_admin_resources(
     current_user: models.User = Depends(get_current_user),
 ):
     require_education_admin(current_user)
-
-    resources = (
-        db.query(models.EducationResource)
-        .order_by(models.EducationResource.id.desc())
-        .all()
-    )
-
+    resources = db.query(models.EducationResource).order_by(models.EducationResource.id.desc()).all()
     return {"items": [resource_to_dict(r, public=False) for r in resources]}
 
 
@@ -980,28 +607,14 @@ def create_resource(
 ):
     require_education_admin(current_user)
 
-    title = payload.title.strip()
-
-    if not title:
-        raise HTTPException(status_code=400, detail="El título es obligatorio")
-
-    if payload.category_id:
-        category = (
-            db.query(models.EducationCategory)
-            .filter(models.EducationCategory.id == payload.category_id)
-            .first()
-        )
-
-        if not category:
-            raise HTTPException(status_code=404, detail="Categoría no encontrada")
-
     resource = models.EducationResource(
-        title=title,
+        title=payload.title.strip(),
         category_id=payload.category_id,
         resource_type=payload.resource_type.strip(),
         file_url=payload.file_url,
         external_url=payload.external_url,
         cover_image_url=payload.cover_image_url,
+        price=payload.price,
         description=payload.description,
         content_text=payload.content_text,
         plant_common_name=payload.plant_common_name,
@@ -1017,17 +630,11 @@ def create_resource(
         created_by=current_user.id,
     )
 
-    if hasattr(resource, "price"):
-        resource.price = payload.price
-
     db.add(resource)
     db.commit()
     db.refresh(resource)
 
-    return {
-        "message": "Contenido educativo creado correctamente",
-        "resource": resource_to_dict(resource, public=False),
-    }
+    return {"message": "Contenido educativo creado correctamente", "resource": resource_to_dict(resource, public=False)}
 
 
 @router.put("/resources/{resource_id}")
@@ -1039,55 +646,23 @@ def update_resource(
 ):
     require_education_admin(current_user)
 
-    resource = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.id == resource_id)
-        .first()
-    )
+    resource = db.query(models.EducationResource).filter(models.EducationResource.id == resource_id).first()
 
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
 
-    if payload.category_id is not None:
-        if payload.category_id != 0:
-            category = (
-                db.query(models.EducationCategory)
-                .filter(models.EducationCategory.id == payload.category_id)
-                .first()
-            )
-
-            if not category:
-                raise HTTPException(status_code=404, detail="Categoría no encontrada")
-
-            resource.category_id = payload.category_id
-        else:
-            resource.category_id = None
+    if payload.category_id == 0:
+        resource.category_id = None
 
     for field, value in payload.dict(exclude_unset=True).items():
-        if field == "category_id":
+        if field == "category_id" and value == 0:
             continue
-
-        if field == "price" and not hasattr(resource, "price"):
-            continue
-
-        if field == "title" and value is not None:
-            value = value.strip()
-
-            if not value:
-                raise HTTPException(status_code=400, detail="El título es obligatorio")
-
-        if field == "resource_type" and value is not None:
-            value = value.strip()
-
-        setattr(resource, field, value)
+        setattr(resource, field, value.strip() if isinstance(value, str) else value)
 
     db.commit()
     db.refresh(resource)
 
-    return {
-        "message": "Contenido educativo actualizado correctamente",
-        "resource": resource_to_dict(resource, public=False),
-    }
+    return {"message": "Contenido educativo actualizado correctamente", "resource": resource_to_dict(resource, public=False)}
 
 
 @router.delete("/resources/{resource_id}")
@@ -1098,11 +673,7 @@ def delete_resource(
 ):
     require_education_admin(current_user)
 
-    resource = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.id == resource_id)
-        .first()
-    )
+    resource = db.query(models.EducationResource).filter(models.EducationResource.id == resource_id).first()
 
     if not resource:
         raise HTTPException(status_code=404, detail="Contenido no encontrado")
@@ -1110,10 +681,7 @@ def delete_resource(
     db.delete(resource)
     db.commit()
 
-    return {
-        "message": "Contenido educativo eliminado correctamente",
-        "resource_id": resource_id,
-    }
+    return {"message": "Contenido educativo eliminado correctamente", "resource_id": resource_id}
 
 
 @router.post("/upload-file")
@@ -1135,10 +703,7 @@ async def upload_education_file(
                 detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.",
             )
 
-        if content_type.startswith("video/"):
-            resource_type = "video"
-        else:
-            resource_type = "image"
+        resource_type = "video" if content_type.startswith("video/") else "image"
 
         result = cloudinary.uploader.upload(
             file.file,
@@ -1160,9 +725,5 @@ async def upload_education_file(
 
     except HTTPException:
         raise
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo subir el archivo: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"No se pudo subir el archivo: {str(e)}")
