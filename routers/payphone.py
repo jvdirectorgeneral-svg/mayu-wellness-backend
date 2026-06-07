@@ -65,9 +65,9 @@ def cents(amount: float) -> int:
     return int(round(float(amount) * 100))
 
 
-def generate_client_transaction_id(prefix: str = "MWC") -> str:
+def generate_client_transaction_id(prefix: str = "MW") -> str:
     raw = f"{prefix}{int(time.time())}"
-    return raw[-15:]
+    return raw[:15]
 
 
 def payphone_headers():
@@ -279,7 +279,7 @@ def create_payment_link(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    client_transaction_id = generate_client_transaction_id("MWC")
+    client_transaction_id = generate_client_transaction_id("MW")
 
     data = create_payphone_link(
         amount=payload.amount,
@@ -315,7 +315,7 @@ def create_membership_initial_payment(
     signup_amount = get_signup_amount_by_level(payload.plan_level)
     monthly_amount = get_monthly_amount_by_level(payload.plan_level)
 
-    client_transaction_id = generate_client_transaction_id("MWC")
+    client_transaction_id = generate_client_transaction_id("MW")
     description = f"MWC Primer Pago Nivel {payload.plan_level}"
 
     user.membership_level = payload.plan_level
