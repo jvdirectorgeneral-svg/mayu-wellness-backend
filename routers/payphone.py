@@ -128,8 +128,6 @@ def create_payphone_link(
         "storeId": str(PAYPHONE_STORE_ID),
         "currency": "USD",
         "reference": safe_reference,
-        "oneTime": True,
-        "expireIn": 24,
     }
 
     url = f"{PAYPHONE_BASE_URL}/Links"
