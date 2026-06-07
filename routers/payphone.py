@@ -97,7 +97,7 @@ def get_monthly_amount_by_level(level: int) -> float:
 
 
 def get_signup_amount_by_level(level: int) -> float:
-    return get_monthly_amount_by_level(level) + 5.00
+    return 1.00
 
 
 def safe_set(obj, attr, value):
@@ -354,7 +354,7 @@ def create_membership_initial_payment(
         "plan_level": payload.plan_level,
         "signup_amount": signup_amount,
         "monthly_amount": monthly_amount,
-        "signup_fee": 5.00,
+        "signup_fee": 0.00,
         "clientTransactionId": client_transaction_id,
         "payphone": payphone_data,
     }
