@@ -24,13 +24,10 @@ PAYPHONE_BASE_URL = os.getenv(
 )
 PAYPHONE_RESPONSE_URL = os.getenv(
     "PAYPHONE_RESPONSE_URL",
-    "https://mayuwellnesclub.com/payphone/response",
+    "https://mayu-wellness-backend-v1.onrender.com/payphone/response",
 )
 
 
-# =========================
-# DB
-# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -39,9 +36,6 @@ def get_db():
         db.close()
 
 
-# =========================
-# MODELOS REQUEST
-# =========================
 class PayphoneCreateLinkRequest(BaseModel):
     amount: float
     description: str
@@ -67,9 +61,6 @@ class PayphoneConfirmRequest(BaseModel):
     transactionId: Optional[str] = None
 
 
-# =========================
-# HELPERS
-# =========================
 def cents(amount: float) -> int:
     return int(round(float(amount) * 100))
 
@@ -130,12 +121,20 @@ def create_payphone_link(
     subtotal = cents(amount)
     safe_reference = (description or "Mayu Wellness Club")[:50]
 
+    try:
+        store_id_value = int(PAYPHONE_STORE_ID)
+    except ValueError:
+        raise HTTPException(
+            status_code=500,
+            detail="PAYPHONE_STORE_ID debe ser numérico",
+        )
+
     body = {
         "amount": subtotal,
         "amountWithoutTax": subtotal,
         "tax": 0,
         "clientTransactionId": client_transaction_id,
-        "storeId": PAYPHONE_STORE_ID,
+        "storeId": store_id_value,
         "currency": "USD",
         "reference": safe_reference,
         "responseUrl": PAYPHONE_RESPONSE_URL,
@@ -271,9 +270,6 @@ def create_initial_monthly_selection_if_possible(db: Session, user: models.User)
     return selection
 
 
-# =========================
-# HEALTH
-# =========================
 @router.get("/health")
 def payphone_health():
     return {
@@ -282,12 +278,10 @@ def payphone_health():
         "store_id_configured": bool(PAYPHONE_STORE_ID),
         "token_configured": bool(PAYPHONE_TOKEN),
         "base_url": PAYPHONE_BASE_URL,
+        "response_url": PAYPHONE_RESPONSE_URL,
     }
 
 
-# =========================
-# LINK GENERAL
-# =========================
 @router.post("/create-link")
 def create_payment_link(
     payload: PayphoneCreateLinkRequest,
@@ -314,9 +308,6 @@ def create_payment_link(
     }
 
 
-# =========================
-# MEMBRESÍA SOCIO: PRIMER PAGO
-# =========================
 @router.post("/membership/create-initial-payment")
 def create_membership_initial_payment(
     payload: PayphoneMembershipInitialRequest,
@@ -334,7 +325,6 @@ def create_membership_initial_payment(
     monthly_amount = get_monthly_amount_by_level(payload.plan_level)
 
     client_transaction_id = generate_client_transaction_id("MWC")
-
     description = f"MWC Primer Pago Nivel {payload.plan_level}"
 
     user.membership_level = payload.plan_level
@@ -379,9 +369,6 @@ def create_membership_initial_payment(
     }
 
 
-# =========================
-# CONFIRMAR PAGO GENERAL
-# =========================
 @router.post("/confirm")
 def confirm_payment(
     payload: PayphoneConfirmRequest,
@@ -401,9 +388,6 @@ def confirm_payment(
     }
 
 
-# =========================
-# CONFIRMAR PRIMER PAGO SOCIO
-# =========================
 @router.post("/membership/confirm-initial-payment")
 def confirm_membership_initial_payment(
     payload: PayphoneConfirmRequest,
@@ -492,9 +476,6 @@ def confirm_membership_initial_payment(
     }
 
 
-# =========================
-# WEBHOOK PAYPHONE
-# =========================
 @router.post("/webhook")
 async def payphone_webhook(
     payload: dict,
@@ -527,7 +508,6 @@ async def payphone_webhook(
         }
 
     user = db.query(models.User).filter(models.User.id == payment.user_id).first()
-
     paid = is_payphone_paid(payload)
 
     if paid:
@@ -554,9 +534,6 @@ async def payphone_webhook(
     }
 
 
-# =========================
-# RESPONSE URL
-# =========================
 @router.get("/response")
 def payphone_response(
     id: Optional[str] = None,
