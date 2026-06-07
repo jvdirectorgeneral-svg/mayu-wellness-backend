@@ -1,6 +1,7 @@
 import os
 import time
-import uuid
+import json
+from datetime import datetime
 from typing import Optional, Literal
 
 import requests
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from dependencies import get_current_user
-from models import User
+import models
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -27,6 +28,9 @@ PAYPHONE_RESPONSE_URL = os.getenv(
 )
 
 
+# =========================
+# DB
+# =========================
 def get_db():
     db = SessionLocal()
     try:
@@ -35,6 +39,9 @@ def get_db():
         db.close()
 
 
+# =========================
+# MODELOS REQUEST
+# =========================
 class PayphoneCreateLinkRequest(BaseModel):
     amount: float
     description: str
@@ -49,21 +56,25 @@ class PayphoneCreateLinkRequest(BaseModel):
     buyer_name: Optional[str] = None
 
 
+class PayphoneMembershipInitialRequest(BaseModel):
+    user_id: int
+    plan_level: int
+
+
 class PayphoneConfirmRequest(BaseModel):
     id: Optional[int] = None
     clientTransactionId: Optional[str] = None
     transactionId: Optional[str] = None
 
 
+# =========================
+# HELPERS
+# =========================
 def cents(amount: float) -> int:
-    return int(round(amount * 100))
+    return int(round(float(amount) * 100))
 
 
 def generate_client_transaction_id(prefix: str = "MWC") -> str:
-    """
-    PayPhone suele pedir clientTransactionId corto y único.
-    Máximo recomendado: 15 caracteres.
-    """
     raw = f"{prefix}{int(time.time())}"
     return raw[-15:]
 
@@ -81,40 +92,42 @@ def payphone_headers():
     }
 
 
-@router.get("/health")
-def payphone_health():
-    return {
-        "status": "ok",
-        "provider": "PayPhone",
-        "store_id_configured": bool(PAYPHONE_STORE_ID),
-        "token_configured": bool(PAYPHONE_TOKEN),
-        "base_url": PAYPHONE_BASE_URL,
+def get_monthly_amount_by_level(level: int) -> float:
+    prices = {
+        1: 40.00,
+        2: 50.00,
+        3: 60.00,
     }
 
+    if level not in prices:
+        raise HTTPException(status_code=400, detail="Nivel de plan inválido")
 
-@router.post("/create-link")
-def create_payment_link(
-    payload: PayphoneCreateLinkRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    return prices[level]
+
+
+def get_signup_amount_by_level(level: int) -> float:
+    return get_monthly_amount_by_level(level) + 5.00
+
+
+def safe_set(obj, attr, value):
+    if hasattr(obj, attr):
+        setattr(obj, attr, value)
+
+
+def create_payphone_link(
+    amount: float,
+    description: str,
+    client_transaction_id: str,
+    buyer_email: Optional[str] = None,
+    buyer_name: Optional[str] = None,
 ):
-    """
-    Crea un link de pago PayPhone para:
-    - Primer pago socio
-    - Pago mensual socio
-    - Marketplace Farmacia
-    - Marketplace Educación
-    """
-
     if not PAYPHONE_STORE_ID:
         raise HTTPException(
             status_code=500,
             detail="PAYPHONE_STORE_ID no configurado en Render",
         )
 
-    client_transaction_id = generate_client_transaction_id("MWC")
-
-    subtotal = cents(payload.amount)
+    subtotal = cents(amount)
 
     body = {
         "amount": subtotal,
@@ -123,15 +136,15 @@ def create_payment_link(
         "clientTransactionId": client_transaction_id,
         "storeId": PAYPHONE_STORE_ID,
         "currency": "USD",
-        "reference": payload.description,
+        "reference": description,
         "responseUrl": PAYPHONE_RESPONSE_URL,
     }
 
-    if payload.buyer_email:
-        body["email"] = payload.buyer_email
+    if buyer_email:
+        body["email"] = buyer_email
 
-    if payload.buyer_name:
-        body["clientName"] = payload.buyer_name
+    if buyer_name:
+        body["clientName"] = buyer_name
 
     url = f"{PAYPHONE_BASE_URL}/Links"
 
@@ -157,51 +170,37 @@ def create_payment_link(
             },
         )
 
-    data = response.json()
-
-    return {
-        "success": True,
-        "payment_type": payload.payment_type,
-        "amount": payload.amount,
-        "clientTransactionId": client_transaction_id,
-        "reference_id": payload.reference_id,
-        "payphone": data,
-    }
+    return response.json()
 
 
-@router.post("/confirm")
-def confirm_payment(
-    payload: PayphoneConfirmRequest,
-    db: Session = Depends(get_db),
+def confirm_payphone_transaction(
+    id: Optional[int] = None,
+    clientTransactionId: Optional[str] = None,
+    transactionId: Optional[str] = None,
 ):
-    """
-    Confirma una transacción PayPhone.
-    Este endpoint se usará después del retorno de PayPhone o webhook.
-    """
-
-    if not payload.id and not payload.clientTransactionId and not payload.transactionId:
+    if not id and not clientTransactionId and not transactionId:
         raise HTTPException(
             status_code=400,
             detail="Debes enviar id, transactionId o clientTransactionId",
         )
 
-    body = {}
+    params = {}
 
-    if payload.id:
-        body["id"] = payload.id
+    if id:
+        params["id"] = id
 
-    if payload.clientTransactionId:
-        body["clientTransactionId"] = payload.clientTransactionId
+    if clientTransactionId:
+        params["clientTransactionId"] = clientTransactionId
 
-    if payload.transactionId:
-        body["transactionId"] = payload.transactionId
+    if transactionId:
+        params["transactionId"] = transactionId
 
     url = f"{PAYPHONE_BASE_URL}/Sale"
 
     try:
         response = requests.get(
             url,
-            params=body,
+            params=params,
             headers=payphone_headers(),
             timeout=30,
         )
@@ -220,48 +219,353 @@ def confirm_payment(
             },
         )
 
-    data = response.json()
+    return response.json()
+
+
+def is_payphone_paid(data: dict) -> bool:
+    status = str(
+        data.get("status")
+        or data.get("transactionStatus")
+        or data.get("paymentStatus")
+        or ""
+    ).lower()
+
+    if status in ["approved", "success", "paid", "completed", "aprobado"]:
+        return True
+
+    if data.get("authorizationCode") or data.get("transactionId"):
+        return True
+
+    return False
+
+
+def create_initial_monthly_selection_if_possible(db: Session, user: models.User):
+    now = datetime.utcnow()
+
+    existing = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user.id,
+            models.MonthlySelection.month == now.month,
+            models.MonthlySelection.year == now.year,
+        )
+        .first()
+    )
+
+    if existing:
+        return existing
+
+    selection = models.MonthlySelection(
+        user_id=user.id,
+        month=now.month,
+        year=now.year,
+        status="draft",
+        editable=True,
+    )
+
+    db.add(selection)
+    db.flush()
+
+    return selection
+
+
+# =========================
+# HEALTH
+# =========================
+@router.get("/health")
+def payphone_health():
+    return {
+        "status": "ok",
+        "provider": "PayPhone",
+        "store_id_configured": bool(PAYPHONE_STORE_ID),
+        "token_configured": bool(PAYPHONE_TOKEN),
+        "base_url": PAYPHONE_BASE_URL,
+    }
+
+
+# =========================
+# LINK GENERAL
+# =========================
+@router.post("/create-link")
+def create_payment_link(
+    payload: PayphoneCreateLinkRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    client_transaction_id = generate_client_transaction_id("MWC")
+
+    data = create_payphone_link(
+        amount=payload.amount,
+        description=payload.description,
+        client_transaction_id=client_transaction_id,
+        buyer_email=payload.buyer_email,
+        buyer_name=payload.buyer_name,
+    )
 
     return {
         "success": True,
-        "confirmed": True,
+        "payment_type": payload.payment_type,
+        "amount": payload.amount,
+        "clientTransactionId": client_transaction_id,
+        "reference_id": payload.reference_id,
         "payphone": data,
     }
 
 
+# =========================
+# MEMBRESÍA SOCIO: PRIMER PAGO
+# =========================
+@router.post("/membership/create-initial-payment")
+def create_membership_initial_payment(
+    payload: PayphoneMembershipInitialRequest,
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if payload.plan_level not in [1, 2, 3]:
+        raise HTTPException(status_code=400, detail="Nivel de plan inválido")
+
+    signup_amount = get_signup_amount_by_level(payload.plan_level)
+    monthly_amount = get_monthly_amount_by_level(payload.plan_level)
+
+    client_transaction_id = generate_client_transaction_id("MWC")
+
+    description = (
+        f"Mayu Wellness Club - Primer pago Nivel {payload.plan_level} "
+        f"incluye mensualidad + inscripción inicial"
+    )
+
+    user.membership_level = payload.plan_level
+
+    payphone_data = create_payphone_link(
+        amount=signup_amount,
+        description=description,
+        client_transaction_id=client_transaction_id,
+        buyer_email=user.email,
+        buyer_name=user.name,
+    )
+
+    payment = models.MembershipPayment(
+        user_id=user.id,
+        order_id=None,
+        amount=signup_amount,
+        currency="USD",
+        status="created",
+        provider="payphone",
+        payment_type="signup",
+        payment_reference=client_transaction_id,
+        raw_payload=json.dumps(payphone_data),
+    )
+
+    safe_set(payment, "paypal_order_id", client_transaction_id)
+
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "success": True,
+        "message": "Link de primer pago PayPhone creado",
+        "payment_id": payment.id,
+        "user_id": user.id,
+        "plan_level": payload.plan_level,
+        "signup_amount": signup_amount,
+        "monthly_amount": monthly_amount,
+        "signup_fee": 5.00,
+        "clientTransactionId": client_transaction_id,
+        "payphone": payphone_data,
+    }
+
+
+# =========================
+# CONFIRMAR PAGO GENERAL
+# =========================
+@router.post("/confirm")
+def confirm_payment(
+    payload: PayphoneConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    data = confirm_payphone_transaction(
+        id=payload.id,
+        clientTransactionId=payload.clientTransactionId,
+        transactionId=payload.transactionId,
+    )
+
+    return {
+        "success": True,
+        "confirmed": True,
+        "paid": is_payphone_paid(data),
+        "payphone": data,
+    }
+
+
+# =========================
+# CONFIRMAR PRIMER PAGO SOCIO
+# =========================
+@router.post("/membership/confirm-initial-payment")
+def confirm_membership_initial_payment(
+    payload: PayphoneConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    data = confirm_payphone_transaction(
+        id=payload.id,
+        clientTransactionId=payload.clientTransactionId,
+        transactionId=payload.transactionId,
+    )
+
+    client_transaction_id = (
+        payload.clientTransactionId
+        or str(data.get("clientTransactionId") or "")
+        or str(data.get("client_transaction_id") or "")
+    )
+
+    payment = None
+
+    if client_transaction_id:
+        payment = (
+            db.query(models.MembershipPayment)
+            .filter(
+                models.MembershipPayment.payment_reference == client_transaction_id
+            )
+            .first()
+        )
+
+        if not payment:
+            payment = (
+                db.query(models.MembershipPayment)
+                .filter(models.MembershipPayment.paypal_order_id == client_transaction_id)
+                .first()
+            )
+
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Pago local no encontrado para este clientTransactionId",
+        )
+
+    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    paid = is_payphone_paid(data)
+
+    if not paid:
+        payment.status = "pending"
+        payment.raw_payload = json.dumps(data)
+        db.commit()
+
+        return {
+            "success": False,
+            "message": "PayPhone todavía no reporta pago aprobado",
+            "payment_id": payment.id,
+            "payment_status": payment.status,
+            "payphone": data,
+        }
+
+    now = datetime.utcnow()
+
+    payment.status = "verified"
+    payment.paid_at = now
+    payment.admin_verified = True
+    payment.admin_verified_at = now
+    payment.raw_payload = json.dumps(data)
+
+    user.membership_active = True
+    user.is_active = True
+
+    create_initial_monthly_selection_if_possible(db, user)
+
+    db.commit()
+    db.refresh(payment)
+    db.refresh(user)
+
+    return {
+        "success": True,
+        "message": "Primer pago confirmado. Socio activado correctamente.",
+        "payment_id": payment.id,
+        "payment_status": payment.status,
+        "user_id": user.id,
+        "membership_active": user.membership_active,
+        "membership_level": user.membership_level,
+        "payphone": data,
+    }
+
+
+# =========================
+# WEBHOOK PAYPHONE
+# =========================
 @router.post("/webhook")
 async def payphone_webhook(
     payload: dict,
     db: Session = Depends(get_db),
 ):
-    """
-    Notificación externa de PayPhone.
+    client_transaction_id = (
+        payload.get("clientTransactionId")
+        or payload.get("client_transaction_id")
+        or payload.get("reference")
+    )
 
-    Aquí luego conectamos:
-    - Activar membresía
-    - Crear orden farmacia
-    - Generar código educativo
-    - Enviar email
-    """
+    if not client_transaction_id:
+        return {
+            "success": True,
+            "message": "Webhook recibido sin clientTransactionId",
+            "payload": payload,
+        }
+
+    payment = (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.payment_reference == client_transaction_id)
+        .first()
+    )
+
+    if not payment:
+        return {
+            "success": True,
+            "message": "Webhook recibido, pero no se encontró pago local",
+            "clientTransactionId": client_transaction_id,
+        }
+
+    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+
+    paid = is_payphone_paid(payload)
+
+    if paid:
+        now = datetime.utcnow()
+
+        payment.status = "verified"
+        payment.paid_at = now
+        payment.admin_verified = True
+        payment.admin_verified_at = now
+        payment.raw_payload = json.dumps(payload)
+
+        if user:
+            user.membership_active = True
+            user.is_active = True
+            create_initial_monthly_selection_if_possible(db, user)
+
+        db.commit()
 
     return {
         "success": True,
-        "message": "Webhook PayPhone recibido",
-        "payload": payload,
+        "message": "Webhook PayPhone procesado",
+        "clientTransactionId": client_transaction_id,
+        "paid": paid,
     }
 
 
+# =========================
+# RESPONSE URL
+# =========================
 @router.get("/response")
 def payphone_response(
     id: Optional[str] = None,
     clientTransactionId: Optional[str] = None,
     transactionId: Optional[str] = None,
 ):
-    """
-    URL de retorno después del pago.
-    Esta ruta permite recibir al usuario luego de pagar.
-    """
-
     return {
         "success": True,
         "message": "Respuesta recibida desde PayPhone",
