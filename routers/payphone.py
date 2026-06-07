@@ -121,30 +121,16 @@ def create_payphone_link(
     subtotal = cents(amount)
     safe_reference = (description or "Mayu Wellness Club")[:50]
 
-    try:
-        store_id_value = int(PAYPHONE_STORE_ID)
-    except ValueError:
-        raise HTTPException(
-            status_code=500,
-            detail="PAYPHONE_STORE_ID debe ser numérico",
-        )
-
     body = {
         "amount": subtotal,
         "amountWithoutTax": subtotal,
-        "tax": 0,
         "clientTransactionId": client_transaction_id,
-        "storeId": store_id_value,
+        "storeId": str(PAYPHONE_STORE_ID),
         "currency": "USD",
         "reference": safe_reference,
-        "responseUrl": PAYPHONE_RESPONSE_URL,
+        "oneTime": True,
+        "expireIn": 24,
     }
-
-    if buyer_email:
-        body["email"] = buyer_email
-
-    if buyer_name:
-        body["clientName"] = buyer_name
 
     url = f"{PAYPHONE_BASE_URL}/Links"
 
@@ -171,7 +157,10 @@ def create_payphone_link(
             },
         )
 
-    return response.json()
+    try:
+        return response.json()
+    except Exception:
+        return {"link": response.text}
 
 
 def confirm_payphone_transaction(
