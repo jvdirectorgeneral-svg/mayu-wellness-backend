@@ -128,6 +128,7 @@ def create_payphone_link(
         )
 
     subtotal = cents(amount)
+    safe_reference = (description or "Mayu Wellness Club")[:50]
 
     body = {
         "amount": subtotal,
@@ -136,7 +137,7 @@ def create_payphone_link(
         "clientTransactionId": client_transaction_id,
         "storeId": PAYPHONE_STORE_ID,
         "currency": "USD",
-        "reference": description,
+        "reference": safe_reference,
         "responseUrl": PAYPHONE_RESPONSE_URL,
     }
 
@@ -167,6 +168,7 @@ def create_payphone_link(
             detail={
                 "message": "PayPhone rechazó la creación del link",
                 "payphone_response": response.text,
+                "sent_body": body,
             },
         )
 
@@ -333,10 +335,7 @@ def create_membership_initial_payment(
 
     client_transaction_id = generate_client_transaction_id("MWC")
 
-    description = (
-        f"Mayu Wellness Club - Primer pago Nivel {payload.plan_level} "
-        f"incluye mensualidad + inscripción inicial"
-    )
+    description = f"MWC Primer Pago Nivel {payload.plan_level}"
 
     user.membership_level = payload.plan_level
 
@@ -427,9 +426,7 @@ def confirm_membership_initial_payment(
     if client_transaction_id:
         payment = (
             db.query(models.MembershipPayment)
-            .filter(
-                models.MembershipPayment.payment_reference == client_transaction_id
-            )
+            .filter(models.MembershipPayment.payment_reference == client_transaction_id)
             .first()
         )
 
