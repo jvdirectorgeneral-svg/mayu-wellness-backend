@@ -633,40 +633,60 @@ def verify(
     if not payment.paid_at:
         payment.paid_at = now
 
-    order = get_or_create_order_for_payment(
-        db=db,
-        user=user,
-        payment=payment,
-        current_user=current_user,
-    )
+    order = None
+    visible_in_logistics = False
+    logistics_message = "Pago verificado y socio activado. Pendiente selección mensual para crear orden logística."
 
-    order.status = "approved_for_logistics"
-    order.user_status_snapshot = "active"
-    order.membership_level_snapshot = user.membership_level
-    order.logistics_notes = payload.verification_notes or "✔ Pago verificado - listo para despacho"
+    try:
+        order = get_or_create_order_for_payment(
+            db=db,
+            user=user,
+            payment=payment,
+            current_user=current_user,
+        )
 
-    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
+        order.status = "approved_for_logistics"
+        order.user_status_snapshot = "active"
+        order.membership_level_snapshot = user.membership_level
+        order.logistics_notes = (
+            payload.verification_notes
+            or "✔ Pago verificado - listo para despacho"
+        )
 
-    if selection:
-        selection.editable = False
-        selection.status = "confirmed"
+        selection = get_monthly_selection(db, order.user_id, order.month, order.year)
+
+        if selection:
+            selection.editable = False
+            selection.status = "confirmed"
+
+        visible_in_logistics = True
+        logistics_message = "Pago verificado y orden lista para logística"
+
+    except HTTPException as e:
+        if e.status_code != 400:
+            raise e
 
     db.commit()
     db.refresh(payment)
-    db.refresh(order)
+    db.refresh(user)
+
+    if order:
+        db.refresh(order)
 
     return {
-        "message": "Pago verificado y orden lista para logística",
+        "message": logistics_message,
         "payment_id": payment.id,
         "payment_status": payment.status,
         "payment_type": payment.payment_type,
-        "order_id": order.id,
-        "order_status": order.status,
-        "order_month": order.month,
-        "order_year": order.year,
-        "visible_in_logistics": True,
+        "user_id": user.id,
+        "membership_active": user.membership_active,
+        "membership_level": user.membership_level,
+        "order_id": order.id if order else None,
+        "order_status": order.status if order else None,
+        "order_month": order.month if order else None,
+        "order_year": order.year if order else None,
+        "visible_in_logistics": visible_in_logistics,
     }
-
 
 @router.post("/webhook")
 async def webhook(request: Request, db: Session = Depends(get_db)):
