@@ -25,29 +25,21 @@ from marketplace import router as marketplace_router
 from education import router as education_router
 from education_orders import router as education_orders_router
 from routers.payphone import router as payphone_router
+from routers.marketplace_paypal import router as marketplace_paypal_router
 
 from dependencies import get_current_user
 import models
 
 
-# =========================
-# CREAR TABLAS
-# =========================
 Base.metadata.create_all(bind=engine)
 
 
-# =========================
-# APP
-# =========================
 app = FastAPI(
     title="Mayu Wellness API",
     version="1.0.0",
 )
 
 
-# =========================
-# CORS
-# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -63,9 +55,6 @@ app.add_middleware(
 )
 
 
-# =========================
-# ROUTERS
-# =========================
 app.include_router(users_router)
 app.include_router(products_router)
 app.include_router(plans_router)
@@ -88,27 +77,19 @@ app.include_router(marketplace_router)
 app.include_router(education_router)
 app.include_router(education_orders_router)
 app.include_router(payphone_router)
+app.include_router(marketplace_paypal_router)
 
 
-# =========================
-# ROOT
-# =========================
 @app.get("/")
 def read_root():
     return {"message": "Mayu Wellness Backend funcionando 🚀"}
 
 
-# =========================
-# HEALTH CHECK
-# =========================
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 
-# =========================
-# USUARIO ACTUAL
-# =========================
 @app.get("/me")
 def get_me(current_user: models.User = Depends(get_current_user)):
     return {
