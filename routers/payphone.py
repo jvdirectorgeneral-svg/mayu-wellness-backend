@@ -124,10 +124,14 @@ def create_payphone_link(
     body = {
         "amount": subtotal,
         "amountWithoutTax": subtotal,
-        "clientTransactionId": client_transaction_id,
-        "storeId": str(PAYPHONE_STORE_ID),
+        "amountWithTax": 0,
+        "tax": 0,
+        "service": 0,
+        "tip": 0,
         "currency": "USD",
         "reference": safe_reference,
+        "clientTransactionId": client_transaction_id,
+        "storeId": str(PAYPHONE_STORE_ID),
     }
 
     url = f"{PAYPHONE_BASE_URL}/Links"
