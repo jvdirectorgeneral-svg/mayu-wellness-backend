@@ -24,6 +24,7 @@ from marketing_uploads import router as marketing_uploads_router
 from marketplace import router as marketplace_router
 from education import router as education_router
 from education_orders import router as education_orders_router
+from payphone import router as payphone_router
 
 from dependencies import get_current_user
 import models
@@ -86,6 +87,7 @@ app.include_router(marketing_uploads_router)
 app.include_router(marketplace_router)
 app.include_router(education_router)
 app.include_router(education_orders_router)
+app.include_router(payphone_router)
 
 
 # =========================
