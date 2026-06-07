@@ -25,7 +25,7 @@ from marketplace import router as marketplace_router
 from education import router as education_router
 from education_orders import router as education_orders_router
 from routers.payphone import router as payphone_router
-from routers.marketplace_paypal import router as marketplace_paypal_router
+from marketplace_paypal import router as marketplace_paypal_router
 
 from dependencies import get_current_user
 import models
