@@ -79,6 +79,20 @@ class MarketplaceOrderCreate(BaseModel):
     payment_method: str = "whatsapp"
 
 
+class MarketplaceOrderAdminUpdate(BaseModel):
+    payment_status: Optional[str] = None
+    status: Optional[str] = None
+    shipping_notes: Optional[str] = None
+
+
+class MarketplaceOrderLogisticsUpdate(BaseModel):
+    status: Optional[str] = None
+    carrier: Optional[str] = None
+    tracking_number: Optional[str] = None
+    tracking_url: Optional[str] = None
+    shipping_notes: Optional[str] = None
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -96,6 +110,36 @@ def require_pharmacy_admin(current_user: models.User):
 
     if current_user.role not in {"superadmin", "admin", "pharmacy_admin"}:
         raise HTTPException(status_code=403, detail="Acceso solo para Farmacia Mayu")
+
+
+def require_pharmacy_admin_or_logistics(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {
+        "superadmin",
+        "admin",
+        "pharmacy_admin",
+        "pharmacy_logistics",
+    }:
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para Farmacia o Logística Mayu",
+        )
+
+
+def require_pharmacy_logistics(current_user: models.User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {"superadmin", "admin", "pharmacy_logistics"}:
+        raise HTTPException(status_code=403, detail="Acceso solo para logística")
 
 
 def category_to_dict(category: models.MarketplaceCategory):
@@ -156,6 +200,18 @@ def order_to_dict(order: models.MarketplaceOrder):
         "whatsapp_message": order.whatsapp_message,
         "payphone_transaction_id": order.payphone_transaction_id,
         "payphone_payment_url": order.payphone_payment_url,
+        "raw_payment_payload": getattr(order, "raw_payment_payload", None),
+        "admin_verified": getattr(order, "admin_verified", False),
+        "admin_verified_at": getattr(order, "admin_verified_at", None),
+        "admin_verified_by": getattr(order, "admin_verified_by", None),
+        "carrier": getattr(order, "carrier", None),
+        "tracking_number": getattr(order, "tracking_number", None),
+        "tracking_url": getattr(order, "tracking_url", None),
+        "shipping_notes": getattr(order, "shipping_notes", None),
+        "approved_at": getattr(order, "approved_at", None),
+        "prepared_at": getattr(order, "prepared_at", None),
+        "shipped_at": getattr(order, "shipped_at", None),
+        "delivered_at": getattr(order, "delivered_at", None),
         "created_at": order.created_at,
         "paid_at": order.paid_at,
         "items": [
@@ -724,7 +780,7 @@ def get_admin_orders(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_pharmacy_admin(current_user)
+    require_pharmacy_admin_or_logistics(current_user)
 
     orders = (
         db.query(models.MarketplaceOrder)
@@ -733,3 +789,105 @@ def get_admin_orders(
     )
 
     return {"items": [order_to_dict(o) for o in orders]}
+
+
+@router.put("/admin/orders/{order_id}/admin")
+def update_order_by_pharmacy_admin(
+    order_id: int,
+    payload: MarketplaceOrderAdminUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+
+    order = (
+        db.query(models.MarketplaceOrder)
+        .filter(models.MarketplaceOrder.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if payload.payment_status is not None:
+        order.payment_status = payload.payment_status
+
+    if payload.status is not None:
+        order.status = payload.status
+
+        if payload.status in {"approved", "admin_approved"}:
+            order.admin_verified = True
+            order.admin_verified_at = datetime.utcnow()
+            order.admin_verified_by = current_user.id
+            order.approved_at = datetime.utcnow()
+
+        if payload.status == "cancelled":
+            order.admin_verified = False
+
+    if payload.shipping_notes is not None:
+        order.shipping_notes = payload.shipping_notes
+
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "message": "Orden actualizada por farmacia",
+        "order": order_to_dict(order),
+    }
+
+
+@router.put("/admin/orders/{order_id}/logistics")
+def update_order_by_pharmacy_logistics(
+    order_id: int,
+    payload: MarketplaceOrderLogisticsUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_logistics(current_user)
+
+    order = (
+        db.query(models.MarketplaceOrder)
+        .filter(models.MarketplaceOrder.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if not getattr(order, "admin_verified", False):
+        raise HTTPException(
+            status_code=403,
+            detail="La orden todavía no ha sido aprobada por Farmacia",
+        )
+
+    if payload.status is not None:
+        order.status = payload.status
+
+        if payload.status == "prepared":
+            order.prepared_at = datetime.utcnow()
+
+        if payload.status == "shipped":
+            order.shipped_at = datetime.utcnow()
+
+        if payload.status == "delivered":
+            order.delivered_at = datetime.utcnow()
+
+    if payload.carrier is not None:
+        order.carrier = payload.carrier
+
+    if payload.tracking_number is not None:
+        order.tracking_number = payload.tracking_number
+
+    if payload.tracking_url is not None:
+        order.tracking_url = payload.tracking_url
+
+    if payload.shipping_notes is not None:
+        order.shipping_notes = payload.shipping_notes
+
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "message": "Orden actualizada por logística",
+        "order": order_to_dict(order),
+    }
