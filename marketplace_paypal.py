@@ -80,6 +80,14 @@ def generate_education_order_code():
     return f"EDU-MAYU-{now.strftime('%Y%m%d%H%M%S')}-{random_code}"
 
 
+def generate_marketplace_order_code():
+    now = datetime.utcnow()
+    random_code = "".join(
+        secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6)
+    )
+    return f"MP-MAYU-{now.strftime('%Y%m%d%H%M%S')}-{random_code}"
+
+
 def get_token():
     client_id = get_paypal_client_id()
     client_secret = get_paypal_client_secret()
@@ -151,7 +159,11 @@ def get_marketplace_item(db: Session, item_type: str, item_id: int):
         )
 
     if clean_type == "pharmacy":
-        product = db.query(models.Product).filter(models.Product.id == item_id).first()
+        product = (
+            db.query(models.MarketplaceProduct)
+            .filter(models.MarketplaceProduct.id == item_id)
+            .first()
+        )
 
         if not product:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -193,17 +205,6 @@ def safe_json_loads(value):
         return json.loads(value)
     except Exception:
         return {}
-
-
-def get_payment_payload(payment: models.MembershipPayment):
-    payload = safe_json_loads(payment.raw_payload)
-
-    if "previous_payload" in payload:
-        previous = safe_json_loads(payload.get("previous_payload"))
-        if previous:
-            payload["previous_payload_decoded"] = previous
-
-    return payload
 
 
 def get_original_payment_payload(payment: models.MembershipPayment):
@@ -256,6 +257,109 @@ def send_education_access_email(
         </div>
         """,
     })
+
+
+def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Session):
+    if payment.payment_type != "marketplace_pharmacy":
+        return None
+
+    existing_order = (
+        db.query(models.MarketplaceOrder)
+        .filter(models.MarketplaceOrder.raw_payment_payload.contains(payment.paypal_order_id))
+        .first()
+    )
+
+    if existing_order:
+        return {
+            "marketplace_order_id": existing_order.id,
+            "marketplace_order_code": existing_order.order_code,
+            "already_created": True,
+        }
+
+    original_payload = get_original_payment_payload(payment)
+    marketplace = original_payload.get("marketplace", {}) or {}
+    buyer = original_payload.get("buyer", {}) or {}
+
+    item_id = marketplace.get("item_id")
+    quantity = int(marketplace.get("quantity") or 1)
+
+    if not item_id:
+        return None
+
+    product = (
+        db.query(models.MarketplaceProduct)
+        .filter(models.MarketplaceProduct.id == int(item_id))
+        .first()
+    )
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Producto de farmacia no encontrado")
+
+    if product.stock < quantity:
+        raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
+
+    buyer_name = (buyer.get("name") or "Cliente Mayu").strip()
+    buyer_phone = (buyer.get("phone") or "No registrado").strip()
+    buyer_email = (buyer.get("email") or payment.payer_email or "").strip()
+
+    unit_price = float(product.price or 0)
+    subtotal = round(unit_price * quantity, 2)
+    total = subtotal
+
+    order = models.MarketplaceOrder(
+        order_code=generate_marketplace_order_code(),
+        user_id=payment.user_id,
+        customer_name=buyer_name,
+        customer_phone=buyer_phone,
+        customer_email=buyer_email,
+        city=None,
+        address=None,
+        delivery_notes=None,
+        subtotal=subtotal,
+        discount_code=None,
+        discount_percent=0,
+        discount_amount=0,
+        total=total,
+        currency=payment.currency,
+        payment_method="paypal",
+        payment_status="paid",
+        status="paid",
+        whatsapp_message=None,
+        raw_payment_payload=json.dumps({
+            "paypal_order_id": payment.paypal_order_id,
+            "membership_payment_id": payment.id,
+            "marketplace": marketplace,
+            "buyer": buyer,
+        }),
+        paid_at=datetime.utcnow(),
+    )
+
+    db.add(order)
+    db.flush()
+
+    order_item = models.MarketplaceOrderItem(
+        order_id=order.id,
+        product_id=product.id,
+        product_name_snapshot=product.name,
+        unit_price_snapshot=unit_price,
+        quantity=quantity,
+        total_snapshot=total,
+    )
+
+    product.stock = product.stock - quantity
+
+    db.add(order_item)
+    db.flush()
+
+    return {
+        "marketplace_order_id": order.id,
+        "marketplace_order_code": order.order_code,
+        "product_id": product.id,
+        "product_name": product.name,
+        "quantity": quantity,
+        "total": total,
+        "already_created": False,
+    }
 
 
 def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: Session):
@@ -542,13 +646,15 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
     if not payment:
         raise HTTPException(status_code=404, detail="Pago marketplace no encontrado")
 
-    fulfillment = None
+    education_fulfillment = None
+    pharmacy_fulfillment = None
 
     if payment.status in {"paid", "verified"}:
-        fulfillment = fulfill_education_payment_if_needed(payment, db)
+        education_fulfillment = fulfill_education_payment_if_needed(payment, db)
+        pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
         db.commit()
         db.refresh(payment)
-        return payment, fulfillment
+        return payment, education_fulfillment, pharmacy_fulfillment
 
     token = get_token()
 
@@ -581,12 +687,13 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
 
     db.flush()
 
-    fulfillment = fulfill_education_payment_if_needed(payment, db)
+    education_fulfillment = fulfill_education_payment_if_needed(payment, db)
+    pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
 
     db.commit()
     db.refresh(payment)
 
-    return payment, fulfillment
+    return payment, education_fulfillment, pharmacy_fulfillment
 
 
 @router.post("/capture-order")
@@ -594,7 +701,10 @@ def capture_marketplace_order(
     payload: MarketplacePayPalCaptureRequest,
     db: Session = Depends(get_db),
 ):
-    payment, fulfillment = capture_marketplace_payment(payload.paypal_order_id, db)
+    payment, education_fulfillment, pharmacy_fulfillment = capture_marketplace_payment(
+        payload.paypal_order_id,
+        db,
+    )
 
     return {
         "message": "Pago marketplace capturado",
@@ -606,7 +716,8 @@ def capture_marketplace_order(
         "payer_email": payment.payer_email,
         "amount": payment.amount,
         "currency": payment.currency,
-        "education_fulfillment": fulfillment,
+        "education_fulfillment": education_fulfillment,
+        "pharmacy_fulfillment": pharmacy_fulfillment,
     }
 
 
@@ -615,7 +726,10 @@ def paypal_marketplace_success(
     token: str,
     db: Session = Depends(get_db),
 ):
-    payment, fulfillment = capture_marketplace_payment(token, db)
+    payment, education_fulfillment, pharmacy_fulfillment = capture_marketplace_payment(
+        token,
+        db,
+    )
 
     return {
         "status": "paid",
@@ -624,7 +738,8 @@ def paypal_marketplace_success(
         "payment_type": payment.payment_type,
         "paypal_order_id": payment.paypal_order_id,
         "payer_email": payment.payer_email,
-        "education_fulfillment": fulfillment,
+        "education_fulfillment": education_fulfillment,
+        "pharmacy_fulfillment": pharmacy_fulfillment,
     }
 
 
