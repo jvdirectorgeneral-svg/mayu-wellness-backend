@@ -4,7 +4,7 @@ import base64
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import secrets
 import string
 
@@ -61,6 +61,25 @@ class MarketplacePayPalCreateOrderRequest(BaseModel):
     buyer_name: Optional[str] = None
     buyer_phone: Optional[str] = None
     buyer_email: Optional[str] = None
+
+
+class MarketplaceCartItemCreate(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+class MarketplacePayPalCreateCartOrderRequest(BaseModel):
+    item_type: str = "pharmacy"
+    user_id: int
+    buyer_name: Optional[str] = None
+    buyer_phone: Optional[str] = None
+    buyer_email: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    delivery_notes: Optional[str] = None
+    discount_code: Optional[str] = None
+    currency: str = "USD"
+    items: List[MarketplaceCartItemCreate]
 
 
 class MarketplacePayPalCaptureRequest(BaseModel):
@@ -280,31 +299,72 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     marketplace = original_payload.get("marketplace", {}) or {}
     buyer = original_payload.get("buyer", {}) or {}
 
-    item_id = marketplace.get("item_id")
-    quantity = int(marketplace.get("quantity") or 1)
+    items_payload = marketplace.get("items") or []
 
-    if not item_id:
+    if not items_payload:
+        item_id = marketplace.get("item_id")
+        quantity = int(marketplace.get("quantity") or 1)
+
+        if item_id:
+            items_payload = [
+                {
+                    "product_id": item_id,
+                    "quantity": quantity,
+                }
+            ]
+
+    if not items_payload:
         return None
-
-    product = (
-        db.query(models.MarketplaceProduct)
-        .filter(models.MarketplaceProduct.id == int(item_id))
-        .first()
-    )
-
-    if not product:
-        raise HTTPException(status_code=404, detail="Producto de farmacia no encontrado")
-
-    if product.stock < quantity:
-        raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
 
     buyer_name = (buyer.get("name") or "Cliente Mayu").strip()
     buyer_phone = (buyer.get("phone") or "No registrado").strip()
     buyer_email = (buyer.get("email") or payment.payer_email or "").strip()
 
-    unit_price = float(product.price or 0)
-    subtotal = round(unit_price * quantity, 2)
-    total = subtotal
+    city = (buyer.get("city") or "").strip() or None
+    address = (buyer.get("address") or "").strip() or None
+    delivery_notes = (buyer.get("delivery_notes") or "").strip() or None
+
+    subtotal = 0.0
+    order_items_data = []
+
+    for item in items_payload:
+        product_id = int(item.get("product_id") or item.get("item_id") or 0)
+        quantity = int(item.get("quantity") or 1)
+
+        if product_id <= 0:
+            raise HTTPException(status_code=400, detail="Producto inválido en carrito")
+
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="Cantidad inválida en carrito")
+
+        product = (
+            db.query(models.MarketplaceProduct)
+            .filter(models.MarketplaceProduct.id == product_id)
+            .first()
+        )
+
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Producto {product_id} no encontrado")
+
+        if product.stock < quantity:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
+
+        unit_price = float(product.price or 0)
+        line_total = round(unit_price * quantity, 2)
+        subtotal += line_total
+
+        order_items_data.append({
+            "product": product,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "line_total": line_total,
+        })
+
+    subtotal = round(subtotal, 2)
+    discount_code = marketplace.get("discount_code")
+    discount_percent = float(marketplace.get("discount_percent") or 0)
+    discount_amount = float(marketplace.get("discount_amount") or 0)
+    total = round(subtotal - discount_amount, 2)
 
     order = models.MarketplaceOrder(
         order_code=generate_marketplace_order_code(),
@@ -312,13 +372,13 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         customer_name=buyer_name,
         customer_phone=buyer_phone,
         customer_email=buyer_email,
-        city=None,
-        address=None,
-        delivery_notes=None,
+        city=city,
+        address=address,
+        delivery_notes=delivery_notes,
         subtotal=subtotal,
-        discount_code=None,
-        discount_percent=0,
-        discount_amount=0,
+        discount_code=discount_code,
+        discount_percent=discount_percent,
+        discount_amount=discount_amount,
         total=total,
         currency=payment.currency,
         payment_method="paypal",
@@ -337,26 +397,42 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     db.add(order)
     db.flush()
 
-    order_item = models.MarketplaceOrderItem(
-        order_id=order.id,
-        product_id=product.id,
-        product_name_snapshot=product.name,
-        unit_price_snapshot=unit_price,
-        quantity=quantity,
-        total_snapshot=total,
-    )
+    created_items = []
 
-    product.stock = product.stock - quantity
+    for item_data in order_items_data:
+        product = item_data["product"]
+        quantity = item_data["quantity"]
+        unit_price = item_data["unit_price"]
+        line_total = item_data["line_total"]
 
-    db.add(order_item)
+        order_item = models.MarketplaceOrderItem(
+            order_id=order.id,
+            product_id=product.id,
+            product_name_snapshot=product.name,
+            unit_price_snapshot=unit_price,
+            quantity=quantity,
+            total_snapshot=line_total,
+        )
+
+        product.stock = product.stock - quantity
+        db.add(order_item)
+
+        created_items.append({
+            "product_id": product.id,
+            "product_name": product.name,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total": line_total,
+        })
+
     db.flush()
 
     return {
         "marketplace_order_id": order.id,
         "marketplace_order_code": order.order_code,
-        "product_id": product.id,
-        "product_name": product.name,
-        "quantity": quantity,
+        "items": created_items,
+        "subtotal": subtotal,
+        "discount_amount": discount_amount,
         "total": total,
         "already_created": False,
     }
@@ -626,6 +702,174 @@ def create_marketplace_paypal_order(
         "title": item["title"],
         "quantity": payload.quantity,
         "unit_price": item["price"],
+        "amount": total,
+        "currency": payload.currency,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
+        "approval_url": approval_url,
+        "links": response.get("links", []),
+    }
+
+
+@router.post("/create-cart-order")
+def create_marketplace_paypal_cart_order(
+    payload: MarketplacePayPalCreateCartOrderRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.item_type.strip().lower() != "pharmacy":
+        raise HTTPException(status_code=400, detail="Este endpoint es solo para carrito de farmacia")
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="El carrito está vacío")
+
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    buyer_name = (payload.buyer_name or user.name or "").strip()
+    buyer_phone = (payload.buyer_phone or user.phone or "").strip()
+    buyer_email = (payload.buyer_email or user.email or "").strip()
+
+    if not buyer_name:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    if not buyer_phone:
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    subtotal = 0.0
+    items_data = []
+
+    for item in payload.items:
+        if item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
+
+        product = (
+            db.query(models.MarketplaceProduct)
+            .filter(models.MarketplaceProduct.id == item.product_id)
+            .filter(models.MarketplaceProduct.active == True)
+            .first()
+        )
+
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Producto {item.product_id} no encontrado")
+
+        if product.stock < item.quantity:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
+
+        unit_price = float(product.price or 0)
+        line_total = round(unit_price * item.quantity, 2)
+        subtotal += line_total
+
+        items_data.append({
+            "product_id": product.id,
+            "title": product.name,
+            "quantity": item.quantity,
+            "unit_price": unit_price,
+            "total": line_total,
+        })
+
+    subtotal = round(subtotal, 2)
+    discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
+    discount_percent = 0.0
+    discount_amount = 0.0
+
+    if discount_code:
+        discount_percent = 10.0
+        discount_amount = round(subtotal * 0.10, 2)
+
+    total = round(subtotal - discount_amount, 2)
+
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="El total debe ser mayor a cero")
+
+    token = get_token()
+
+    paypal_body = {
+        "intent": "CAPTURE",
+        "purchase_units": [
+            {
+                "amount": {
+                    "currency_code": payload.currency,
+                    "value": f"{total:.2f}",
+                },
+                "description": f"Mayu Marketplace Farmacia - {len(items_data)} productos",
+            }
+        ],
+        "application_context": {
+            "brand_name": "Mayu Wellness Club",
+            "user_action": "PAY_NOW",
+            "return_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/marketplace/success",
+            "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/marketplace/cancel",
+        },
+    }
+
+    response = paypal_request("POST", "/v2/checkout/orders", token, paypal_body)
+
+    payment = models.MembershipPayment(
+        user_id=user.id,
+        order_id=None,
+        paypal_order_id=response["id"],
+        amount=total,
+        currency=payload.currency,
+        status="created",
+        provider="paypal",
+        payment_type="marketplace_pharmacy",
+        payment_reference=response["id"],
+        payer_email=buyer_email,
+        raw_payload=json.dumps({
+            "paypal": response,
+            "marketplace": {
+                "item_type": "pharmacy",
+                "items": [
+                    {
+                        "product_id": item["product_id"],
+                        "title": item["title"],
+                        "quantity": item["quantity"],
+                        "unit_price": item["unit_price"],
+                        "total": item["total"],
+                    }
+                    for item in items_data
+                ],
+                "quantity": sum(item["quantity"] for item in items_data),
+                "subtotal": subtotal,
+                "discount_code": discount_code,
+                "discount_percent": discount_percent,
+                "discount_amount": discount_amount,
+                "total": total,
+            },
+            "buyer": {
+                "user_id": user.id,
+                "name": buyer_name,
+                "email": buyer_email,
+                "phone": buyer_phone,
+                "city": payload.city,
+                "address": payload.address,
+                "delivery_notes": payload.delivery_notes,
+            },
+        }),
+    )
+
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    approval_url = None
+    for link in response.get("links", []):
+        if link.get("rel") == "approve":
+            approval_url = link.get("href")
+
+    return {
+        "message": "Orden PayPal carrito farmacia creada",
+        "payment_id": payment.id,
+        "paypal_order_id": response["id"],
+        "item_type": "pharmacy",
+        "items": items_data,
+        "subtotal": subtotal,
+        "discount_code": discount_code,
+        "discount_percent": discount_percent,
+        "discount_amount": discount_amount,
         "amount": total,
         "currency": payload.currency,
         "buyer_name": buyer_name,
