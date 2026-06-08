@@ -850,12 +850,31 @@ class MarketplaceOrder(Base):
     payphone_payment_url = Column(Text, nullable=True)
     raw_payment_payload = Column(Text, nullable=True)
 
+    admin_verified = Column(Boolean, default=False, nullable=False)
+    admin_verified_at = Column(DateTime, nullable=True)
+    admin_verified_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    carrier = Column(String, nullable=True)
+    tracking_number = Column(String, nullable=True, index=True)
+    tracking_url = Column(Text, nullable=True)
+    shipping_notes = Column(Text, nullable=True)
+
+    approved_at = Column(DateTime, nullable=True)
+    prepared_at = Column(DateTime, nullable=True)
+    shipped_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     paid_at = Column(DateTime, nullable=True)
 
     user = relationship(
         "User",
         back_populates="marketplace_orders",
+    )
+
+    admin_verifier = relationship(
+        "User",
+        foreign_keys=[admin_verified_by],
     )
 
     items = relationship(
