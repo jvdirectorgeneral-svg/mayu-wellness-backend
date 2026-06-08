@@ -1017,13 +1017,13 @@ class EducationOrder(Base):
 
     buyer_name = Column(String, nullable=False)
     buyer_phone = Column(String, nullable=False)
-    buyer_email = Column(String, nullable=True)
+    buyer_email = Column(String, nullable=False)
 
     subtotal = Column(Float, nullable=False, default=0)
     total = Column(Float, nullable=False, default=0)
     currency = Column(String, nullable=False, default="USD")
 
-    payment_method = Column(String, nullable=False, default="whatsapp")
+    payment_method = Column(String, nullable=False, default="paypal")
     payment_status = Column(String, nullable=False, default="pending")
     status = Column(String, nullable=False, default="created")
 
