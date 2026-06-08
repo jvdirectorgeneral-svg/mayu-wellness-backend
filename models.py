@@ -124,8 +124,9 @@ class User(Base):
     )
 
     marketplace_orders = relationship(
-        "MarketplaceOrder",
-        back_populates="user",
+    "MarketplaceOrder",
+    foreign_keys="MarketplaceOrder.user_id",
+    back_populates="user",
     )
 
     education_resources_created = relationship(
@@ -868,9 +869,10 @@ class MarketplaceOrder(Base):
     paid_at = Column(DateTime, nullable=True)
 
     user = relationship(
-        "User",
-        back_populates="marketplace_orders",
-    )
+    "User",
+    foreign_keys=[user_id],
+    back_populates="marketplace_orders",
+   )
 
     admin_verifier = relationship(
         "User",
