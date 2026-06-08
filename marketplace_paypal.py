@@ -55,6 +55,9 @@ class MarketplacePayPalCreateOrderRequest(BaseModel):
     user_id: int
     quantity: int = 1
     currency: str = "USD"
+    buyer_name: Optional[str] = None
+    buyer_phone: Optional[str] = None
+    buyer_email: Optional[str] = None
 
 
 class MarketplacePayPalCaptureRequest(BaseModel):
@@ -203,6 +206,17 @@ def create_marketplace_paypal_order(
 
     item = get_marketplace_item(db, payload.item_type, payload.item_id)
 
+    buyer_email = (payload.buyer_email or user.email or "").strip()
+    buyer_name = (payload.buyer_name or user.name or "").strip()
+    buyer_phone = (payload.buyer_phone or user.phone or "").strip()
+
+    if item["source"] == "education":
+        if not buyer_email:
+            raise HTTPException(
+                status_code=400,
+                detail="El email es obligatorio para compras de Mayu Educación",
+            )
+
     if item["price"] <= 0:
         raise HTTPException(
             status_code=400,
@@ -249,7 +263,7 @@ def create_marketplace_paypal_order(
         provider="paypal",
         payment_type=f"marketplace_{item['source']}",
         payment_reference=response["id"],
-        payer_email=user.email,
+        payer_email=buyer_email,
         raw_payload=json.dumps(
             {
                 "paypal": response,
@@ -263,9 +277,9 @@ def create_marketplace_paypal_order(
                 },
                 "buyer": {
                     "user_id": user.id,
-                    "name": user.name,
-                    "email": user.email,
-                    "phone": user.phone,
+                    "name": buyer_name,
+                    "email": buyer_email,
+                    "phone": buyer_phone,
                 },
             }
         ),
@@ -291,6 +305,9 @@ def create_marketplace_paypal_order(
         "unit_price": item["price"],
         "amount": total,
         "currency": payload.currency,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
         "approval_url": approval_url,
         "links": response.get("links", []),
     }
@@ -319,18 +336,18 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
     )
 
     capture_id = None
-    payer_email = None
+    paypal_payer_email = None
 
     try:
         capture_id = response["purchase_units"][0]["payments"]["captures"][0]["id"]
-        payer_email = response.get("payer", {}).get("email_address")
+        paypal_payer_email = response.get("payer", {}).get("email_address")
     except Exception:
         pass
 
     payment.status = "paid"
     payment.paid_at = datetime.utcnow()
     payment.paypal_capture_id = capture_id
-    payment.payer_email = payer_email or payment.payer_email
+    payment.payer_email = payment.payer_email or paypal_payer_email
     payment.raw_payload = json.dumps(
         {
             "previous_payload": payment.raw_payload,
