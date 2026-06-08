@@ -4,7 +4,7 @@ import base64
 import urllib.request
 import urllib.error
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -31,6 +31,14 @@ def get_paypal_mode():
     return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
 
 
+def get_base_url():
+    return (
+        "https://api-m.sandbox.paypal.com"
+        if get_paypal_mode() == "sandbox"
+        else "https://api-m.paypal.com"
+    )
+
+
 def get_paypal_client_id():
     value = os.getenv("PAYPAL_CLIENT_ID")
     return value.strip() if value else None
@@ -41,27 +49,12 @@ def get_paypal_client_secret():
     return value.strip() if value else None
 
 
-def get_base_url():
-    if get_paypal_mode() == "sandbox":
-        return "https://api-m.sandbox.paypal.com"
-    return "https://api-m.paypal.com"
-
-
-class MarketplacePayPalItem(BaseModel):
+class MarketplacePayPalCreateOrderRequest(BaseModel):
     item_type: str  # pharmacy | education
     item_id: int
-    title: str
+    user_id: int
     quantity: int = 1
-    unit_price: float
-
-
-class MarketplacePayPalCreateOrderRequest(BaseModel):
-    buyer_name: str
-    buyer_email: Optional[str] = None
-    buyer_phone: Optional[str] = None
     currency: str = "USD"
-    source: str = "pharmacy"  # pharmacy | education
-    items: List[MarketplacePayPalItem]
 
 
 class MarketplacePayPalCaptureRequest(BaseModel):
@@ -129,61 +122,55 @@ def paypal_request(method: str, path: str, token: str, body=None):
         )
 
 
-def validate_items(payload: MarketplacePayPalCreateOrderRequest):
-    if not payload.items:
-        raise HTTPException(status_code=400, detail="El carrito está vacío")
+def get_marketplace_item(db: Session, item_type: str, item_id: int):
+    clean_type = item_type.strip().lower()
 
-    if payload.source not in {"pharmacy", "education"}:
+    if clean_type not in {"pharmacy", "education"}:
         raise HTTPException(
             status_code=400,
-            detail="source debe ser pharmacy o education",
+            detail="item_type debe ser pharmacy o education",
         )
 
-    total = 0.0
+    if clean_type == "pharmacy":
+        product = (
+            db.query(models.Product)
+            .filter(models.Product.id == item_id)
+            .first()
+        )
 
-    for item in payload.items:
-        if item.item_type not in {"pharmacy", "education"}:
-            raise HTTPException(
-                status_code=400,
-                detail="item_type debe ser pharmacy o education",
-            )
+        if not product:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-        if item.quantity <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="La cantidad debe ser mayor a cero",
-            )
+        if hasattr(product, "active") and product.active is not True:
+            raise HTTPException(status_code=400, detail="Producto inactivo")
 
-        if item.unit_price < 0:
-            raise HTTPException(
-                status_code=400,
-                detail="El precio no puede ser negativo",
-            )
+        price = float(getattr(product, "price", 0) or 0)
 
-        total += item.quantity * item.unit_price
-
-    return round(total, 2)
-
-
-def build_description(payload: MarketplacePayPalCreateOrderRequest):
-    if payload.source == "education":
-        return "Compra Marketplace Mayu Educación"
-
-    return "Compra Marketplace Farmacia Magistral Mayu"
-
-
-def serialize_items(payload: MarketplacePayPalCreateOrderRequest):
-    return [
-        {
-            "item_type": item.item_type,
-            "item_id": item.item_id,
-            "title": item.title,
-            "quantity": item.quantity,
-            "unit_price": round(item.unit_price, 2),
-            "total": round(item.quantity * item.unit_price, 2),
+        return {
+            "source": "pharmacy",
+            "title": product.name,
+            "price": price,
         }
-        for item in payload.items
-    ]
+
+    resource = (
+        db.query(models.EducationResource)
+        .filter(models.EducationResource.id == item_id)
+        .first()
+    )
+
+    if not resource:
+        raise HTTPException(status_code=404, detail="Contenido educativo no encontrado")
+
+    if hasattr(resource, "active") and resource.active is not True:
+        raise HTTPException(status_code=400, detail="Contenido educativo inactivo")
+
+    price = float(getattr(resource, "price", 0) or 0)
+
+    return {
+        "source": "education",
+        "title": resource.title,
+        "price": price,
+    }
 
 
 @router.get("/debug-config")
@@ -206,7 +193,24 @@ def create_marketplace_paypal_order(
     payload: MarketplacePayPalCreateOrderRequest,
     db: Session = Depends(get_db),
 ):
-    total = validate_items(payload)
+    if payload.quantity <= 0:
+        raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
+
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    item = get_marketplace_item(db, payload.item_type, payload.item_id)
+
+    if item["price"] <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="El producto o contenido no tiene precio válido",
+        )
+
+    total = round(item["price"] * payload.quantity, 2)
+
     token = get_token()
 
     paypal_body = {
@@ -217,7 +221,7 @@ def create_marketplace_paypal_order(
                     "currency_code": payload.currency,
                     "value": f"{total:.2f}",
                 },
-                "description": build_description(payload),
+                "description": f"Mayu Marketplace - {item['title']}",
             }
         ],
         "application_context": {
@@ -236,26 +240,33 @@ def create_marketplace_paypal_order(
     )
 
     payment = models.MembershipPayment(
-        user_id=None,
+        user_id=user.id,
         order_id=None,
         paypal_order_id=response["id"],
         amount=total,
         currency=payload.currency,
         status="created",
         provider="paypal",
-        payment_type=f"marketplace_{payload.source}",
+        payment_type=f"marketplace_{item['source']}",
         payment_reference=response["id"],
-        payer_email=payload.buyer_email,
+        payer_email=user.email,
         raw_payload=json.dumps(
             {
                 "paypal": response,
-                "buyer": {
-                    "name": payload.buyer_name,
-                    "email": payload.buyer_email,
-                    "phone": payload.buyer_phone,
+                "marketplace": {
+                    "item_type": item["source"],
+                    "item_id": payload.item_id,
+                    "title": item["title"],
+                    "quantity": payload.quantity,
+                    "unit_price": item["price"],
+                    "total": total,
                 },
-                "source": payload.source,
-                "items": serialize_items(payload),
+                "buyer": {
+                    "user_id": user.id,
+                    "name": user.name,
+                    "email": user.email,
+                    "phone": user.phone,
+                },
             }
         ),
     )
@@ -264,13 +275,23 @@ def create_marketplace_paypal_order(
     db.commit()
     db.refresh(payment)
 
+    approval_url = None
+    for link in response.get("links", []):
+        if link.get("rel") == "approve":
+            approval_url = link.get("href")
+
     return {
         "message": "Orden PayPal marketplace creada",
         "payment_id": payment.id,
         "paypal_order_id": response["id"],
-        "source": payload.source,
+        "item_type": item["source"],
+        "item_id": payload.item_id,
+        "title": item["title"],
+        "quantity": payload.quantity,
+        "unit_price": item["price"],
         "amount": total,
         "currency": payload.currency,
+        "approval_url": approval_url,
         "links": response.get("links", []),
     }
 
