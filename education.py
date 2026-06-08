@@ -95,10 +95,10 @@ class EducationCartItemCreate(BaseModel):
 
 class EducationOrderCreate(BaseModel):
     buyer_name: str
-    buyer_email: Optional[str] = None
+    buyer_email: str
     buyer_phone: str
     items: List[EducationCartItemCreate]
-    payment_method: str = "whatsapp"
+    payment_method: str = "paypal"
 
 
 def get_db():
@@ -353,12 +353,16 @@ def create_education_store_order(payload: EducationOrderCreate, db: Session = De
 
     buyer_name = payload.buyer_name.strip()
     buyer_phone = payload.buyer_phone.strip()
+    buyer_email = payload.buyer_email.strip()
 
     if not buyer_name:
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
 
     if not buyer_phone:
         raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    if not buyer_email:
+        raise HTTPException(status_code=400, detail="El email es obligatorio")
 
     order_code = generate_education_order_code()
     subtotal = 0.0
@@ -393,10 +397,8 @@ def create_education_store_order(payload: EducationOrderCreate, db: Session = De
         f"Hola Mayu Educación, deseo confirmar mi pedido {order_code}.",
         f"Cliente: {buyer_name}",
         f"Teléfono: {buyer_phone}",
+        f"Email: {buyer_email}",
     ]
-
-    if payload.buyer_email and payload.buyer_email.strip():
-        whatsapp_lines.append(f"Email: {payload.buyer_email.strip()}")
 
     whatsapp_lines.append("")
     whatsapp_lines.append("Contenidos solicitados:")
@@ -412,7 +414,7 @@ def create_education_store_order(payload: EducationOrderCreate, db: Session = De
         "order": {
             "order_code": order_code,
             "buyer_name": buyer_name,
-            "buyer_email": payload.buyer_email,
+            "buyer_email": buyer_email,
             "buyer_phone": buyer_phone,
             "subtotal": round(subtotal, 2),
             "total": total,
