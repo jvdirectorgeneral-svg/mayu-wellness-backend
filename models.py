@@ -124,9 +124,9 @@ class User(Base):
     )
 
     marketplace_orders = relationship(
-    "MarketplaceOrder",
-    foreign_keys="MarketplaceOrder.user_id",
-    back_populates="user",
+        "MarketplaceOrder",
+        foreign_keys="MarketplaceOrder.user_id",
+        back_populates="user",
     )
 
     education_resources_created = relationship(
@@ -336,9 +336,7 @@ class MonthlySelectionItem(Base):
             name="uq_monthly_selection_item_product",
         ),
     )
-
-
-class PlanChangeRequest(Base):
+    class PlanChangeRequest(Base):
     __tablename__ = "plan_change_requests"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -615,9 +613,7 @@ class MarketingCampaign(Base):
         back_populates="campaign",
         cascade="all, delete-orphan",
     )
-
-
-class MarketingCampaignRecipient(Base):
+    class MarketingCampaignRecipient(Base):
     __tablename__ = "marketing_campaign_recipients"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -832,6 +828,12 @@ class MarketplaceOrder(Base):
     address = Column(Text, nullable=True)
     delivery_notes = Column(Text, nullable=True)
 
+    billing_name = Column(String, nullable=True)
+    billing_identification = Column(String, nullable=True)
+    billing_email = Column(String, nullable=True)
+    billing_phone = Column(String, nullable=True)
+    billing_address = Column(Text, nullable=True)
+
     subtotal = Column(Float, nullable=False, default=0)
 
     discount_code = Column(String, nullable=True)
@@ -869,10 +871,10 @@ class MarketplaceOrder(Base):
     paid_at = Column(DateTime, nullable=True)
 
     user = relationship(
-    "User",
-    foreign_keys=[user_id],
-    back_populates="marketplace_orders",
-   )
+        "User",
+        foreign_keys=[user_id],
+        back_populates="marketplace_orders",
+    )
 
     admin_verifier = relationship(
         "User",
