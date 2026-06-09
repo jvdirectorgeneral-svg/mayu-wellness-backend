@@ -336,7 +336,7 @@ class MonthlySelectionItem(Base):
             name="uq_monthly_selection_item_product",
         ),
     )
-    class PlanChangeRequest(Base):
+class PlanChangeRequest(Base):
     __tablename__ = "plan_change_requests"
 
     id = Column(Integer, primary_key=True, index=True)
