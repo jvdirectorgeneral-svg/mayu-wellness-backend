@@ -336,6 +336,8 @@ class MonthlySelectionItem(Base):
             name="uq_monthly_selection_item_product",
         ),
     )
+
+
 class PlanChangeRequest(Base):
     __tablename__ = "plan_change_requests"
 
@@ -613,7 +615,9 @@ class MarketingCampaign(Base):
         back_populates="campaign",
         cascade="all, delete-orphan",
     )
-    class MarketingCampaignRecipient(Base):
+    
+
+class MarketingCampaignRecipient(Base):
     __tablename__ = "marketing_campaign_recipients"
 
     id = Column(Integer, primary_key=True, index=True)
