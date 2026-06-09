@@ -77,6 +77,13 @@ class MarketplacePayPalCreateCartOrderRequest(BaseModel):
     city: Optional[str] = None
     address: Optional[str] = None
     delivery_notes: Optional[str] = None
+
+    billing_name: Optional[str] = None
+    billing_identification: Optional[str] = None
+    billing_email: Optional[str] = None
+    billing_phone: Optional[str] = None
+    billing_address: Optional[str] = None
+
     discount_code: Optional[str] = None
     currency: str = "USD"
     items: List[MarketplaceCartItemCreate]
@@ -235,7 +242,6 @@ def get_original_payment_payload(payment: models.MembershipPayment):
 
     return payload
 
-
 def send_education_access_email(
     to_email: str,
     buyer_name: str,
@@ -298,6 +304,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     original_payload = get_original_payment_payload(payment)
     marketplace = original_payload.get("marketplace", {}) or {}
     buyer = original_payload.get("buyer", {}) or {}
+    billing = original_payload.get("billing", {}) or {}
 
     items_payload = marketplace.get("items") or []
 
@@ -323,6 +330,12 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     city = (buyer.get("city") or "").strip() or None
     address = (buyer.get("address") or "").strip() or None
     delivery_notes = (buyer.get("delivery_notes") or "").strip() or None
+
+    billing_name = (billing.get("name") or buyer_name).strip() or None
+    billing_identification = (billing.get("identification") or "").strip() or None
+    billing_email = (billing.get("email") or buyer_email).strip() or None
+    billing_phone = (billing.get("phone") or buyer_phone).strip() or None
+    billing_address = (billing.get("address") or address or "").strip() or None
 
     subtotal = 0.0
     order_items_data = []
@@ -375,6 +388,13 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         city=city,
         address=address,
         delivery_notes=delivery_notes,
+
+        billing_name=billing_name,
+        billing_identification=billing_identification,
+        billing_email=billing_email,
+        billing_phone=billing_phone,
+        billing_address=billing_address,
+
         subtotal=subtotal,
         discount_code=discount_code,
         discount_percent=discount_percent,
@@ -390,6 +410,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
             "membership_payment_id": payment.id,
             "marketplace": marketplace,
             "buyer": buyer,
+            "billing": billing,
         }),
         paid_at=datetime.utcnow(),
     )
@@ -847,6 +868,13 @@ def create_marketplace_paypal_cart_order(
                 "city": payload.city,
                 "address": payload.address,
                 "delivery_notes": payload.delivery_notes,
+            },
+            "billing": {
+                "name": payload.billing_name,
+                "identification": payload.billing_identification,
+                "email": payload.billing_email,
+                "phone": payload.billing_phone,
+                "address": payload.billing_address,
             },
         }),
     )
