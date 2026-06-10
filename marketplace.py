@@ -131,6 +131,7 @@ def require_pharmacy_admin_or_logistics(current_user: models.User):
         "admin",
         "pharmacy_admin",
         "pharmacy_logistics",
+        "logistics",
     }:
         raise HTTPException(
             status_code=403,
@@ -145,7 +146,13 @@ def require_pharmacy_logistics(current_user: models.User):
     if not getattr(current_user, "is_active", True):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
-    if current_user.role not in {"superadmin", "admin", "pharmacy_logistics"}:
+    if current_user.role not in {
+        "superadmin",
+        "admin",
+        "pharmacy_admin",
+        "pharmacy_logistics",
+        "logistics",
+    }:
         raise HTTPException(status_code=403, detail="Acceso solo para logística")
 
 
@@ -315,6 +322,7 @@ def upload_marketplace_image(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error subiendo imagen: {str(e)}")
+
 
 @router.get("/categories")
 def get_public_categories(db: Session = Depends(get_db)):
