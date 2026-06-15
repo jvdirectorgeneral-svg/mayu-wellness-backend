@@ -87,8 +87,8 @@ def payphone_headers():
 
 def get_monthly_amount_by_level(level: int) -> float:
     prices = {
-        1: 38.00,
-        2: 48.00,
+        1: 40.00,
+        2: 50.00,
         3: 60.00,
     }
 
