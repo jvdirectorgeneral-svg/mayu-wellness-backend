@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from dependencies import get_current_user
 import models
+from member_cards import get_or_create_card
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -53,6 +54,7 @@ class PayphoneCreateLinkRequest(BaseModel):
 class PayphoneMembershipInitialRequest(BaseModel):
     user_id: int
     plan_level: int
+    accepted_recurring_debit: bool = False
 
 
 class PayphoneConfirmRequest(BaseModel):
@@ -85,8 +87,8 @@ def payphone_headers():
 
 def get_monthly_amount_by_level(level: int) -> float:
     prices = {
-        1: 40.00,
-        2: 50.00,
+        1: 38.00,
+        2: 48.00,
         3: 60.00,
     }
 
@@ -97,7 +99,15 @@ def get_monthly_amount_by_level(level: int) -> float:
 
 
 def get_signup_amount_by_level(level: int) -> float:
-    return 1.00
+    return 5.00
+
+
+def get_first_payment_amount_by_level(level: int) -> float:
+    return get_monthly_amount_by_level(level) + get_signup_amount_by_level(level)
+
+
+def get_ambassador_commission_amount(level: int) -> float:
+    return round(get_monthly_amount_by_level(level) * 0.14, 2)
 
 
 def safe_set(obj, attr, value):
@@ -162,7 +172,7 @@ def create_payphone_link(
     try:
         return response.json()
     except Exception:
-        return {"link": response.text}
+        return response.text
 
 
 def confirm_payphone_transaction(
@@ -312,16 +322,28 @@ def create_membership_initial_payment(
     if payload.plan_level not in [1, 2, 3]:
         raise HTTPException(status_code=400, detail="Nivel de plan inválido")
 
+    if not payload.accepted_recurring_debit:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe aceptar el acuerdo de afiliación y débito mensual recurrente",
+        )
+
     signup_amount = get_signup_amount_by_level(payload.plan_level)
     monthly_amount = get_monthly_amount_by_level(payload.plan_level)
+    first_payment_amount = get_first_payment_amount_by_level(payload.plan_level)
+    ambassador_commission = get_ambassador_commission_amount(payload.plan_level)
 
     client_transaction_id = generate_client_transaction_id("MW")
     description = f"MWC Primer Pago Nivel {payload.plan_level}"
 
     user.membership_level = payload.plan_level
+    safe_set(user, "accepted_recurring_debit", True)
+    safe_set(user, "recurring_debit_provider", "payphone")
+    safe_set(user, "recurring_debit_accepted_at", datetime.utcnow())
+    safe_set(user, "monthly_amount", monthly_amount)
 
     payphone_data = create_payphone_link(
-        amount=signup_amount,
+        amount=first_payment_amount,
         description=description,
         client_transaction_id=client_transaction_id,
         buyer_email=user.email,
@@ -331,16 +353,20 @@ def create_membership_initial_payment(
     payment = models.MembershipPayment(
         user_id=user.id,
         order_id=None,
-        amount=signup_amount,
+        amount=first_payment_amount,
         currency="USD",
         status="created",
         provider="payphone",
-        payment_type="signup",
+        payment_type="membership_initial",
         payment_reference=client_transaction_id,
         raw_payload=json.dumps(payphone_data),
     )
 
     safe_set(payment, "paypal_order_id", client_transaction_id)
+    safe_set(payment, "signup_amount", signup_amount)
+    safe_set(payment, "monthly_amount", monthly_amount)
+    safe_set(payment, "plan_level", payload.plan_level)
+    safe_set(payment, "accepted_recurring_debit", True)
 
     db.add(payment)
     db.commit()
@@ -354,7 +380,9 @@ def create_membership_initial_payment(
         "plan_level": payload.plan_level,
         "signup_amount": signup_amount,
         "monthly_amount": monthly_amount,
-        "signup_fee": 0.00,
+        "first_payment_amount": first_payment_amount,
+        "ambassador_commission_monthly_14_percent": ambassador_commission,
+        "accepted_recurring_debit": True,
         "clientTransactionId": client_transaction_id,
         "payphone": payphone_data,
     }
@@ -450,19 +478,24 @@ def confirm_membership_initial_payment(
     user.is_active = True
 
     create_initial_monthly_selection_if_possible(db, user)
+    user, card = get_or_create_card(db, user.id)
 
     db.commit()
     db.refresh(payment)
     db.refresh(user)
+    db.refresh(card)
 
     return {
         "success": True,
-        "message": "Primer pago confirmado. Socio activado correctamente.",
+        "message": "Primer pago confirmado. Socio activado, selección mensual creada y tarjeta generada.",
         "payment_id": payment.id,
         "payment_status": payment.status,
         "user_id": user.id,
         "membership_active": user.membership_active,
         "membership_level": user.membership_level,
+        "member_card_id": card.id,
+        "member_code": card.member_code,
+        "qr_token": card.qr_token,
         "payphone": data,
     }
 
@@ -510,18 +543,30 @@ async def payphone_webhook(
         payment.admin_verified_at = now
         payment.raw_payload = json.dumps(payload)
 
+        card_id = None
+
         if user:
             user.membership_active = True
             user.is_active = True
             create_initial_monthly_selection_if_possible(db, user)
+            user, card = get_or_create_card(db, user.id)
+            card_id = card.id
 
         db.commit()
+
+        return {
+            "success": True,
+            "message": "Webhook PayPhone procesado. Socio activado.",
+            "clientTransactionId": client_transaction_id,
+            "paid": True,
+            "card_id": card_id,
+        }
 
     return {
         "success": True,
         "message": "Webhook PayPhone procesado",
         "clientTransactionId": client_transaction_id,
-        "paid": paid,
+        "paid": False,
     }
 
 
