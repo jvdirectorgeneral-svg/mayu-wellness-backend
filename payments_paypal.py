@@ -110,7 +110,11 @@ def add_tracking_history(
 
 
 def get_monthly_amount_by_level(level: int) -> float:
-    prices = {1: 40.00, 2: 50.00, 3: 60.00}
+    prices = {
+        1: 40.00,
+        2: 50.00,
+        3: 60.00,
+    }
 
     if level not in prices:
         raise HTTPException(status_code=400, detail="Nivel de plan inválido")
@@ -118,8 +122,12 @@ def get_monthly_amount_by_level(level: int) -> float:
     return prices[level]
 
 
-def get_signup_amount_by_level(level: int) -> float:
-    return get_monthly_amount_by_level(level) + 5.00
+def get_signup_fee() -> float:
+    return 5.00
+
+
+def get_first_payment_amount_by_level(level: int) -> float:
+    return get_monthly_amount_by_level(level) + get_signup_fee()
 
 
 def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
@@ -128,11 +136,13 @@ def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
 
     rounded = round(float(amount), 2)
 
-    if rounded in [45.00, 45.50, 40.00]:
+    if rounded in [45.00, 40.00]:
         return 1
+
     if rounded in [55.00, 50.00]:
         return 2
-    if rounded in [65.00, 67.00, 60.00]:
+
+    if rounded in [65.00, 60.00]:
         return 3
 
     return None
@@ -447,7 +457,10 @@ def create_order(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     plan_level = resolve_plan_level(payload, user)
-    signup_amount = get_signup_amount_by_level(plan_level)
+
+    first_payment_amount = get_first_payment_amount_by_level(plan_level)
+    monthly_amount = get_monthly_amount_by_level(plan_level)
+    signup_fee = get_signup_fee()
 
     user.membership_level = plan_level
 
@@ -459,11 +472,11 @@ def create_order(
             {
                 "amount": {
                     "currency_code": payload.currency,
-                    "value": f"{signup_amount:.2f}",
+                    "value": f"{first_payment_amount:.2f}",
                 },
                 "description": (
                     f"Mayu Wellness Club - Primer pago Nivel {plan_level} "
-                    f"incluye mensualidad + inscripción inicial"
+                    f"incluye mensualidad ${monthly_amount:.2f} + inscripción inicial ${signup_fee:.2f}"
                 ),
             }
         ],
@@ -481,14 +494,18 @@ def create_order(
         user_id=user.id,
         order_id=payload.order_id,
         paypal_order_id=response["id"],
-        amount=signup_amount,
+        amount=first_payment_amount,
         currency=payload.currency,
         status="created",
         provider="paypal",
-        payment_type="signup",
+        payment_type="membership_initial",
         payment_reference=response["id"],
         raw_payload=json.dumps(response),
     )
+
+    safe_set(payment, "signup_amount", signup_fee)
+    safe_set(payment, "monthly_amount", monthly_amount)
+    safe_set(payment, "plan_level", plan_level)
 
     db.add(payment)
     db.commit()
@@ -497,10 +514,10 @@ def create_order(
     return {
         "payment_id": payment.id,
         "paypal_order_id": response["id"],
-        "amount": signup_amount,
+        "amount": first_payment_amount,
         "plan_level": plan_level,
-        "monthly_amount": get_monthly_amount_by_level(plan_level),
-        "signup_fee": 5.00,
+        "monthly_amount": monthly_amount,
+        "signup_fee": signup_fee,
         "links": response.get("links", []),
     }
 
@@ -544,7 +561,7 @@ def capture_payment_by_order_id(paypal_order_id: str, db: Session):
         payment.provider = "paypal"
 
     if not payment.payment_type:
-        payment.payment_type = "signup"
+        payment.payment_type = "membership_initial"
 
     db.commit()
     db.refresh(payment)
@@ -687,6 +704,7 @@ def verify(
         "order_year": order.year if order else None,
         "visible_in_logistics": visible_in_logistics,
     }
+
 
 @router.post("/webhook")
 async def webhook(request: Request, db: Session = Depends(get_db)):
