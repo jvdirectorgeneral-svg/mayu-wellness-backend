@@ -54,7 +54,7 @@ class PayphoneCreateLinkRequest(BaseModel):
 class PayphoneMembershipInitialRequest(BaseModel):
     user_id: int
     plan_level: int
-    accepted_recurring_debit: bool = False
+    accepted_recurring_debit: bool = True
 
 
 class PayphoneConfirmRequest(BaseModel):
@@ -271,6 +271,98 @@ def create_initial_monthly_selection_if_possible(db: Session, user: models.User)
     return selection
 
 
+def process_membership_initial_confirmation(
+    payload: PayphoneConfirmRequest,
+    db: Session,
+):
+    data = confirm_payphone_transaction(
+        id=payload.id,
+        clientTransactionId=payload.clientTransactionId,
+        transactionId=payload.transactionId,
+    )
+
+    client_transaction_id = (
+        payload.clientTransactionId
+        or str(data.get("clientTransactionId") or "")
+        or str(data.get("client_transaction_id") or "")
+    )
+
+    payment = None
+
+    if client_transaction_id:
+        payment = (
+            db.query(models.MembershipPayment)
+            .filter(models.MembershipPayment.payment_reference == client_transaction_id)
+            .first()
+        )
+
+        if not payment:
+            payment = (
+                db.query(models.MembershipPayment)
+                .filter(models.MembershipPayment.paypal_order_id == client_transaction_id)
+                .first()
+            )
+
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Pago local no encontrado para este clientTransactionId",
+        )
+
+    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    paid = is_payphone_paid(data)
+
+    if not paid:
+        payment.status = "pending"
+        payment.raw_payload = json.dumps(data)
+        db.commit()
+
+        return {
+            "success": False,
+            "message": "PayPhone todavía no reporta pago aprobado",
+            "payment_id": payment.id,
+            "payment_status": payment.status,
+            "payphone": data,
+        }
+
+    now = datetime.utcnow()
+
+    payment.status = "verified"
+    payment.paid_at = now
+    payment.admin_verified = True
+    payment.admin_verified_at = now
+    payment.raw_payload = json.dumps(data)
+
+    user.membership_active = True
+    user.is_active = True
+
+    create_initial_monthly_selection_if_possible(db, user)
+    user, card = get_or_create_card(db, user.id)
+
+    db.commit()
+    db.refresh(payment)
+    db.refresh(user)
+    db.refresh(card)
+
+    return {
+        "success": True,
+        "message": "Primer pago confirmado. Socio activado, selección mensual creada y tarjeta generada.",
+        "payment_id": payment.id,
+        "payment_status": payment.status,
+        "user_id": user.id,
+        "membership_active": user.membership_active,
+        "membership_level": user.membership_level,
+        "member_card_id": card.id,
+        "member_code": card.member_code,
+        "qr_token": card.qr_token,
+        "payphone": data,
+    }
+
+
 @router.get("/health")
 def payphone_health():
     return {
@@ -412,92 +504,23 @@ def confirm_membership_initial_payment(
     payload: PayphoneConfirmRequest,
     db: Session = Depends(get_db),
 ):
-    data = confirm_payphone_transaction(
-        id=payload.id,
-        clientTransactionId=payload.clientTransactionId,
-        transactionId=payload.transactionId,
+    return process_membership_initial_confirmation(payload, db)
+
+
+@router.get("/membership/confirm-initial-payment")
+def confirm_membership_initial_payment_get(
+    id: Optional[int] = None,
+    clientTransactionId: Optional[str] = None,
+    transactionId: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    payload = PayphoneConfirmRequest(
+        id=id,
+        clientTransactionId=clientTransactionId,
+        transactionId=transactionId,
     )
 
-    client_transaction_id = (
-        payload.clientTransactionId
-        or str(data.get("clientTransactionId") or "")
-        or str(data.get("client_transaction_id") or "")
-    )
-
-    payment = None
-
-    if client_transaction_id:
-        payment = (
-            db.query(models.MembershipPayment)
-            .filter(models.MembershipPayment.payment_reference == client_transaction_id)
-            .first()
-        )
-
-        if not payment:
-            payment = (
-                db.query(models.MembershipPayment)
-                .filter(models.MembershipPayment.paypal_order_id == client_transaction_id)
-                .first()
-            )
-
-    if not payment:
-        raise HTTPException(
-            status_code=404,
-            detail="Pago local no encontrado para este clientTransactionId",
-        )
-
-    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    paid = is_payphone_paid(data)
-
-    if not paid:
-        payment.status = "pending"
-        payment.raw_payload = json.dumps(data)
-        db.commit()
-
-        return {
-            "success": False,
-            "message": "PayPhone todavía no reporta pago aprobado",
-            "payment_id": payment.id,
-            "payment_status": payment.status,
-            "payphone": data,
-        }
-
-    now = datetime.utcnow()
-
-    payment.status = "verified"
-    payment.paid_at = now
-    payment.admin_verified = True
-    payment.admin_verified_at = now
-    payment.raw_payload = json.dumps(data)
-
-    user.membership_active = True
-    user.is_active = True
-
-    create_initial_monthly_selection_if_possible(db, user)
-    user, card = get_or_create_card(db, user.id)
-
-    db.commit()
-    db.refresh(payment)
-    db.refresh(user)
-    db.refresh(card)
-
-    return {
-        "success": True,
-        "message": "Primer pago confirmado. Socio activado, selección mensual creada y tarjeta generada.",
-        "payment_id": payment.id,
-        "payment_status": payment.status,
-        "user_id": user.id,
-        "membership_active": user.membership_active,
-        "membership_level": user.membership_level,
-        "member_card_id": card.id,
-        "member_code": card.member_code,
-        "qr_token": card.qr_token,
-        "payphone": data,
-    }
+    return process_membership_initial_confirmation(payload, db)
 
 
 @router.post("/webhook")
