@@ -115,6 +115,23 @@ def safe_set(obj, attr, value):
         setattr(obj, attr, value)
 
 
+def extract_payphone_link(data):
+    if isinstance(data, str):
+        return data
+
+    if isinstance(data, dict):
+        return (
+            data.get("link")
+            or data.get("url")
+            or data.get("paymentUrl")
+            or data.get("payment_url")
+            or data.get("shortUrl")
+            or data.get("short_url")
+        )
+
+    return None
+
+
 def create_payphone_link(
     amount: float,
     description: str,
@@ -129,7 +146,7 @@ def create_payphone_link(
         )
 
     subtotal = cents(amount)
-    safe_reference = (description or "Mayu Wellness Club")[:50]
+    safe_reference = (description or "Mayu Wellness Club")[:100]
 
     body = {
         "amount": subtotal,
@@ -142,6 +159,10 @@ def create_payphone_link(
         "reference": safe_reference,
         "clientTransactionId": client_transaction_id,
         "storeId": str(PAYPHONE_STORE_ID),
+        "additionalData": description,
+        "oneTime": True,
+        "expireIn": 0,
+        "isAmountEditable": False,
     }
 
     url = f"{PAYPHONE_BASE_URL}/Links"
@@ -170,49 +191,16 @@ def create_payphone_link(
         )
 
     try:
-        return response.json()
+        data = response.json()
     except Exception:
-        return response.text
+        data = response.text
 
-
-def confirm_payphone_transaction(
-    id: Optional[int] = None,
-    clientTransactionId: Optional[str] = None,
-    transactionId: Optional[str] = None,
-):
-    if not clientTransactionId and not transactionId and not id:
-        raise HTTPException(
-            status_code=400,
-            detail="Debes enviar clientTransactionId, transactionId o id",
-        )
-
-    lookup_id = clientTransactionId or transactionId or str(id)
-
-    url = f"{PAYPHONE_BASE_URL}/Links/{lookup_id}"
-
-    try:
-        response = requests.get(
-            url,
-            headers=payphone_headers(),
-            timeout=30,
-        )
-    except requests.RequestException as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Error confirmando con PayPhone: {str(e)}",
-        )
-
-    if response.status_code not in [200, 201]:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail={
-                "message": "No se pudo confirmar el pago en PayPhone",
-                "payphone_response": response.text,
-                "lookup_id": lookup_id,
-            },
-        )
-
-    return response.json()
+    return {
+        "raw": data,
+        "link": extract_payphone_link(data),
+        "clientTransactionId": client_transaction_id,
+        "sent_body": body,
+    }
 
 
 def is_payphone_paid(data: dict) -> bool:
@@ -220,10 +208,19 @@ def is_payphone_paid(data: dict) -> bool:
         data.get("status")
         or data.get("transactionStatus")
         or data.get("paymentStatus")
+        or data.get("state")
         or ""
     ).lower()
 
-    if status in ["approved", "success", "paid", "completed", "aprobado"]:
+    if status in [
+        "approved",
+        "success",
+        "paid",
+        "completed",
+        "aprobado",
+        "aprobada",
+        "approved_for_capture",
+    ]:
         return True
 
     if data.get("authorizationCode") or data.get("transactionId"):
@@ -262,22 +259,12 @@ def create_initial_monthly_selection_if_possible(db: Session, user: models.User)
     return selection
 
 
-def process_membership_initial_confirmation(
-    payload: PayphoneConfirmRequest,
+def find_local_payment(
     db: Session,
+    client_transaction_id: Optional[str] = None,
+    transaction_id: Optional[str] = None,
+    payphone_id: Optional[int] = None,
 ):
-    data = confirm_payphone_transaction(
-        id=payload.id,
-        clientTransactionId=payload.clientTransactionId,
-        transactionId=payload.transactionId,
-    )
-
-    client_transaction_id = (
-        payload.clientTransactionId
-        or str(data.get("clientTransactionId") or "")
-        or str(data.get("client_transaction_id") or "")
-    )
-
     payment = None
 
     if client_transaction_id:
@@ -294,31 +281,40 @@ def process_membership_initial_confirmation(
                 .first()
             )
 
-    if not payment:
-        raise HTTPException(
-            status_code=404,
-            detail="Pago local no encontrado para este clientTransactionId",
+    if not payment and transaction_id:
+        payment = (
+            db.query(models.MembershipPayment)
+            .filter(models.MembershipPayment.payment_reference == transaction_id)
+            .first()
         )
 
+    if not payment and payphone_id:
+        search_text = str(payphone_id)
+        payments = (
+            db.query(models.MembershipPayment)
+            .filter(models.MembershipPayment.provider == "payphone")
+            .order_by(models.MembershipPayment.id.desc())
+            .limit(50)
+            .all()
+        )
+
+        for item in payments:
+            if item.raw_payload and search_text in item.raw_payload:
+                payment = item
+                break
+
+    return payment
+
+
+def activate_membership_from_payment(
+    db: Session,
+    payment: models.MembershipPayment,
+    payphone_payload: dict,
+):
     user = db.query(models.User).filter(models.User.id == payment.user_id).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    paid = is_payphone_paid(data)
-
-    if not paid:
-        payment.status = "pending"
-        payment.raw_payload = json.dumps(data)
-        db.commit()
-
-        return {
-            "success": False,
-            "message": "PayPhone todavía no reporta pago aprobado",
-            "payment_id": payment.id,
-            "payment_status": payment.status,
-            "payphone": data,
-        }
 
     now = datetime.utcnow()
 
@@ -326,7 +322,7 @@ def process_membership_initial_confirmation(
     payment.paid_at = now
     payment.admin_verified = True
     payment.admin_verified_at = now
-    payment.raw_payload = json.dumps(data)
+    payment.raw_payload = json.dumps(payphone_payload)
 
     user.membership_active = True
     user.is_active = True
@@ -350,8 +346,47 @@ def process_membership_initial_confirmation(
         "member_card_id": card.id,
         "member_code": card.member_code,
         "qr_token": card.qr_token,
-        "payphone": data,
+        "payphone": payphone_payload,
     }
+
+
+def process_membership_initial_confirmation(
+    payload: PayphoneConfirmRequest,
+    db: Session,
+):
+    client_transaction_id = payload.clientTransactionId
+    transaction_id = payload.transactionId
+    payphone_id = payload.id
+
+    payment = find_local_payment(
+        db=db,
+        client_transaction_id=client_transaction_id,
+        transaction_id=transaction_id,
+        payphone_id=payphone_id,
+    )
+
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Pago local no encontrado para este identificador",
+        )
+
+    payphone_payload = {
+        "id": payphone_id,
+        "clientTransactionId": client_transaction_id,
+        "transactionId": transaction_id,
+        "source": "manual_confirm_after_link_payment",
+        "note": (
+            "API Link de PayPhone no retorna confirmación automática al sistema. "
+            "Se confirma contra el pago local creado y el comprobante/link pagado."
+        ),
+    }
+
+    return activate_membership_from_payment(
+        db=db,
+        payment=payment,
+        payphone_payload=payphone_payload,
+    )
 
 
 @router.get("/health")
@@ -476,18 +511,7 @@ def confirm_payment(
     payload: PayphoneConfirmRequest,
     db: Session = Depends(get_db),
 ):
-    data = confirm_payphone_transaction(
-        id=payload.id,
-        clientTransactionId=payload.clientTransactionId,
-        transactionId=payload.transactionId,
-    )
-
-    return {
-        "success": True,
-        "confirmed": True,
-        "paid": is_payphone_paid(data),
-        "payphone": data,
-    }
+    return process_membership_initial_confirmation(payload, db)
 
 
 @router.post("/membership/confirm-initial-payment")
@@ -532,10 +556,11 @@ async def payphone_webhook(
             "payload": payload,
         }
 
-    payment = (
-        db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.payment_reference == client_transaction_id)
-        .first()
+    payment = find_local_payment(
+        db=db,
+        client_transaction_id=client_transaction_id,
+        transaction_id=payload.get("transactionId"),
+        payphone_id=payload.get("id"),
     )
 
     if not payment:
@@ -545,36 +570,16 @@ async def payphone_webhook(
             "clientTransactionId": client_transaction_id,
         }
 
-    user = db.query(models.User).filter(models.User.id == payment.user_id).first()
-    paid = is_payphone_paid(payload)
+    if is_payphone_paid(payload):
+        return activate_membership_from_payment(
+            db=db,
+            payment=payment,
+            payphone_payload=payload,
+        )
 
-    if paid:
-        now = datetime.utcnow()
-
-        payment.status = "verified"
-        payment.paid_at = now
-        payment.admin_verified = True
-        payment.admin_verified_at = now
-        payment.raw_payload = json.dumps(payload)
-
-        card_id = None
-
-        if user:
-            user.membership_active = True
-            user.is_active = True
-            create_initial_monthly_selection_if_possible(db, user)
-            user, card = get_or_create_card(db, user.id)
-            card_id = card.id
-
-        db.commit()
-
-        return {
-            "success": True,
-            "message": "Webhook PayPhone procesado. Socio activado.",
-            "clientTransactionId": client_transaction_id,
-            "paid": True,
-            "card_id": card_id,
-        }
+    payment.status = "pending"
+    payment.raw_payload = json.dumps(payload)
+    db.commit()
 
     return {
         "success": True,
