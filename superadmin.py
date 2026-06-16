@@ -440,3 +440,164 @@ def update_internal_user(
         "message": "Usuario interno actualizado correctamente",
         "user": user_to_dict(db, user),
     }
+
+def table_exists(db: Session, table_name: str) -> bool:
+    result = db.execute(
+        text("SELECT to_regclass(:table_name)"),
+        {"table_name": f"public.{table_name}"},
+    ).scalar()
+
+    return result is not None
+
+
+def delete_if_table_exists(db: Session, table_name: str, column_name: str, value: int):
+    if table_exists(db, table_name):
+        db.execute(
+            text(f"DELETE FROM {table_name} WHERE {column_name} = :value"),
+            {"value": value},
+        )
+
+
+def delete_by_subquery_if_table_exists(
+    db: Session,
+    table_name: str,
+    column_name: str,
+    parent_table: str,
+    parent_column: str,
+    user_id: int,
+):
+    if table_exists(db, table_name) and table_exists(db, parent_table):
+        db.execute(
+            text(
+                f"""
+                DELETE FROM {table_name}
+                WHERE {column_name} IN (
+                    SELECT id FROM {parent_table}
+                    WHERE {parent_column} = :user_id
+                )
+                """
+            ),
+            {"user_id": user_id},
+        )
+
+
+@router.delete("/users/{user_id}/full-delete")
+def full_delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar tu propio usuario superadmin",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado",
+        )
+
+    if user.role == "superadmin":
+        raise HTTPException(
+            status_code=403,
+            detail="No puedes eliminar otro superadmin desde aquí",
+        )
+
+    try:
+        # Hijos de órdenes
+        delete_by_subquery_if_table_exists(
+            db, "order_items", "order_id", "orders", "user_id", user_id
+        )
+        delete_by_subquery_if_table_exists(
+            db, "order_tracking_history", "order_id", "orders", "user_id", user_id
+        )
+
+        # Hijos de selección mensual
+        delete_by_subquery_if_table_exists(
+            db,
+            "monthly_selection_items",
+            "selection_id",
+            "monthly_selections",
+            "user_id",
+            user_id,
+        )
+
+        # Hijos de órdenes marketplace farmacia
+        delete_by_subquery_if_table_exists(
+            db,
+            "marketplace_order_items",
+            "order_id",
+            "marketplace_orders",
+            "user_id",
+            user_id,
+        )
+
+        # Hijos de órdenes educación
+        delete_by_subquery_if_table_exists(
+            db,
+            "education_order_items",
+            "order_id",
+            "education_orders",
+            "user_id",
+            user_id,
+        )
+
+        # Dependencias directas por user_id
+        direct_tables = [
+            "membership_payments",
+            "monthly_selections",
+            "orders",
+            "member_cards",
+            "plan_change_requests",
+            "marketplace_orders",
+            "education_orders",
+            "education_access_logs",
+            "marketing_push_tokens",
+            "marketing_campaign_recipients",
+            "password_recovery_codes",
+            "notifications",
+        ]
+
+        for table in direct_tables:
+            delete_if_table_exists(db, table, "user_id", user_id)
+
+        # Embajador y comisiones
+        ambassador = (
+            db.query(Ambassador)
+            .filter(Ambassador.user_id == user_id)
+            .first()
+        )
+
+        if ambassador:
+            if table_exists(db, "commissions"):
+                db.execute(
+                    text("DELETE FROM commissions WHERE ambassador_id = :ambassador_id"),
+                    {"ambassador_id": ambassador.id},
+                )
+
+            db.delete(ambassador)
+
+        # Comisiones directas si existiera user_id
+        delete_if_table_exists(db, "commissions", "user_id", user_id)
+
+        # Finalmente usuario
+        db.delete(user)
+        db.commit()
+
+        return {
+            "message": "Usuario eliminado completamente",
+            "user_id": user_id,
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo eliminar completamente el usuario: {str(e)}",
+        )
