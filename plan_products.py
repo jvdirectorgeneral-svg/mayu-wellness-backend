@@ -34,18 +34,134 @@ def plan_product_to_dict(relation: models.PlanProduct):
     }
 
 
+def allowed_categories_by_level(level: int):
+    if level == 1:
+        return {"coloides", "cbd", "bienestar"}
+
+    if level == 2:
+        return {"coloides", "cbd", "bienestar", "hongos"}
+
+    if level == 3:
+        return {"coloides", "cbd", "bienestar", "hongos", "soporte_funcional"}
+
+    return set()
+
+
+def sync_active_products_to_plans(db: Session):
+    plans = (
+        db.query(models.Plan)
+        .filter(models.Plan.active == True)
+        .order_by(models.Plan.level.asc())
+        .all()
+    )
+
+    if not plans:
+        raise HTTPException(
+            status_code=400,
+            detail="No existen planes activos. Primero ejecuta /plans/seed",
+        )
+
+    products = (
+        db.query(models.Product)
+        .filter(models.Product.active == True)
+        .order_by(models.Product.category.asc(), models.Product.name.asc())
+        .all()
+    )
+
+    if not products:
+        raise HTTPException(
+            status_code=400,
+            detail="No existen productos activos",
+        )
+
+    created = 0
+    skipped = 0
+    ignored = 0
+    created_items = []
+
+    for plan in plans:
+        allowed_categories = allowed_categories_by_level(plan.level)
+
+        for product in products:
+            category = (product.category or "").strip().lower()
+
+            if not category or category not in allowed_categories:
+                ignored += 1
+                continue
+
+            existing = (
+                db.query(models.PlanProduct)
+                .filter(
+                    models.PlanProduct.plan_id == plan.id,
+                    models.PlanProduct.product_id == product.id,
+                )
+                .first()
+            )
+
+            if existing:
+                skipped += 1
+                continue
+
+            relation = models.PlanProduct(
+                plan_id=plan.id,
+                product_id=product.id,
+                is_required=False,
+                max_quantity=1,
+            )
+
+            db.add(relation)
+            db.flush()
+
+            created += 1
+            created_items.append(
+                {
+                    "plan_id": plan.id,
+                    "plan_level": plan.level,
+                    "plan_name": plan.name,
+                    "product_id": product.id,
+                    "product_name": product.name,
+                    "product_category": product.category,
+                }
+            )
+
+    db.commit()
+
+    return {
+        "message": "Sincronización completada sin borrar relaciones existentes",
+        "created": created,
+        "skipped_existing": skipped,
+        "ignored_not_allowed": ignored,
+        "created_items": created_items,
+        "rule": {
+            "Nivel 1 - Cobre": ["coloides", "cbd", "bienestar"],
+            "Nivel 2 - Plata": ["coloides", "cbd", "bienestar", "hongos"],
+            "Nivel 3 - Oro": [
+                "coloides",
+                "cbd",
+                "bienestar",
+                "hongos",
+                "soporte_funcional",
+            ],
+        },
+    }
+
+
 @router.get("/")
 def get_plan_products(db: Session = Depends(get_db)):
     relations = (
         db.query(models.PlanProduct)
         .join(models.Plan)
         .join(models.Product)
-        .order_by(models.Plan.level.asc(), models.Product.category.asc(), models.Product.name.asc())
+        .order_by(
+            models.Plan.level.asc(),
+            models.Product.category.asc(),
+            models.Product.name.asc(),
+        )
         .all()
     )
 
     return {
-        "items": [plan_product_to_dict(r) for r in relations]
+        "items": [plan_product_to_dict(r) for r in relations],
     }
 
 
@@ -175,81 +291,17 @@ def delete_plan_product(
     }
 
 
+@router.post("/sync-active-products")
+def sync_active_products(db: Session = Depends(get_db)):
+    return sync_active_products_to_plans(db)
+
+
 @router.post("/seed")
 def seed_plan_products(db: Session = Depends(get_db)):
-    plans = db.query(models.Plan).filter(models.Plan.active == True).all()
-
-    if not plans:
-        raise HTTPException(
-            status_code=400,
-            detail="Primero ejecuta /plans/seed",
-        )
-
-    products = db.query(models.Product).filter(models.Product.active == True).all()
-
-    if not products:
-        raise HTTPException(
-            status_code=400,
-            detail="Primero ejecuta /products/seed-mayu-products",
-        )
-
     db.query(models.PlanProduct).delete()
     db.commit()
 
-    created = 0
+    result = sync_active_products_to_plans(db)
 
-    for plan in plans:
-        for product in products:
-            if not product.category:
-                continue
-
-            allowed = False
-
-            if plan.level == 1:
-                allowed = product.category in {
-                    "coloides",
-                    "cbd",
-                    "bienestar",
-                }
-
-            elif plan.level == 2:
-                allowed = product.category in {
-                    "coloides",
-                    "cbd",
-                    "bienestar",
-                    "hongos",
-                }
-
-            elif plan.level == 3:
-                allowed = product.category in {
-                    "coloides",
-                    "cbd",
-                    "bienestar",
-                    "hongos",
-                    "soporte_funcional",
-                }
-
-            if not allowed:
-                continue
-
-            relation = models.PlanProduct(
-                plan_id=plan.id,
-                product_id=product.id,
-                is_required=False,
-                max_quantity=1,
-            )
-
-            db.add(relation)
-            created += 1
-
-    db.commit()
-
-    return {
-        "message": "Productos asignados dinámicamente a los planes por categoría",
-        "created": created,
-        "rule": {
-            "Nivel 1 - Cobre": ["coloides", "cbd", "bienestar"],
-            "Nivel 2 - Plata": ["coloides", "cbd", "bienestar", "hongos"],
-            "Nivel 3 - Oro": ["coloides", "cbd", "bienestar", "hongos", "soporte_funcional"],
-        },
-    }
+    result["message"] = "Seed ejecutado: se borraron relaciones anteriores y se reasignaron productos activos por categoría"
+    return result
