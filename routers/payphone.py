@@ -186,23 +186,23 @@ def confirm_payphone_transaction(
             detail="Debes enviar id, transactionId o clientTransactionId",
         )
 
-    params = {}
+    body = {}
 
     if id:
-        params["id"] = id
+        body["id"] = id
 
     if clientTransactionId:
-        params["clientTransactionId"] = clientTransactionId
+        body["clientTransactionId"] = clientTransactionId
 
     if transactionId:
-        params["transactionId"] = transactionId
+        body["transactionId"] = transactionId
 
     url = f"{PAYPHONE_BASE_URL}/Sale"
 
     try:
-        response = requests.get(
+        response = requests.post(
             url,
-            params=params,
+            json=body,
             headers=payphone_headers(),
             timeout=30,
         )
@@ -218,6 +218,7 @@ def confirm_payphone_transaction(
             detail={
                 "message": "No se pudo confirmar el pago en PayPhone",
                 "payphone_response": response.text,
+                "sent_body": body,
             },
         )
 
