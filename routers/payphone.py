@@ -180,29 +180,19 @@ def confirm_payphone_transaction(
     clientTransactionId: Optional[str] = None,
     transactionId: Optional[str] = None,
 ):
-    if not id and not clientTransactionId and not transactionId:
+    if not clientTransactionId and not transactionId and not id:
         raise HTTPException(
             status_code=400,
-            detail="Debes enviar id, transactionId o clientTransactionId",
+            detail="Debes enviar clientTransactionId, transactionId o id",
         )
 
-    body = {}
+    lookup_id = clientTransactionId or transactionId or str(id)
 
-    if id:
-        body["id"] = id
-
-    if clientTransactionId:
-        body["clientTransactionId"] = clientTransactionId
-
-    if transactionId:
-        body["transactionId"] = transactionId
-
-    url = f"{PAYPHONE_BASE_URL}/Sale"
+    url = f"{PAYPHONE_BASE_URL}/Links/{lookup_id}"
 
     try:
-        response = requests.post(
+        response = requests.get(
             url,
-            json=body,
             headers=payphone_headers(),
             timeout=30,
         )
@@ -218,7 +208,7 @@ def confirm_payphone_transaction(
             detail={
                 "message": "No se pudo confirmar el pago en PayPhone",
                 "payphone_response": response.text,
-                "sent_body": body,
+                "lookup_id": lookup_id,
             },
         )
 
