@@ -153,7 +153,6 @@ def get_superadmin_profile(
     current_user: User = Depends(get_current_user),
 ):
     require_superadmin(current_user)
-
     return user_to_dict(db, current_user)
 
 
@@ -165,36 +164,21 @@ def update_superadmin_profile(
 ):
     require_superadmin(current_user)
 
-    user = (
-        db.query(User)
-        .filter(User.id == current_user.id)
-        .first()
-    )
+    user = db.query(User).filter(User.id == current_user.id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
 
-    if (
-        db.query(User)
-        .filter(User.email == email, User.id != user.id)
-        .first()
-    ):
+    if db.query(User).filter(User.email == email, User.id != user.id).first():
         raise HTTPException(
             status_code=400,
             detail="El correo ya está registrado por otro usuario",
         )
 
-    if (
-        db.query(User)
-        .filter(User.cedula == cedula, User.id != user.id)
-        .first()
-    ):
+    if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
         raise HTTPException(
             status_code=400,
             detail="La cédula ya está registrada por otro usuario",
@@ -222,17 +206,10 @@ def update_superadmin_password(
 ):
     require_superadmin(current_user)
 
-    user = (
-        db.query(User)
-        .filter(User.id == current_user.id)
-        .first()
-    )
+    user = db.query(User).filter(User.id == current_user.id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if not payload.new_password or not payload.new_password.strip():
         raise HTTPException(
@@ -281,7 +258,6 @@ def create_internal_user(
     require_superadmin(current_user)
 
     raw_role = payload.role.strip().lower()
-
     role = ROLE_ALIASES.get(raw_role)
 
     print("ROL RECIBIDO:", payload.role)
@@ -297,22 +273,13 @@ def create_internal_user(
     cedula = payload.cedula.strip()
 
     if db.query(User).filter(User.email == email).first():
-        raise HTTPException(
-            status_code=400,
-            detail="El correo ya está registrado",
-        )
+        raise HTTPException(status_code=400, detail="El correo ya está registrado")
 
     if db.query(User).filter(User.cedula == cedula).first():
-        raise HTTPException(
-            status_code=400,
-            detail="La cédula ya está registrada",
-        )
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
 
     if not payload.password or not payload.password.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="La contraseña es obligatoria",
-        )
+        raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
 
     user = User(
         name=payload.name.strip(),
@@ -336,9 +303,7 @@ def create_internal_user(
     )
 
     db.add(user)
-
     db.commit()
-
     db.refresh(user)
 
     return {
@@ -356,17 +321,10 @@ def update_internal_user(
 ):
     require_superadmin(current_user)
 
-    user = (
-        db.query(User)
-        .filter(User.id == user_id)
-        .first()
-    )
+    user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     if user.role == "superadmin":
         raise HTTPException(
@@ -382,7 +340,6 @@ def update_internal_user(
 
     if payload.role is not None:
         raw_role = payload.role.strip().lower()
-
         role = ROLE_ALIASES.get(raw_role)
 
         print("ROL UPDATE RECIBIDO:", payload.role)
@@ -399,11 +356,7 @@ def update_internal_user(
     if payload.email is not None:
         email = payload.email.strip().lower()
 
-        if (
-            db.query(User)
-            .filter(User.email == email, User.id != user.id)
-            .first()
-        ):
+        if db.query(User).filter(User.email == email, User.id != user.id).first():
             raise HTTPException(
                 status_code=400,
                 detail="El correo ya está registrado por otro usuario",
@@ -414,11 +367,7 @@ def update_internal_user(
     if payload.cedula is not None:
         cedula = payload.cedula.strip()
 
-        if (
-            db.query(User)
-            .filter(User.cedula == cedula, User.id != user.id)
-            .first()
-        ):
+        if db.query(User).filter(User.cedula == cedula, User.id != user.id).first():
             raise HTTPException(
                 status_code=400,
                 detail="La cédula ya está registrada por otro usuario",
@@ -433,13 +382,13 @@ def update_internal_user(
         user.phone = payload.phone.strip()
 
     db.commit()
-
     db.refresh(user)
 
     return {
         "message": "Usuario interno actualizado correctamente",
         "user": user_to_dict(db, user),
     }
+
 
 def table_exists(db: Session, table_name: str) -> bool:
     result = db.execute(
@@ -450,10 +399,50 @@ def table_exists(db: Session, table_name: str) -> bool:
     return result is not None
 
 
-def delete_if_table_exists(db: Session, table_name: str, column_name: str, value: int):
-    if table_exists(db, table_name):
+def column_exists(db: Session, table_name: str, column_name: str) -> bool:
+    if not table_exists(db, table_name):
+        return False
+
+    result = db.execute(
+        text("""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = :table_name
+            AND column_name = :column_name
+            LIMIT 1
+        """),
+        {
+            "table_name": table_name,
+            "column_name": column_name,
+        },
+    ).first()
+
+    return result is not None
+
+
+def delete_if_table_exists(
+    db: Session,
+    table_name: str,
+    column_name: str,
+    value: int,
+):
+    if table_exists(db, table_name) and column_exists(db, table_name, column_name):
         db.execute(
             text(f"DELETE FROM {table_name} WHERE {column_name} = :value"),
+            {"value": value},
+        )
+
+
+def set_null_if_table_exists(
+    db: Session,
+    table_name: str,
+    column_name: str,
+    value: int,
+):
+    if table_exists(db, table_name) and column_exists(db, table_name, column_name):
+        db.execute(
+            text(f"UPDATE {table_name} SET {column_name} = NULL WHERE {column_name} = :value"),
             {"value": value},
         )
 
@@ -466,7 +455,12 @@ def delete_by_subquery_if_table_exists(
     parent_column: str,
     user_id: int,
 ):
-    if table_exists(db, table_name) and table_exists(db, parent_table):
+    if (
+        table_exists(db, table_name)
+        and table_exists(db, parent_table)
+        and column_exists(db, table_name, column_name)
+        and column_exists(db, parent_table, parent_column)
+    ):
         db.execute(
             text(
                 f"""
@@ -498,27 +492,69 @@ def full_delete_user(
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
-        raise HTTPException(
-            status_code=404,
-            detail="Usuario no encontrado",
-        )
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role == "superadmin":
+    if user.role != "member":
         raise HTTPException(
             status_code=403,
-            detail="No puedes eliminar otro superadmin desde aquí",
+            detail="Por seguridad, este borrado completo solo permite eliminar socios member",
         )
 
     try:
-        # Hijos de órdenes
+        # 1. Marketing: primero eventos hijos de recipients
+        if table_exists(db, "marketing_events") and table_exists(db, "marketing_campaign_recipients"):
+            if column_exists(db, "marketing_events", "recipient_id"):
+                db.execute(
+                    text("""
+                        DELETE FROM marketing_events
+                        WHERE recipient_id IN (
+                            SELECT id
+                            FROM marketing_campaign_recipients
+                            WHERE user_id = :user_id
+                        )
+                    """),
+                    {"user_id": user_id},
+                )
+
+        delete_if_table_exists(db, "marketing_events", "user_id", user_id)
+        delete_if_table_exists(db, "marketing_campaign_recipients", "user_id", user_id)
+
+        # 2. Push / recuperación / notificaciones
+        delete_if_table_exists(db, "push_notification_tokens", "user_id", user_id)
+        delete_if_table_exists(db, "marketing_push_tokens", "user_id", user_id)
+        delete_if_table_exists(db, "password_reset_codes", "user_id", user_id)
+        delete_if_table_exists(db, "password_recovery_codes", "user_id", user_id)
+        delete_if_table_exists(db, "notifications", "user_id", user_id)
+
+        # 3. Órdenes normales: hijos antes de orders
         delete_by_subquery_if_table_exists(
             db, "order_items", "order_id", "orders", "user_id", user_id
         )
         delete_by_subquery_if_table_exists(
             db, "order_tracking_history", "order_id", "orders", "user_id", user_id
         )
+        delete_by_subquery_if_table_exists(
+            db, "order_delivery_history", "order_id", "orders", "user_id", user_id
+        )
 
-        # Hijos de selección mensual
+        # 4. Pagos asociados a órdenes y usuario
+        if table_exists(db, "membership_payments") and column_exists(db, "membership_payments", "order_id"):
+            if table_exists(db, "orders") and column_exists(db, "orders", "user_id"):
+                db.execute(
+                    text("""
+                        DELETE FROM membership_payments
+                        WHERE order_id IN (
+                            SELECT id
+                            FROM orders
+                            WHERE user_id = :user_id
+                        )
+                    """),
+                    {"user_id": user_id},
+                )
+
+        delete_if_table_exists(db, "membership_payments", "user_id", user_id)
+
+        # 5. Selección mensual: hijos antes de monthly_selections
         delete_by_subquery_if_table_exists(
             db,
             "monthly_selection_items",
@@ -527,8 +563,9 @@ def full_delete_user(
             "user_id",
             user_id,
         )
+        delete_if_table_exists(db, "monthly_selections", "user_id", user_id)
 
-        # Hijos de órdenes marketplace farmacia
+        # 6. Marketplace farmacia: hijos antes de marketplace_orders
         delete_by_subquery_if_table_exists(
             db,
             "marketplace_order_items",
@@ -537,8 +574,9 @@ def full_delete_user(
             "user_id",
             user_id,
         )
+        delete_if_table_exists(db, "marketplace_orders", "user_id", user_id)
 
-        # Hijos de órdenes educación
+        # 7. Educación: hijos antes de education_orders
         delete_by_subquery_if_table_exists(
             db,
             "education_order_items",
@@ -547,27 +585,14 @@ def full_delete_user(
             "user_id",
             user_id,
         )
+        delete_if_table_exists(db, "education_orders", "user_id", user_id)
+        delete_if_table_exists(db, "education_access_logs", "user_id", user_id)
 
-        # Dependencias directas por user_id
-        direct_tables = [
-            "membership_payments",
-            "monthly_selections",
-            "orders",
-            "member_cards",
-            "plan_change_requests",
-            "marketplace_orders",
-            "education_orders",
-            "education_access_logs",
-            "marketing_push_tokens",
-            "marketing_campaign_recipients",
-            "password_recovery_codes",
-            "notifications",
-        ]
+        # 8. Solicitudes, tarjetas y otros registros directos
+        delete_if_table_exists(db, "plan_change_requests", "user_id", user_id)
+        delete_if_table_exists(db, "member_cards", "user_id", user_id)
 
-        for table in direct_tables:
-            delete_if_table_exists(db, table, "user_id", user_id)
-
-        # Embajador y comisiones
+        # 9. Embajador y comisiones si el socio también fue embajador
         ambassador = (
             db.query(Ambassador)
             .filter(Ambassador.user_id == user_id)
@@ -576,22 +601,39 @@ def full_delete_user(
 
         if ambassador:
             if table_exists(db, "commissions"):
-                db.execute(
-                    text("DELETE FROM commissions WHERE ambassador_id = :ambassador_id"),
-                    {"ambassador_id": ambassador.id},
-                )
+                if column_exists(db, "commissions", "ambassador_id"):
+                    db.execute(
+                        text("DELETE FROM commissions WHERE ambassador_id = :ambassador_id"),
+                        {"ambassador_id": ambassador.id},
+                    )
 
             db.delete(ambassador)
 
-        # Comisiones directas si existiera user_id
         delete_if_table_exists(db, "commissions", "user_id", user_id)
 
-        # Finalmente usuario
+        # 10. Campos created_by / admin_verified_by no deben borrar registros administrativos.
+        # Solo se limpian referencias al usuario member para evitar bloqueo FK.
+        nullable_reference_tables = [
+            ("membership_payments", "admin_verified_by"),
+            ("marketplace_orders", "admin_verified_by"),
+            ("order_tracking_history", "created_by"),
+            ("order_delivery_history", "created_by"),
+            ("marketing_campaigns", "created_by"),
+            ("marketplace_products", "created_by"),
+            ("education_resources", "created_by"),
+        ]
+
+        for table_name, column_name in nullable_reference_tables:
+            set_null_if_table_exists(db, table_name, column_name, user_id)
+
+        # 11. Finalmente órdenes y usuario
+        delete_if_table_exists(db, "orders", "user_id", user_id)
+
         db.delete(user)
         db.commit()
 
         return {
-            "message": "Usuario eliminado completamente",
+            "message": "Socio member eliminado completamente",
             "user_id": user_id,
         }
 
@@ -599,5 +641,5 @@ def full_delete_user(
         db.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"No se pudo eliminar completamente el usuario: {str(e)}",
+            detail=f"No se pudo eliminar completamente el socio: {str(e)}",
         )
