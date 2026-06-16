@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+
 from database import get_db
 import models
+from plan_products import sync_active_products_to_plans
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -62,6 +64,11 @@ def product_to_dict(p: models.Product):
         "category": getattr(p, "category", None),
         "active": p.active,
     }
+
+
+def sync_product_if_active(db: Session, product: models.Product):
+    if product.active and product.category:
+        sync_active_products_to_plans(db)
 
 
 @router.get("/")
@@ -130,8 +137,11 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(product)
 
+    sync_product_if_active(db, product)
+    db.refresh(product)
+
     return {
-        "message": "Producto creado correctamente",
+        "message": "Producto creado correctamente y sincronizado con los planes",
         "product": product_to_dict(product),
     }
 
@@ -185,8 +195,11 @@ def update_product(
     db.commit()
     db.refresh(product)
 
+    sync_product_if_active(db, product)
+    db.refresh(product)
+
     return {
-        "message": "Producto actualizado correctamente",
+        "message": "Producto actualizado correctamente y sincronizado con los planes",
         "product": product_to_dict(product),
     }
 
@@ -253,8 +266,10 @@ def seed_mayu_products(db: Session = Depends(get_db)):
 
     db.commit()
 
+    sync_active_products_to_plans(db)
+
     return {
-        "message": "Seed Mayu ejecutado correctamente",
+        "message": "Seed Mayu ejecutado correctamente y sincronizado con los planes",
         "created_count": len(created),
         "updated_count": len(updated),
         "created_products": created,
