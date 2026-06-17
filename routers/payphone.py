@@ -229,8 +229,36 @@ def is_payphone_paid(data: dict) -> bool:
     return False
 
 
+def get_plan_for_user(db: Session, user: models.User):
+    level = getattr(user, "membership_level", None)
+
+    if not level:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene membership_level asignado",
+        )
+
+    plan = (
+        db.query(models.Plan)
+        .filter(
+            models.Plan.level == level,
+            models.Plan.active == True,
+        )
+        .first()
+    )
+
+    if not plan:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existe plan activo para el nivel {level}",
+        )
+
+    return plan
+
+
 def create_initial_monthly_selection_if_possible(db: Session, user: models.User):
     now = datetime.utcnow()
+    plan = get_plan_for_user(db, user)
 
     existing = (
         db.query(models.MonthlySelection)
@@ -243,10 +271,14 @@ def create_initial_monthly_selection_if_possible(db: Session, user: models.User)
     )
 
     if existing:
+        existing.plan_id = plan.id
+        existing.editable = True
+        db.flush()
         return existing
 
     selection = models.MonthlySelection(
         user_id=user.id,
+        plan_id=plan.id,
         month=now.month,
         year=now.year,
         status="draft",
@@ -324,10 +356,24 @@ def activate_membership_from_payment(
     payment.admin_verified_at = now
     payment.raw_payload = json.dumps(payphone_payload)
 
+    payment_plan_level = getattr(payment, "plan_level", None)
+
+    if payment_plan_level:
+        user.membership_level = payment_plan_level
+
+    if not user.membership_level:
+        raise HTTPException(
+            status_code=400,
+            detail="No se puede activar membresía porque el usuario no tiene plan asignado",
+        )
+
     user.membership_active = True
     user.is_active = True
 
+    db.flush()
+
     create_initial_monthly_selection_if_possible(db, user)
+
     user, card = get_or_create_card(db, user.id)
 
     db.commit()
@@ -370,6 +416,29 @@ def process_membership_initial_confirmation(
             status_code=404,
             detail="Pago local no encontrado para este identificador",
         )
+
+    if payment.status == "verified":
+        user = db.query(models.User).filter(models.User.id == payment.user_id).first()
+        card = None
+
+        if user:
+            user, card = get_or_create_card(db, user.id)
+            db.commit()
+            db.refresh(user)
+            db.refresh(card)
+
+        return {
+            "success": True,
+            "message": "El pago ya estaba confirmado anteriormente.",
+            "payment_id": payment.id,
+            "payment_status": payment.status,
+            "user_id": payment.user_id,
+            "membership_active": user.membership_active if user else None,
+            "membership_level": user.membership_level if user else None,
+            "member_card_id": card.id if card else None,
+            "member_code": card.member_code if card else None,
+            "qr_token": card.qr_token if card else None,
+        }
 
     payphone_payload = {
         "id": payphone_id,
