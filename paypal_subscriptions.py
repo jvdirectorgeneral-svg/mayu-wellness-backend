@@ -31,16 +31,16 @@ def get_db():
 
 
 def get_paypal_mode():
-    return os.getenv("PAYPAL_MODE", "sandbox").lower().strip()
+    return os.getenv("PAYPAL_SUBSCRIPTIONS_MODE", "sandbox").lower().strip()
 
 
 def get_paypal_client_id():
-    value = os.getenv("PAYPAL_CLIENT_ID")
+    value = os.getenv("PAYPAL_SUBSCRIPTIONS_CLIENT_ID")
     return value.strip() if value else None
 
 
 def get_paypal_client_secret():
-    value = os.getenv("PAYPAL_CLIENT_SECRET")
+    value = os.getenv("PAYPAL_SUBSCRIPTIONS_CLIENT_SECRET")
     return value.strip() if value else None
 
 
@@ -54,9 +54,9 @@ def get_base_url():
 
 def get_plan_id_by_level(level: int):
     env_map = {
-        1: "PAYPAL_PLAN_ID_LEVEL_1",
-        2: "PAYPAL_PLAN_ID_LEVEL_2",
-        3: "PAYPAL_PLAN_ID_LEVEL_3",
+        1: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_1",
+        2: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_2",
+        3: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_3",
     }
     return os.getenv(env_map.get(level, "") or "")
 
@@ -66,7 +66,6 @@ MONTHLY_PRICES = {
     2: 50.00,
     3: 60.00,
 }
-
 
 PLAN_NAMES = {
     1: "Mayu Wellness Club - Nivel 1 Cobre",
@@ -79,6 +78,11 @@ class CreateSubscriptionRequest(BaseModel):
     user_id: int
     plan_level: int
     start_time: Optional[str] = None
+
+
+class ActivateLevel1Request(BaseModel):
+    user_id: int
+    subscription_id: str
 
 
 class CreateProductRequest(BaseModel):
@@ -104,7 +108,7 @@ def get_token():
     if not client_id or not client_secret:
         raise HTTPException(
             status_code=500,
-            detail="Faltan PAYPAL_CLIENT_ID o PAYPAL_CLIENT_SECRET",
+            detail="Faltan PAYPAL_SUBSCRIPTIONS_CLIENT_ID o PAYPAL_SUBSCRIPTIONS_CLIENT_SECRET",
         )
 
     try:
@@ -161,7 +165,6 @@ def paypal_request(method: str, path: str, token: str, body=None):
 
 def first_day_next_month_utc():
     now = datetime.now(timezone.utc)
-
     if now.month == 12:
         year = now.year + 1
         month = 1
@@ -183,6 +186,181 @@ def extract_approve_url(links):
             return link.get("href")
 
     return None
+
+
+def get_current_cycle():
+    now = datetime.utcnow()
+    return now.month, now.year
+
+
+def get_plan_by_level(db: Session, level: int):
+    return (
+        db.query(models.Plan)
+        .filter(models.Plan.level == level)
+        .first()
+    )
+
+
+def get_or_create_member_card_core(db: Session, user: models.User):
+    card = (
+        db.query(models.MemberCard)
+        .filter(models.MemberCard.user_id == user.id)
+        .first()
+    )
+
+    member_code = f"MAYU-{user.membership_level}-{user.id:06d}"
+
+    if card:
+        card.member_code = member_code
+        card.level_snapshot = user.membership_level
+        card.status = "active" if user.membership_active else "inactive"
+        card.expires_at = "Indefinido"
+        db.commit()
+        db.refresh(card)
+        return card
+
+    import uuid
+
+    card = models.MemberCard(
+        user_id=user.id,
+        member_code=member_code,
+        qr_token=str(uuid.uuid4()),
+        level_snapshot=user.membership_level,
+        status="active",
+        expires_at="Indefinido",
+    )
+
+    db.add(card)
+    db.commit()
+    db.refresh(card)
+    return card
+
+
+def get_or_create_initial_monthly_selection(db: Session, user: models.User):
+    if not user.membership_level:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene nivel de membresía asignado",
+        )
+
+    plan = get_plan_by_level(db, user.membership_level)
+
+    if not plan:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existe plan local para nivel {user.membership_level}",
+        )
+
+    month, year = get_current_cycle()
+
+    selection = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user.id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+    if selection:
+        selection.plan_id = plan.id
+        selection.editable = True
+        db.commit()
+        db.refresh(selection)
+        return selection
+
+    selection = models.MonthlySelection(
+        user_id=user.id,
+        plan_id=plan.id,
+        month=month,
+        year=year,
+        status="draft",
+        editable=True,
+    )
+
+    db.add(selection)
+    db.commit()
+    db.refresh(selection)
+    return selection
+
+
+def activate_user_subscription_core(
+    db: Session,
+    user: models.User,
+    subscription_id: str,
+    plan_level: int,
+    paypal_payload=None,
+):
+    if not subscription_id or not subscription_id.strip():
+        raise HTTPException(status_code=400, detail="subscription_id requerido")
+
+    subscription_id = subscription_id.strip()
+
+    existing_payment = (
+        db.query(models.MembershipPayment)
+        .filter(
+            models.MembershipPayment.paypal_order_id == subscription_id,
+            models.MembershipPayment.payment_type == "subscription",
+        )
+        .first()
+    )
+
+    if existing_payment and existing_payment.user_id != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta suscripción ya está asociada a otro usuario",
+        )
+
+    user.membership_level = plan_level
+    user.membership_active = True
+    user.is_active = True
+    user.status = "active"
+
+    if existing_payment:
+        existing_payment.status = "subscription_active"
+        existing_payment.amount = MONTHLY_PRICES[plan_level]
+        safe_set(existing_payment, "admin_verified", True)
+        safe_set(existing_payment, "admin_verified_at", datetime.utcnow())
+        safe_set(existing_payment, "payment_reference", subscription_id)
+        if paypal_payload is not None:
+            safe_set(existing_payment, "raw_payload", json.dumps(paypal_payload))
+    else:
+        payment = models.MembershipPayment(
+            user_id=user.id,
+            order_id=None,
+            paypal_order_id=subscription_id,
+            amount=MONTHLY_PRICES[plan_level],
+            currency="USD",
+            status="subscription_active",
+        )
+        safe_set(payment, "provider", "paypal")
+        safe_set(payment, "payment_type", "subscription")
+        safe_set(payment, "payment_reference", subscription_id)
+        safe_set(payment, "admin_verified", True)
+        safe_set(payment, "admin_verified_at", datetime.utcnow())
+        if paypal_payload is not None:
+            safe_set(payment, "raw_payload", json.dumps(paypal_payload))
+        db.add(payment)
+
+    db.commit()
+    db.refresh(user)
+
+    card = get_or_create_member_card_core(db, user)
+    selection = get_or_create_initial_monthly_selection(db, user)
+
+    return {
+        "status": "activated",
+        "user_id": user.id,
+        "membership_active": user.membership_active,
+        "membership_level": user.membership_level,
+        "paypal_subscription_id": subscription_id,
+        "card_id": card.id,
+        "member_code": card.member_code,
+        "selection_id": selection.id,
+        "selection_month": selection.month,
+        "selection_year": selection.year,
+    }
 
 
 @router.get("/debug")
@@ -253,6 +431,10 @@ def create_plan(payload: CreatePlanRequest):
         ],
         "payment_preferences": {
             "auto_bill_outstanding": True,
+            "setup_fee": {
+                "value": "5.00",
+                "currency_code": payload.currency,
+            },
             "setup_fee_failure_action": "CONTINUE",
             "payment_failure_threshold": 1,
         },
@@ -264,6 +446,7 @@ def create_plan(payload: CreatePlanRequest):
         "message": "Plan PayPal creado correctamente",
         "plan_level": payload.plan_level,
         "monthly_price": price,
+        "setup_fee": 5.00,
         "plan_id": response.get("id"),
         "response": response,
     }
@@ -288,8 +471,8 @@ def create_subscription(
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Falta configurar PAYPAL_PLAN_ID_LEVEL_{payload.plan_level} "
-                "en Render. Primero crea el producto y el plan en Swagger."
+                f"Falta configurar PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_{payload.plan_level} "
+                "en Render."
             ),
         )
 
@@ -327,38 +510,99 @@ def create_subscription(
     paypal_status = response.get("status", "APPROVAL_PENDING")
     monthly_amount = MONTHLY_PRICES[payload.plan_level]
 
-    user.membership_level = payload.plan_level
+    if not subscription_id:
+        raise HTTPException(
+            status_code=500,
+            detail="PayPal no devolvió subscription_id",
+        )
 
-    payment = models.MembershipPayment(
-        user_id=user.id,
-        order_id=None,
-        paypal_order_id=subscription_id,
-        amount=monthly_amount,
-        currency="USD",
-        status="subscription_created",
+    existing_payment = (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.paypal_order_id == subscription_id)
+        .first()
     )
 
-    safe_set(payment, "provider", "paypal")
-    safe_set(payment, "payment_type", "subscription")
-    safe_set(payment, "payment_reference", subscription_id)
-    safe_set(payment, "raw_payload", json.dumps(response))
+    if not existing_payment:
+        payment = models.MembershipPayment(
+            user_id=user.id,
+            order_id=None,
+            paypal_order_id=subscription_id,
+            amount=monthly_amount,
+            currency="USD",
+            status="subscription_created",
+        )
 
-    db.add(payment)
+        safe_set(payment, "provider", "paypal")
+        safe_set(payment, "payment_type", "subscription")
+        safe_set(payment, "payment_reference", subscription_id)
+        safe_set(payment, "raw_payload", json.dumps(response))
+
+        db.add(payment)
+
+    user.membership_level = payload.plan_level
     db.commit()
-    db.refresh(payment)
 
     return {
         "message": "Suscripción PayPal creada",
-        "payment_id": payment.id,
         "user_id": user.id,
         "plan_level": payload.plan_level,
         "monthly_amount": monthly_amount,
+        "setup_fee": 5.00,
         "start_time": start_time,
         "paypal_subscription_id": subscription_id,
         "subscription_status": paypal_status,
         "approve_url": approve_url,
         "approval_url": approve_url,
         "links": response.get("links", []),
+    }
+
+
+@router.post("/activate-level-1")
+def activate_level_1_subscription(
+    payload: ActivateLevel1Request,
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    token = get_token()
+
+    response = paypal_request(
+        "GET",
+        f"/v1/billing/subscriptions/{payload.subscription_id}",
+        token,
+    )
+
+    paypal_status = response.get("status")
+
+    if paypal_status != "ACTIVE":
+        raise HTTPException(
+            status_code=400,
+            detail=f"La suscripción PayPal todavía no está activa. Estado actual: {paypal_status}",
+        )
+
+    plan_id = response.get("plan_id")
+    expected_plan_id = get_plan_id_by_level(1)
+
+    if expected_plan_id and plan_id != expected_plan_id:
+        raise HTTPException(
+            status_code=400,
+            detail="La suscripción no corresponde al plan Nivel 1 Cobre Sandbox",
+        )
+
+    result = activate_user_subscription_core(
+        db=db,
+        user=user,
+        subscription_id=payload.subscription_id,
+        plan_level=1,
+        paypal_payload=response,
+    )
+
+    return {
+        "message": "Membresía Nivel 1 Cobre activada correctamente",
+        **result,
     }
 
 
@@ -436,10 +680,16 @@ async def subscription_webhook(
             safe_set(payment, "raw_payload", json.dumps(event))
 
         if user:
-            user.membership_active = True
-            user.is_active = True
-
-        db.commit()
+            level = user.membership_level or 1
+            activate_user_subscription_core(
+                db=db,
+                user=user,
+                subscription_id=subscription_id,
+                plan_level=level,
+                paypal_payload=event,
+            )
+        else:
+            db.commit()
 
         return {
             "status": "ok",
