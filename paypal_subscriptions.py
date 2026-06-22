@@ -194,11 +194,7 @@ def get_current_cycle():
 
 
 def get_plan_by_level(db: Session, level: int):
-    return (
-        db.query(models.Plan)
-        .filter(models.Plan.level == level)
-        .first()
-    )
+    return db.query(models.Plan).filter(models.Plan.level == level).first()
 
 
 def get_or_create_member_card_core(db: Session, user: models.User):
@@ -234,6 +230,30 @@ def get_or_create_member_card_core(db: Session, user: models.User):
     db.commit()
     db.refresh(card)
     return card
+
+
+def get_latest_selection_with_items(db: Session, user_id: int):
+    selections = (
+        db.query(models.MonthlySelection)
+        .filter(models.MonthlySelection.user_id == user_id)
+        .order_by(
+            models.MonthlySelection.year.desc(),
+            models.MonthlySelection.month.desc(),
+            models.MonthlySelection.id.desc(),
+        )
+        .all()
+    )
+
+    for selection in selections:
+        count = (
+            db.query(models.MonthlySelectionItem)
+            .filter(models.MonthlySelectionItem.monthly_selection_id == selection.id)
+            .count()
+        )
+        if count > 0:
+            return selection
+
+    return None
 
 
 def get_or_create_initial_monthly_selection(db: Session, user: models.User):
@@ -285,6 +305,154 @@ def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     return selection
 
 
+def get_or_create_monthly_selection_for_payment(
+    db: Session,
+    user: models.User,
+    month: int,
+    year: int,
+):
+    if not user.membership_level:
+        raise HTTPException(
+            status_code=400,
+            detail="El usuario no tiene nivel de membresía asignado",
+        )
+
+    plan = get_plan_by_level(db, user.membership_level)
+
+    if not plan:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No existe plan local para nivel {user.membership_level}",
+        )
+
+    selection = (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user.id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+    if selection:
+        selection.plan_id = plan.id
+        db.flush()
+        return selection
+
+    selection = models.MonthlySelection(
+        user_id=user.id,
+        plan_id=plan.id,
+        month=month,
+        year=year,
+        status="draft",
+        editable=True,
+    )
+
+    db.add(selection)
+    db.flush()
+
+    previous = get_latest_selection_with_items(db, user.id)
+
+    if previous:
+        previous_items = (
+            db.query(models.MonthlySelectionItem)
+            .filter(models.MonthlySelectionItem.monthly_selection_id == previous.id)
+            .all()
+        )
+
+        for item in previous_items:
+            db.add(
+                models.MonthlySelectionItem(
+                    monthly_selection_id=selection.id,
+                    product_id=item.product_id,
+                    quantity=item.quantity or 1,
+                )
+            )
+
+        selection.status = "confirmed"
+
+    return selection
+
+
+def extract_paypal_amount(resource: dict, default_amount: float):
+    amount_data = resource.get("amount") or resource.get("seller_receivable_breakdown", {}).get("gross_amount")
+
+    if isinstance(amount_data, dict):
+        value = amount_data.get("total") or amount_data.get("value")
+        try:
+            return float(value)
+        except Exception:
+            return default_amount
+
+    return default_amount
+
+
+def create_monthly_membership_payment_from_webhook(
+    db: Session,
+    user: models.User,
+    subscription_id: str,
+    event: dict,
+):
+    resource = event.get("resource", {})
+    event_type = event.get("event_type")
+
+    paypal_payment_id = (
+        resource.get("id")
+        or resource.get("sale_id")
+        or resource.get("capture_id")
+        or f"{subscription_id}-{event.get('id', datetime.utcnow().timestamp())}"
+    )
+
+    existing = (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.paypal_order_id == paypal_payment_id)
+        .first()
+    )
+
+    if existing:
+        return existing
+
+    month, year = get_current_cycle()
+    selection = get_or_create_monthly_selection_for_payment(
+        db=db,
+        user=user,
+        month=month,
+        year=year,
+    )
+
+    level = user.membership_level or 1
+    default_amount = MONTHLY_PRICES.get(level, 40.00)
+    amount = extract_paypal_amount(resource, default_amount)
+
+    payment = models.MembershipPayment(
+        user_id=user.id,
+        order_id=None,
+        paypal_order_id=str(paypal_payment_id),
+        amount=amount,
+        currency="USD",
+        status="subscription_paid",
+        paid_at=datetime.utcnow(),
+    )
+
+    safe_set(payment, "provider", "paypal")
+    safe_set(payment, "payment_type", "subscription_renewal")
+    safe_set(payment, "payment_reference", subscription_id)
+    safe_set(payment, "raw_payload", json.dumps(event))
+    safe_set(payment, "admin_verified", False)
+    safe_set(payment, "payer_email", resource.get("payer", {}).get("email_address"))
+
+    db.add(payment)
+
+    user.membership_active = True
+    user.is_active = True
+    user.status = "active"
+
+    db.flush()
+
+    return payment
+
+
 def activate_user_subscription_core(
     db: Session,
     user: models.User,
@@ -320,8 +488,6 @@ def activate_user_subscription_core(
     if existing_payment:
         existing_payment.status = "subscription_active"
         existing_payment.amount = MONTHLY_PRICES[plan_level]
-        safe_set(existing_payment, "admin_verified", True)
-        safe_set(existing_payment, "admin_verified_at", datetime.utcnow())
         safe_set(existing_payment, "payment_reference", subscription_id)
         if paypal_payload is not None:
             safe_set(existing_payment, "raw_payload", json.dumps(paypal_payload))
@@ -337,8 +503,7 @@ def activate_user_subscription_core(
         safe_set(payment, "provider", "paypal")
         safe_set(payment, "payment_type", "subscription")
         safe_set(payment, "payment_reference", subscription_id)
-        safe_set(payment, "admin_verified", True)
-        safe_set(payment, "admin_verified_at", datetime.utcnow())
+        safe_set(payment, "admin_verified", False)
         if paypal_payload is not None:
             safe_set(payment, "raw_payload", json.dumps(paypal_payload))
         db.add(payment)
@@ -453,10 +618,7 @@ def create_plan(payload: CreatePlanRequest):
 
 
 @router.post("/create")
-def create_subscription(
-    payload: CreateSubscriptionRequest,
-    db: Session = Depends(get_db),
-):
+def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depends(get_db)):
     if payload.plan_level not in MONTHLY_PRICES:
         raise HTTPException(status_code=400, detail="Nivel inválido")
 
@@ -470,10 +632,7 @@ def create_subscription(
     if not plan_id:
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"Falta configurar PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_{payload.plan_level} "
-                "en Render."
-            ),
+            detail=f"Falta configurar PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_{payload.plan_level} en Render.",
         )
 
     token = get_token()
@@ -511,10 +670,7 @@ def create_subscription(
     monthly_amount = MONTHLY_PRICES[payload.plan_level]
 
     if not subscription_id:
-        raise HTTPException(
-            status_code=500,
-            detail="PayPal no devolvió subscription_id",
-        )
+        raise HTTPException(status_code=500, detail="PayPal no devolvió subscription_id")
 
     existing_payment = (
         db.query(models.MembershipPayment)
@@ -536,6 +692,7 @@ def create_subscription(
         safe_set(payment, "payment_type", "subscription")
         safe_set(payment, "payment_reference", subscription_id)
         safe_set(payment, "raw_payload", json.dumps(response))
+        safe_set(payment, "admin_verified", False)
 
         db.add(payment)
 
@@ -558,10 +715,7 @@ def create_subscription(
 
 
 @router.post("/activate-level-1")
-def activate_level_1_subscription(
-    payload: ActivateLevel1Request,
-    db: Session = Depends(get_db),
-):
+def activate_level_1_subscription(payload: ActivateLevel1Request, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == payload.user_id).first()
 
     if not user:
@@ -643,41 +797,42 @@ def subscription_cancel():
 
 
 @router.post("/webhook")
-async def subscription_webhook(
-    request: Request,
-    db: Session = Depends(get_db),
-):
+async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
     event = await request.json()
     event_type = event.get("event_type")
     resource = event.get("resource", {})
 
     subscription_id = (
         resource.get("billing_agreement_id")
-        or resource.get("id")
         or resource.get("subscription_id")
+        or resource.get("id")
     )
 
     if not subscription_id:
         return {"status": "ignored", "reason": "No subscription id"}
 
-    payment = db.query(models.MembershipPayment).filter(
-        models.MembershipPayment.paypal_order_id == subscription_id,
-        models.MembershipPayment.payment_type == "subscription",
-    ).first()
+    subscription_payment = (
+        db.query(models.MembershipPayment)
+        .filter(
+            models.MembershipPayment.paypal_order_id == subscription_id,
+            models.MembershipPayment.payment_type == "subscription",
+        )
+        .first()
+    )
 
     user = None
 
-    if payment:
-        user = db.query(models.User).filter(
-            models.User.id == payment.user_id
-        ).first()
+    if subscription_payment:
+        user = (
+            db.query(models.User)
+            .filter(models.User.id == subscription_payment.user_id)
+            .first()
+        )
 
     if event_type == "BILLING.SUBSCRIPTION.ACTIVATED":
-        if payment:
-            payment.status = "subscription_active"
-            safe_set(payment, "admin_verified", True)
-            safe_set(payment, "admin_verified_at", datetime.utcnow())
-            safe_set(payment, "raw_payload", json.dumps(event))
+        if subscription_payment:
+            subscription_payment.status = "subscription_active"
+            safe_set(subscription_payment, "raw_payload", json.dumps(event))
 
         if user:
             level = user.membership_level or 1
@@ -701,16 +856,28 @@ async def subscription_webhook(
         "PAYMENT.SALE.COMPLETED",
         "PAYMENT.CAPTURE.COMPLETED",
     ]:
-        if payment:
-            payment.status = "subscription_paid"
-            payment.paid_at = datetime.utcnow()
-            safe_set(payment, "admin_verified", True)
-            safe_set(payment, "admin_verified_at", datetime.utcnow())
-            safe_set(payment, "raw_payload", json.dumps(event))
-
         if user:
-            user.membership_active = True
-            user.is_active = True
+            monthly_payment = create_monthly_membership_payment_from_webhook(
+                db=db,
+                user=user,
+                subscription_id=subscription_id,
+                event=event,
+            )
+            db.commit()
+
+            return {
+                "status": "ok",
+                "event": event_type,
+                "subscription_id": subscription_id,
+                "payment_id": monthly_payment.id,
+                "payment_status": monthly_payment.status,
+                "admin_verified": monthly_payment.admin_verified,
+            }
+
+        if subscription_payment:
+            subscription_payment.status = "subscription_paid"
+            subscription_payment.paid_at = datetime.utcnow()
+            safe_set(subscription_payment, "raw_payload", json.dumps(event))
 
         db.commit()
 
@@ -726,9 +893,9 @@ async def subscription_webhook(
         "BILLING.SUBSCRIPTION.EXPIRED",
         "BILLING.SUBSCRIPTION.PAYMENT.FAILED",
     ]:
-        if payment:
-            payment.status = "subscription_inactive"
-            safe_set(payment, "raw_payload", json.dumps(event))
+        if subscription_payment:
+            subscription_payment.status = "subscription_inactive"
+            safe_set(subscription_payment, "raw_payload", json.dumps(event))
 
         if user:
             user.membership_active = False
@@ -804,8 +971,6 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
 
         if paypal_status == "ACTIVE":
             payment.status = "subscription_active"
-            safe_set(payment, "admin_verified", True)
-            safe_set(payment, "admin_verified_at", datetime.utcnow())
             user.membership_active = True
             user.is_active = True
             db.commit()
