@@ -669,16 +669,29 @@ def admin_update_user_phone(user_id: int, payload: AdminUpdatePhoneRequest, db: 
 
 
 @router.get("/payments")
-def get_payments(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_payments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     require_admin_or_superadmin(current_user)
 
-    payments = db.query(MembershipPayment).order_by(MembershipPayment.created_at.desc()).all()
+    payments = (
+        db.query(MembershipPayment)
+        .filter(
+            MembershipPayment.payment_type.in_([
+                "signup",
+                "subscription",
+                "subscription_renewal",
+            ])
+        )
+        .order_by(MembershipPayment.created_at.desc())
+        .all()
+    )
 
     items = []
 
     for payment in payments:
         data = payment_to_dict(payment)
-
         user = db.query(User).filter(User.id == payment.user_id).first()
         selected_products = []
 
@@ -945,6 +958,13 @@ def get_membership_cycles(
 
     payments = (
         db.query(MembershipPayment)
+        .filter(
+            MembershipPayment.payment_type.in_([
+                "signup",
+                "subscription",
+                "subscription_renewal",
+            ])
+        )
         .order_by(MembershipPayment.created_at.desc())
         .all()
     )
@@ -984,7 +1004,12 @@ def get_membership_cycles(
             )
 
             for item in selection_items:
-                product = db.query(Product).filter(Product.id == item.product_id).first()
+                product = (
+                    db.query(Product)
+                    .filter(Product.id == item.product_id)
+                    .first()
+                )
+
                 if product:
                     products.append(product.name)
 
