@@ -273,8 +273,8 @@ def payment_to_dict(payment: MembershipPayment):
         "user_id": payment.user_id,
         "user_name": payment.user.name if payment.user else None,
         "order_id": payment.order_id,
-        "payment_type": payment.payment_type,
-        "provider": payment.provider,
+        "payment_type": getattr(payment, "payment_type", None),
+        "provider": getattr(payment, "provider", None),
         "paypal_order_id": payment.paypal_order_id,
         "paypal_capture_id": payment.paypal_capture_id,
         "amount": payment.amount,
@@ -334,6 +334,9 @@ def order_to_dict(db: Session, order: Order):
 
 
 def get_best_selection_for_payment(db: Session, user: User):
+    if not user:
+        return None
+
     now = datetime.utcnow()
 
     current_selection = (
@@ -471,7 +474,6 @@ def get_or_create_order_for_payment(db: Session, user: User, payment: Membership
     )
 
     return order
-
 
 @router.get("/summary")
 def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -669,8 +671,36 @@ def admin_update_user_phone(user_id: int, payload: AdminUpdatePhoneRequest, db: 
 @router.get("/payments")
 def get_payments(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
+
     payments = db.query(MembershipPayment).order_by(MembershipPayment.created_at.desc()).all()
-    return {"items": [payment_to_dict(payment) for payment in payments]}
+
+    items = []
+
+    for payment in payments:
+        data = payment_to_dict(payment)
+
+        user = db.query(User).filter(User.id == payment.user_id).first()
+        selected_products = []
+
+        if user:
+            selection = get_best_selection_for_payment(db, user)
+
+            if selection:
+                selection_items = (
+                    db.query(MonthlySelectionItem)
+                    .filter(MonthlySelectionItem.monthly_selection_id == selection.id)
+                    .all()
+                )
+
+                for item in selection_items:
+                    product = db.query(Product).filter(Product.id == item.product_id).first()
+                    if product:
+                        selected_products.append(product.name)
+
+        data["selected_products"] = selected_products
+        items.append(data)
+
+    return {"items": items}
 
 
 @router.put("/payments/{payment_id}/verify")
@@ -684,6 +714,20 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
     user = db.query(User).filter(User.id == payment.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    allowed_status = [
+        "completed",
+        "paid",
+        "verified",
+        "subscription_paid",
+        "subscription_active",
+    ]
+
+    if payment.status not in allowed_status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Estado no verificable: {payment.status}",
+        )
 
     now = datetime.utcnow()
 
@@ -863,6 +907,7 @@ def get_admin_commissions_ranking(db: Session = Depends(get_db), current_user: U
         "items": items,
     }
 
+
 @router.put("/users/{user_id}/reset-password")
 def admin_reset_user_password(user_id: int, payload: AdminResetPasswordRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
@@ -890,6 +935,7 @@ def admin_reset_user_password(user_id: int, payload: AdminResetPasswordRequest, 
         "role": user.role,
     }
 
+
 @router.get("/membership-cycles")
 def get_membership_cycles(
     db: Session = Depends(get_db),
@@ -906,19 +952,15 @@ def get_membership_cycles(
     items = []
 
     for payment in payments:
-
-        user = db.query(User).filter(
-            User.id == payment.user_id
-        ).first()
+        user = db.query(User).filter(User.id == payment.user_id).first()
 
         selection = None
+        order = None
 
         if payment.order_id:
-            order = db.query(Order).filter(
-                Order.id == payment.order_id
-            ).first()
+            order = db.query(Order).filter(Order.id == payment.order_id).first()
 
-            if order:
+            if order and user:
                 selection = (
                     db.query(MonthlySelection)
                     .filter(
@@ -929,31 +971,20 @@ def get_membership_cycles(
                     .first()
                 )
         else:
-            selection = get_best_selection_for_payment(
-                db,
-                user,
-            )
-
-            order = None
+            if user:
+                selection = get_best_selection_for_payment(db, user)
 
         products = []
 
         if selection:
-
             selection_items = (
                 db.query(MonthlySelectionItem)
-                .filter(
-                    MonthlySelectionItem.monthly_selection_id == selection.id
-                )
+                .filter(MonthlySelectionItem.monthly_selection_id == selection.id)
                 .all()
             )
 
             for item in selection_items:
-
-                product = db.query(Product).filter(
-                    Product.id == item.product_id
-                ).first()
-
+                product = db.query(Product).filter(Product.id == item.product_id).first()
                 if product:
                     products.append(product.name)
 
@@ -963,6 +994,7 @@ def get_membership_cycles(
             "user_name": user.name if user else None,
             "membership_level": user.membership_level if user else None,
             "payment_status": payment.status,
+            "payment_type": getattr(payment, "payment_type", None),
             "admin_verified": payment.admin_verified,
             "amount": payment.amount,
             "selection_id": selection.id if selection else None,
@@ -972,6 +1004,4 @@ def get_membership_cycles(
             "order_status": order.status if order else None,
         })
 
-    return {
-        "items": items
-    }
+    return {"items": items}
