@@ -1005,3 +1005,46 @@ def get_membership_cycles(
         })
 
     return {"items": items}
+@router.get("/membership-payments")
+def get_membership_payments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    payments = (
+        db.query(MembershipPayment)
+        .filter(
+            MembershipPayment.payment_type.in_([
+                "signup",
+                "subscription",
+                "subscription_renewal",
+            ])
+        )
+        .order_by(MembershipPayment.created_at.desc())
+        .all()
+    )
+
+    return {"items": [payment_to_dict(payment) for payment in payments]}
+
+
+@router.get("/marketplace-payments")
+def get_marketplace_payments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    payments = (
+        db.query(MembershipPayment)
+        .filter(
+            MembershipPayment.payment_type.in_([
+                "marketplace_pharmacy",
+                "marketplace_education",
+            ])
+        )
+        .order_by(MembershipPayment.created_at.desc())
+        .all()
+    )
+
+    return {"items": [payment_to_dict(payment) for payment in payments]}
