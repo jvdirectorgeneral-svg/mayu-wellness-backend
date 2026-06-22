@@ -863,7 +863,6 @@ def get_admin_commissions_ranking(db: Session = Depends(get_db), current_user: U
         "items": items,
     }
 
-
 @router.put("/users/{user_id}/reset-password")
 def admin_reset_user_password(user_id: int, payload: AdminResetPasswordRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
@@ -889,4 +888,90 @@ def admin_reset_user_password(user_id: int, payload: AdminResetPasswordRequest, 
         "name": user.name,
         "email": user.email,
         "role": user.role,
+    }
+
+@router.get("/membership-cycles")
+def get_membership_cycles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    payments = (
+        db.query(MembershipPayment)
+        .order_by(MembershipPayment.created_at.desc())
+        .all()
+    )
+
+    items = []
+
+    for payment in payments:
+
+        user = db.query(User).filter(
+            User.id == payment.user_id
+        ).first()
+
+        selection = None
+
+        if payment.order_id:
+            order = db.query(Order).filter(
+                Order.id == payment.order_id
+            ).first()
+
+            if order:
+                selection = (
+                    db.query(MonthlySelection)
+                    .filter(
+                        MonthlySelection.user_id == user.id,
+                        MonthlySelection.month == order.month,
+                        MonthlySelection.year == order.year,
+                    )
+                    .first()
+                )
+        else:
+            selection = get_best_selection_for_payment(
+                db,
+                user,
+            )
+
+            order = None
+
+        products = []
+
+        if selection:
+
+            selection_items = (
+                db.query(MonthlySelectionItem)
+                .filter(
+                    MonthlySelectionItem.monthly_selection_id == selection.id
+                )
+                .all()
+            )
+
+            for item in selection_items:
+
+                product = db.query(Product).filter(
+                    Product.id == item.product_id
+                ).first()
+
+                if product:
+                    products.append(product.name)
+
+        items.append({
+            "payment_id": payment.id,
+            "user_id": user.id if user else None,
+            "user_name": user.name if user else None,
+            "membership_level": user.membership_level if user else None,
+            "payment_status": payment.status,
+            "admin_verified": payment.admin_verified,
+            "amount": payment.amount,
+            "selection_id": selection.id if selection else None,
+            "selected_products": products,
+            "selection_status": selection.status if selection else None,
+            "order_id": order.id if order else None,
+            "order_status": order.status if order else None,
+        })
+
+    return {
+        "items": items
     }
