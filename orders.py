@@ -50,18 +50,9 @@ def generate_order_code(user_id: int, month: int, year: int) -> str:
 
 def format_month_label(month: int, year: int) -> str:
     months = {
-        1: "Enero",
-        2: "Febrero",
-        3: "Marzo",
-        4: "Abril",
-        5: "Mayo",
-        6: "Junio",
-        7: "Julio",
-        8: "Agosto",
-        9: "Septiembre",
-        10: "Octubre",
-        11: "Noviembre",
-        12: "Diciembre",
+        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+        5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+        9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
     }
     return f"{months.get(month, 'Mes')} {year}"
 
@@ -98,10 +89,7 @@ def require_admin_or_superadmin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Usuario inactivo")
 
     if current_user.role not in {"superadmin", "admin"}:
-        raise HTTPException(
-            status_code=403,
-            detail="Acceso solo para admin o superadmin",
-        )
+        raise HTTPException(status_code=403, detail="Acceso solo para admin o superadmin")
 
 
 def require_logistics_or_admin(current_user: models.User):
@@ -127,6 +115,7 @@ def get_order_payment(db: Session, order_id: int):
 def payment_data(payment):
     return {
         "payment_id": payment.id if payment else None,
+        "payment_type": getattr(payment, "payment_type", None) if payment else None,
         "payment_status": payment.status if payment else None,
         "payment_amount": payment.amount if payment else None,
         "payer_email": payment.payer_email if payment else None,
@@ -201,17 +190,17 @@ def add_tracking_history(
     status: str,
     note: Optional[str] = None,
 ):
-    history = models.OrderTrackingHistory(
-        order_id=order.id,
-        status=status,
-        note=note,
-        carrier=getattr(order, "carrier", None),
-        tracking_number=getattr(order, "tracking_number", None),
-        tracking_url=getattr(order, "tracking_url", None),
-        created_by=current_user.id if current_user else None,
+    db.add(
+        models.OrderTrackingHistory(
+            order_id=order.id,
+            status=status,
+            note=note,
+            carrier=getattr(order, "carrier", None),
+            tracking_number=getattr(order, "tracking_number", None),
+            tracking_url=getattr(order, "tracking_url", None),
+            created_by=current_user.id if current_user else None,
+        )
     )
-
-    db.add(history)
 
 
 def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
@@ -303,10 +292,7 @@ def create_order_from_selection(
     logistics_notes: str = "Orden creada, pendiente de validación administrativa",
 ):
     if not monthly_selection.items:
-        raise HTTPException(
-            status_code=400,
-            detail="La selección mensual no tiene productos",
-        )
+        raise HTTPException(status_code=400, detail="La selección mensual no tiene productos")
 
     existing_order = (
         db.query(models.Order)
@@ -319,17 +305,10 @@ def create_order_from_selection(
     )
 
     if existing_order:
-        raise HTTPException(
-            status_code=400,
-            detail="Ya existe una orden para este usuario en ese ciclo",
-        )
+        raise HTTPException(status_code=400, detail="Ya existe una orden para este usuario en ese ciclo")
 
     new_order = models.Order(
-        order_code=generate_order_code(
-            user.id,
-            monthly_selection.month,
-            monthly_selection.year,
-        ),
+        order_code=generate_order_code(user.id, monthly_selection.month, monthly_selection.year),
         user_id=user.id,
         month=monthly_selection.month,
         year=monthly_selection.year,
@@ -358,13 +337,7 @@ def create_order_from_selection(
             )
         )
 
-    add_tracking_history(
-        db=db,
-        order=new_order,
-        current_user=current_user,
-        status=status,
-        note=logistics_notes,
-    )
+    add_tracking_history(db, new_order, current_user, status, logistics_notes)
 
     return new_order
 
@@ -382,18 +355,10 @@ def create_order_manual(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    monthly_selection = get_monthly_selection(
-        db=db,
-        user_id=payload.user_id,
-        month=payload.month,
-        year=payload.year,
-    )
+    monthly_selection = get_monthly_selection(db, payload.user_id, payload.month, payload.year)
 
     if not monthly_selection:
-        raise HTTPException(
-            status_code=404,
-            detail="No existe selección mensual para ese usuario en ese ciclo",
-        )
+        raise HTTPException(status_code=404, detail="No existe selección mensual para ese usuario en ese ciclo")
 
     new_order = create_order_from_selection(
         db=db,
@@ -428,18 +393,12 @@ def approve_order_for_logistics(
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if order.status != "pending_payment_review":
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se pueden aprobar órdenes en revisión de pago",
-        )
+        raise HTTPException(status_code=400, detail="Solo se pueden aprobar órdenes en revisión de pago")
 
     payment = get_order_payment(db, order.id)
 
     if not payment or payment.status != "verified" or not payment.admin_verified:
-        raise HTTPException(
-            status_code=400,
-            detail="La orden necesita un pago verificado por administración",
-        )
+        raise HTTPException(status_code=400, detail="La orden necesita un pago verificado por administración")
 
     order.status = "approved_for_logistics"
     order.user_status_snapshot = "active"
@@ -454,13 +413,7 @@ def approve_order_for_logistics(
     if selection:
         selection.editable = False
 
-    add_tracking_history(
-        db=db,
-        order=order,
-        current_user=current_user,
-        status="approved_for_logistics",
-        note=order.logistics_notes,
-    )
+    add_tracking_history(db, order, current_user, "approved_for_logistics", order.logistics_notes)
 
     db.commit()
     db.refresh(order)
@@ -488,12 +441,7 @@ def list_orders(
     if current_user.role == "logistics":
         query = query.filter(
             models.Order.status.in_(
-                [
-                    "approved_for_logistics",
-                    "preparing",
-                    "shipped",
-                    "delivered",
-                ]
+                ["approved_for_logistics", "preparing", "shipped", "delivered"]
             )
         )
 
@@ -511,7 +459,6 @@ def list_orders(
 
     if search and search.strip():
         clean = f"%{search.strip()}%"
-
         query = query.filter(
             or_(
                 models.Order.order_code.ilike(clean),
@@ -528,12 +475,7 @@ def list_orders(
 
     orders = query.order_by(models.Order.created_at.desc()).all()
 
-    return {
-        "items": [
-            order_to_dict(db, order, include_history=False)
-            for order in orders
-        ]
-    }
+    return {"items": [order_to_dict(db, order, include_history=False) for order in orders]}
 
 
 @router.get("/user/{user_id}")
@@ -547,20 +489,11 @@ def list_user_orders(
     orders = (
         db.query(models.Order)
         .filter(models.Order.user_id == user_id)
-        .order_by(
-            models.Order.year.desc(),
-            models.Order.month.desc(),
-            models.Order.created_at.desc(),
-        )
+        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
         .all()
     )
 
-    return {
-        "items": [
-            order_to_dict(db, order, include_history=True)
-            for order in orders
-        ]
-    }
+    return {"items": [order_to_dict(db, order, include_history=True) for order in orders]}
 
 
 @router.get("/user/{user_id}/delivered")
@@ -573,20 +506,12 @@ def list_user_delivered_orders(
 
     orders = (
         db.query(models.Order)
-        .filter(
-            models.Order.user_id == user_id,
-            models.Order.status == "delivered",
-        )
+        .filter(models.Order.user_id == user_id, models.Order.status == "delivered")
         .order_by(models.Order.delivered_at.desc())
         .all()
     )
 
-    return {
-        "items": [
-            order_to_dict(db, order, include_history=True)
-            for order in orders
-        ]
-    }
+    return {"items": [order_to_dict(db, order, include_history=True) for order in orders]}
 
 
 @router.get("/{order_id}")
@@ -603,10 +528,7 @@ def get_order_detail(
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if current_user.role == "logistics" and order.status == "pending_payment_review":
-        raise HTTPException(
-            status_code=403,
-            detail="La orden aún no ha sido liberada para logística",
-        )
+        raise HTTPException(status_code=403, detail="La orden aún no ha sido liberada para logística")
 
     data = order_to_dict(db, order, include_history=True)
 
@@ -643,38 +565,23 @@ def update_order_tracking(
         "preparing",
         "shipped",
     }:
-        raise HTTPException(
-            status_code=403,
-            detail="La orden no está disponible para actualizar tracking",
-        )
+        raise HTTPException(status_code=403, detail="La orden no está disponible para actualizar tracking")
 
     if payload.carrier is not None:
         order.carrier = payload.carrier.strip() if payload.carrier else None
 
     if payload.tracking_number is not None:
-        order.tracking_number = (
-            payload.tracking_number.strip() if payload.tracking_number else None
-        )
+        order.tracking_number = payload.tracking_number.strip() if payload.tracking_number else None
 
     if payload.tracking_url is not None:
-        order.tracking_url = (
-            payload.tracking_url.strip() if payload.tracking_url else None
-        )
+        order.tracking_url = payload.tracking_url.strip() if payload.tracking_url else None
 
     if payload.shipping_notes is not None:
-        order.shipping_notes = (
-            payload.shipping_notes.strip() if payload.shipping_notes else None
-        )
+        order.shipping_notes = payload.shipping_notes.strip() if payload.shipping_notes else None
 
     note = payload.note or "Datos de guía / tracking actualizados"
 
-    add_tracking_history(
-        db=db,
-        order=order,
-        current_user=current_user,
-        status=order.status,
-        note=note,
-    )
+    add_tracking_history(db, order, current_user, order.status, note)
 
     db.commit()
     db.refresh(order)
@@ -712,15 +619,8 @@ def update_order_status(
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if current_user.role == "logistics":
-        if order.status not in {
-            "approved_for_logistics",
-            "preparing",
-            "shipped",
-        }:
-            raise HTTPException(
-                status_code=403,
-                detail="La orden no está liberada para logística",
-            )
+        if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
+            raise HTTPException(status_code=403, detail="La orden no está liberada para logística")
 
         allowed_logistics_transitions = {
             "approved_for_logistics": {"preparing"},
@@ -728,13 +628,8 @@ def update_order_status(
             "shipped": {"delivered"},
         }
 
-        next_allowed = allowed_logistics_transitions.get(order.status, set())
-
-        if payload.status not in next_allowed:
-            raise HTTPException(
-                status_code=400,
-                detail="Transición de estado no permitida para logística",
-            )
+        if payload.status not in allowed_logistics_transitions.get(order.status, set()):
+            raise HTTPException(status_code=400, detail="Transición de estado no permitida para logística")
 
     order.status = payload.status
 
@@ -749,7 +644,6 @@ def update_order_status(
     if payload.status == "shipped":
         if order.shipped_at is None:
             order.shipped_at = now
-
         if getattr(order, "shipping_batch_date", None) is None:
             order.shipping_batch_date = now
 
