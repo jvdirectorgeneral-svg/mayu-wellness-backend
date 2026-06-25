@@ -291,13 +291,18 @@ class MonthlySelection(Base):
     user = relationship("User", back_populates="monthly_selections")
     plan = relationship("Plan", back_populates="monthly_selections")
 
-    items = relationship(
-        "MonthlySelectionItem",
-        back_populates="monthly_selection",
-        cascade="all, delete-orphan",
-    )
+   items = relationship(
+    "MonthlySelectionItem",
+    back_populates="monthly_selection",
+    cascade="all, delete-orphan",
+)
 
-    __table_args__ = (
+payments = relationship(
+    "MembershipPayment",
+    back_populates="monthly_selection",
+)
+
+__table_args__ = (
         UniqueConstraint(
             "user_id",
             "month",
@@ -433,10 +438,16 @@ class Order(Base):
     id = Column(Integer, primary_key=True, index=True)
     order_code = Column(String, unique=True, nullable=False, index=True)
 
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+   user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    month = Column(Integer, nullable=False)
-    year = Column(Integer, nullable=False)
+monthly_selection_id = Column(
+    Integer,
+    ForeignKey("monthly_selections.id"),
+    nullable=True,
+)
+
+month = Column(Integer, nullable=False)
+year = Column(Integer, nullable=False)
 
     membership_level_snapshot = Column(Integer, nullable=True)
     user_status_snapshot = Column(String, nullable=False, default="inactive")
@@ -462,7 +473,11 @@ class Order(Base):
 
     user = relationship("User", back_populates="orders")
 
-    items = relationship(
+monthly_selection = relationship(
+    "MonthlySelection",
+)
+
+items = relationship(
         "OrderItem",
         back_populates="order",
         cascade="all, delete-orphan",
@@ -521,9 +536,14 @@ class MembershipPayment(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
 
-    payment_type = Column(String, nullable=False, default="signup")
+monthly_selection_id = Column(
+    Integer,
+    ForeignKey("monthly_selections.id"),
+    nullable=True,
+)
+payment_type = Column(String, nullable=False, default="signup")
     provider = Column(String, nullable=False, default="paypal")
 
     paypal_order_id = Column(String, unique=True, nullable=True, index=True)
@@ -552,9 +572,13 @@ class MembershipPayment(Base):
         back_populates="payments",
     )
 
-    order = relationship("Order", back_populates="payments")
+   order = relationship("Order", back_populates="payments")
 
-    admin_verifier = relationship(
+monthly_selection = relationship(
+    "MonthlySelection",
+    back_populates="payments",
+)
+admin_verifier = relationship(
         "User",
         foreign_keys=[admin_verified_by],
     )
