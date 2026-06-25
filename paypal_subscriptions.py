@@ -274,6 +274,24 @@ def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     month, year = get_current_cycle()
 
     selection = (
+        def get_pending_selection_for_payment(db: Session, user_id: int):
+    return (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.status == "confirmed",
+        )
+        .outerjoin(
+            models.Order,
+            models.Order.monthly_selection_id == models.MonthlySelection.id,
+        )
+        .filter(models.Order.id == None)
+        .order_by(
+            models.MonthlySelection.year.asc(),
+            models.MonthlySelection.month.asc(),
+        )
+        .first()
+    )
         db.query(models.MonthlySelection)
         .filter(
             models.MonthlySelection.user_id == user.id,
@@ -413,6 +431,12 @@ def create_monthly_membership_payment_from_webhook(
     if existing:
         return existing
 
+    selection = get_pending_selection_for_payment(db, user.id)
+
+if selection:
+    month = selection.month
+    year = selection.year
+else:
     month, year = get_current_cycle()
     selection = get_or_create_monthly_selection_for_payment(
         db=db,
@@ -492,21 +516,24 @@ def activate_user_subscription_core(
         if paypal_payload is not None:
             safe_set(existing_payment, "raw_payload", json.dumps(paypal_payload))
     else:
-        payment = models.MembershipPayment(
-            user_id=user.id,
-            order_id=None,
-            paypal_order_id=subscription_id,
-            amount=MONTHLY_PRICES[plan_level],
-            currency="USD",
-            status="subscription_active",
-        )
-        safe_set(payment, "provider", "paypal")
-        safe_set(payment, "payment_type", "subscription")
-        safe_set(payment, "payment_reference", subscription_id)
-        safe_set(payment, "admin_verified", False)
-        if paypal_payload is not None:
-            safe_set(payment, "raw_payload", json.dumps(paypal_payload))
-        db.add(payment)
+       payment = models.MembershipPayment(
+    user_id=user.id,
+    order_id=None,
+    paypal_order_id=subscription_id,
+    amount=MONTHLY_PRICES[plan_level],
+    currency="USD",
+    status="subscription_active",
+)
+
+safe_set(payment, "provider", "paypal")
+safe_set(payment, "payment_type", "subscription")
+safe_set(payment, "payment_reference", subscription_id)
+safe_set(payment, "admin_verified", False)
+
+if paypal_payload is not None:
+    safe_set(payment, "raw_payload", json.dumps(paypal_payload))
+
+db.add(payment)
 
     db.commit()
     db.refresh(user)
