@@ -256,6 +256,20 @@ def get_latest_selection_with_items(db: Session, user_id: int):
     return None
 
 
+def get_pending_selection_for_payment(db: Session, user_id: int):
+    return (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.status == "confirmed",
+        )
+        .order_by(
+            models.MonthlySelection.year.asc(),
+            models.MonthlySelection.month.asc(),
+        )
+        .first()
+    )
+
 def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     if not user.membership_level:
         raise HTTPException(
@@ -274,10 +288,51 @@ def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     month, year = get_current_cycle()
 
     selection = (
-        def get_pending_selection_for_payment(db: Session, user_id: int):
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user.id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+    if selection:
+        selection.plan_id = plan.id
+        selection.editable = True
+        db.commit()
+        db.refresh(selection)
+        return selection
+
+    selection = models.MonthlySelection(
+        user_id=user.id,
+        plan_id=plan.id,
+        month=month,
+        year=year,
+        status="draft",
+        editable=True,
+    )
+
+    db.add(selection)
+    db.commit()
+    db.refresh(selection)
+
+    return selection
+    
+def get_pending_selection_for_payment(db: Session, user_id: int):
     return (
         db.query(models.MonthlySelection)
         .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.status == "confirmed",
+        )
+        .order_by(
+            models.MonthlySelection.year.asc(),
+            models.MonthlySelection.month.asc(),
+        )
+        .first()
+    )
+
             models.MonthlySelection.user_id == user_id,
             models.MonthlySelection.status == "confirmed",
         )
