@@ -189,7 +189,7 @@ def extract_approve_url(links):
 
 
 def get_current_cycle():
-    now = datetime.utcnow()
+    now = datetime.now()
     return now.month, now.year
 
 
@@ -265,7 +265,7 @@ def get_pending_selection_for_payment(db: Session, user_id: int):
         )
         .filter(
             models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.status == "confirmed",
+            models.MonthlySelection.status.in_(["confirmed", "draft"]),
             models.Order.id == None,
         )
         .order_by(
@@ -563,7 +563,14 @@ def activate_user_subscription_core(
     db.refresh(user)
 
     card = get_or_create_member_card_core(db, user)
-    selection = get_or_create_initial_monthly_selection(db, user)
+    month, year = get_current_cycle()
+
+selection = get_or_create_monthly_selection_for_payment(
+    db=db,
+    user=user,
+    month=month,
+    year=year,
+)
 
     subscription_payment = (
         db.query(models.MembershipPayment)
