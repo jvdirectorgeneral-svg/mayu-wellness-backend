@@ -1039,11 +1039,17 @@ def get_subscription_status(user_id: int, db: Session = Depends(get_db)):
             billing_info.get("next_billing_time") if billing_info else None
         )
 
-        if paypal_status == "ACTIVE":
-            payment.status = "subscription_active"
-            user.membership_active = True
-            user.is_active = True
-            db.commit()
+       if paypal_status == "ACTIVE":
+    payment.status = "subscription_active"
+    user.membership_active = True
+    user.is_active = True
+    user.status = "active"
+
+    safe_set(user, "paypal_subscription_id", subscription_id)
+    safe_set(user, "subscription_status", "ACTIVE")
+    safe_set(user, "next_billing_date", next_billing_time)
+
+    db.commit()
 
         elif paypal_status in ["APPROVAL_PENDING"]:
             payment.status = "subscription_created"
