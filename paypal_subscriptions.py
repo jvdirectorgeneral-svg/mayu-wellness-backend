@@ -333,20 +333,6 @@ def get_pending_selection_for_payment(db: Session, user_id: int):
         .first()
     )
 
-            models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.status == "confirmed",
-        )
-        .outerjoin(
-            models.Order,
-            models.Order.monthly_selection_id == models.MonthlySelection.id,
-        )
-        .filter(models.Order.id == None)
-        .order_by(
-            models.MonthlySelection.year.asc(),
-            models.MonthlySelection.month.asc(),
-        )
-        .first()
-    )
         db.query(models.MonthlySelection)
         .filter(
             models.MonthlySelection.user_id == user.id,
