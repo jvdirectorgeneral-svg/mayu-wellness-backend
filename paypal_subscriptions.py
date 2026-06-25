@@ -572,7 +572,7 @@ selection = get_or_create_monthly_selection_for_payment(
     year=year,
 )
 
-    subscription_payment = (
+    subscription_payment = 
         db.query(models.MembershipPayment)
         .filter(
             models.MembershipPayment.paypal_order_id == subscription_id,
