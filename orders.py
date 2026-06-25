@@ -43,6 +43,11 @@ class OrderTrackingUpdate(BaseModel):
     note: Optional[str] = None
 
 
+def safe_set(obj, attr, value):
+    if hasattr(obj, attr):
+        setattr(obj, attr, value)
+
+
 def generate_order_code(user_id: int, month: int, year: int) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"MWC-{year}{month:02d}-U{user_id}-{timestamp}"
@@ -55,6 +60,12 @@ def format_month_label(month: int, year: int) -> str:
         9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
     }
     return f"{months.get(month, 'Mes')} {year}"
+
+
+def get_next_month_year(month: int, year: int):
+    if month == 12:
+        return 1, year + 1
+    return month + 1, year
 
 
 def order_is_locked(order: models.Order) -> bool:
@@ -103,13 +114,49 @@ def require_logistics_or_admin(current_user: models.User):
         raise HTTPException(status_code=403, detail="Acceso no autorizado")
 
 
-def get_order_payment(db: Session, order_id: int):
+def get_plan_by_level(db: Session, level: int):
+    return db.query(models.Plan).filter(models.Plan.level == level).first()
+
+
+def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
     return (
+        db.query(models.MonthlySelection)
+        .filter(
+            models.MonthlySelection.user_id == user_id,
+            models.MonthlySelection.month == month,
+            models.MonthlySelection.year == year,
+        )
+        .first()
+    )
+
+
+def get_order_payment(db: Session, order: models.Order):
+    payment = (
         db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.order_id == order_id)
+        .filter(models.MembershipPayment.order_id == order.id)
         .order_by(models.MembershipPayment.created_at.desc())
         .first()
     )
+
+    if payment:
+        return payment
+
+    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
+
+    if selection and hasattr(models.MembershipPayment, "monthly_selection_id"):
+        payment = (
+            db.query(models.MembershipPayment)
+            .filter(models.MembershipPayment.monthly_selection_id == selection.id)
+            .order_by(models.MembershipPayment.created_at.desc())
+            .first()
+        )
+
+        if payment:
+            payment.order_id = order.id
+            db.flush()
+            return payment
+
+    return None
 
 
 def payment_data(payment):
@@ -203,18 +250,6 @@ def add_tracking_history(
     )
 
 
-def get_monthly_selection(db: Session, user_id: int, month: int, year: int):
-    return (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.month == month,
-            models.MonthlySelection.year == year,
-        )
-        .first()
-    )
-
-
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
     selection = get_monthly_selection(db, user_id, month, year)
 
@@ -246,8 +281,60 @@ def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int)
     }
 
 
+def open_next_selection_cycle(
+    db: Session,
+    user: models.User,
+    current_selection: models.MonthlySelection,
+):
+    if not user or not current_selection:
+        return None
+
+    next_month, next_year = get_next_month_year(
+        current_selection.month,
+        current_selection.year,
+    )
+
+    existing_next = get_monthly_selection(
+        db=db,
+        user_id=user.id,
+        month=next_month,
+        year=next_year,
+    )
+
+    if existing_next:
+        existing_next.editable = True
+        db.flush()
+        return existing_next
+
+    plan = get_plan_by_level(db, user.membership_level)
+
+    next_selection = models.MonthlySelection(
+        user_id=user.id,
+        plan_id=plan.id if plan else current_selection.plan_id,
+        month=next_month,
+        year=next_year,
+        status="confirmed",
+        editable=True,
+    )
+
+    db.add(next_selection)
+    db.flush()
+
+    for item in current_selection.items:
+        db.add(
+            models.MonthlySelectionItem(
+                monthly_selection_id=next_selection.id,
+                product_id=item.product_id,
+                quantity=item.quantity or 1,
+            )
+        )
+
+    db.flush()
+    return next_selection
+
+
 def order_to_dict(db: Session, order: models.Order, include_history: bool = False):
-    payment = get_order_payment(db, order.id)
+    payment = get_order_payment(db, order)
 
     data = {
         "id": order.id,
@@ -292,7 +379,10 @@ def create_order_from_selection(
     logistics_notes: str = "Orden creada, pendiente de validación administrativa",
 ):
     if not monthly_selection.items:
-        raise HTTPException(status_code=400, detail="La selección mensual no tiene productos")
+        raise HTTPException(
+            status_code=400,
+            detail="La selección mensual no tiene productos",
+        )
 
     existing_order = (
         db.query(models.Order)
@@ -305,10 +395,17 @@ def create_order_from_selection(
     )
 
     if existing_order:
-        raise HTTPException(status_code=400, detail="Ya existe una orden para este usuario en ese ciclo")
+        raise HTTPException(
+            status_code=400,
+            detail="Ya existe una orden para este usuario en ese ciclo",
+        )
 
     new_order = models.Order(
-        order_code=generate_order_code(user.id, monthly_selection.month, monthly_selection.year),
+        order_code=generate_order_code(
+            user.id,
+            monthly_selection.month,
+            monthly_selection.year,
+        ),
         user_id=user.id,
         month=monthly_selection.month,
         year=monthly_selection.year,
@@ -321,6 +418,8 @@ def create_order_from_selection(
         status=status,
         logistics_notes=logistics_notes,
     )
+
+    safe_set(new_order, "monthly_selection_id", monthly_selection.id)
 
     db.add(new_order)
     db.flush()
@@ -336,6 +435,12 @@ def create_order_from_selection(
                 quantity=item.quantity,
             )
         )
+
+    payment = get_order_payment(db, new_order)
+
+    if payment:
+        payment.order_id = new_order.id
+        db.flush()
 
     add_tracking_history(db, new_order, current_user, status, logistics_notes)
 
@@ -355,10 +460,18 @@ def create_order_manual(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    monthly_selection = get_monthly_selection(db, payload.user_id, payload.month, payload.year)
+    monthly_selection = get_monthly_selection(
+        db,
+        payload.user_id,
+        payload.month,
+        payload.year,
+    )
 
     if not monthly_selection:
-        raise HTTPException(status_code=404, detail="No existe selección mensual para ese usuario en ese ciclo")
+        raise HTTPException(
+            status_code=404,
+            detail="No existe selección mensual para ese usuario en ese ciclo",
+        )
 
     new_order = create_order_from_selection(
         db=db,
@@ -393,12 +506,30 @@ def approve_order_for_logistics(
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if order.status != "pending_payment_review":
-        raise HTTPException(status_code=400, detail="Solo se pueden aprobar órdenes en revisión de pago")
+        raise HTTPException(
+            status_code=400,
+            detail="Solo se pueden aprobar órdenes en revisión de pago",
+        )
 
-    payment = get_order_payment(db, order.id)
+    payment = get_order_payment(db, order)
 
-    if not payment or payment.status != "verified" or not payment.admin_verified:
-        raise HTTPException(status_code=400, detail="La orden necesita un pago verificado por administración")
+    valid_payment_statuses = {
+        "verified",
+        "subscription_active",
+        "subscription_paid",
+    }
+
+    if (
+        not payment
+        or payment.status not in valid_payment_statuses
+        or not payment.admin_verified
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="La orden necesita un pago de membresía verificado por administración",
+        )
+
+    payment.order_id = order.id
 
     order.status = "approved_for_logistics"
     order.user_status_snapshot = "active"
@@ -412,14 +543,21 @@ def approve_order_for_logistics(
 
     if selection:
         selection.editable = False
+        open_next_selection_cycle(db, order.user, selection)
 
-    add_tracking_history(db, order, current_user, "approved_for_logistics", order.logistics_notes)
+    add_tracking_history(
+        db,
+        order,
+        current_user,
+        "approved_for_logistics",
+        order.logistics_notes,
+    )
 
     db.commit()
     db.refresh(order)
 
     return {
-        "message": "Orden aprobada y liberada para logística",
+        "message": "Orden aprobada, selección cerrada y siguiente ciclo abierto",
         "order": order_to_dict(db, order, include_history=True),
     }
 
@@ -489,7 +627,11 @@ def list_user_orders(
     orders = (
         db.query(models.Order)
         .filter(models.Order.user_id == user_id)
-        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.created_at.desc())
+        .order_by(
+            models.Order.year.desc(),
+            models.Order.month.desc(),
+            models.Order.created_at.desc(),
+        )
         .all()
     )
 
@@ -528,7 +670,10 @@ def get_order_detail(
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
     if current_user.role == "logistics" and order.status == "pending_payment_review":
-        raise HTTPException(status_code=403, detail="La orden aún no ha sido liberada para logística")
+        raise HTTPException(
+            status_code=403,
+            detail="La orden aún no ha sido liberada para logística",
+        )
 
     data = order_to_dict(db, order, include_history=True)
 
@@ -565,19 +710,26 @@ def update_order_tracking(
         "preparing",
         "shipped",
     }:
-        raise HTTPException(status_code=403, detail="La orden no está disponible para actualizar tracking")
+        raise HTTPException(
+            status_code=403,
+            detail="La orden no está disponible para actualizar tracking",
+        )
 
     if payload.carrier is not None:
         order.carrier = payload.carrier.strip() if payload.carrier else None
 
     if payload.tracking_number is not None:
-        order.tracking_number = payload.tracking_number.strip() if payload.tracking_number else None
+        order.tracking_number = (
+            payload.tracking_number.strip() if payload.tracking_number else None
+        )
 
     if payload.tracking_url is not None:
         order.tracking_url = payload.tracking_url.strip() if payload.tracking_url else None
 
     if payload.shipping_notes is not None:
-        order.shipping_notes = payload.shipping_notes.strip() if payload.shipping_notes else None
+        order.shipping_notes = (
+            payload.shipping_notes.strip() if payload.shipping_notes else None
+        )
 
     note = payload.note or "Datos de guía / tracking actualizados"
 
@@ -620,7 +772,10 @@ def update_order_status(
 
     if current_user.role == "logistics":
         if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
-            raise HTTPException(status_code=403, detail="La orden no está liberada para logística")
+            raise HTTPException(
+                status_code=403,
+                detail="La orden no está liberada para logística",
+            )
 
         allowed_logistics_transitions = {
             "approved_for_logistics": {"preparing"},
@@ -629,7 +784,10 @@ def update_order_status(
         }
 
         if payload.status not in allowed_logistics_transitions.get(order.status, set()):
-            raise HTTPException(status_code=400, detail="Transición de estado no permitida para logística")
+            raise HTTPException(
+                status_code=400,
+                detail="Transición de estado no permitida para logística",
+            )
 
     order.status = payload.status
 
@@ -660,6 +818,9 @@ def update_order_status(
         "cancelled",
     }:
         selection.editable = False
+
+        if payload.status in {"approved_for_logistics", "preparing"}:
+            open_next_selection_cycle(db, order.user, selection)
 
     add_tracking_history(
         db=db,
