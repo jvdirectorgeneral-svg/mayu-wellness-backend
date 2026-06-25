@@ -809,26 +809,30 @@ def activate_level_1_subscription(payload: ActivateLevel1Request, db: Session = 
         )
 
     plan_id = response.get("plan_id")
-    expected_plan_id = get_plan_id_by_level(1)
 
-    if expected_plan_id and plan_id != expected_plan_id:
-        raise HTTPException(
-            status_code=400,
-            detail="La suscripción no corresponde al plan Nivel 1 Cobre Sandbox",
-        )
+detected_level = None
 
-    result = activate_user_subscription_core(
-        db=db,
-        user=user,
-        subscription_id=payload.subscription_id,
-        plan_level=1,
-        paypal_payload=response,
-    )
+for level in [1, 2, 3]:
+    expected_plan_id = get_plan_id_by_level(level)
+    if expected_plan_id and plan_id == expected_plan_id:
+        detected_level = level
+        break
+
+if detected_level is None:
+    detected_level = user.membership_level or 1
+
+result = activate_user_subscription_core(
+    db=db,
+    user=user,
+    subscription_id=payload.subscription_id,
+    plan_level=detected_level,
+    paypal_payload=response,
+)
 
     return {
-        "message": "Membresía Nivel 1 Cobre activada correctamente",
-        **result,
-    }
+    "message": f"Membresía Nivel {detected_level} activada correctamente",
+    **result,
+}
 
 
 @router.get("/return", response_class=HTMLResponse)
