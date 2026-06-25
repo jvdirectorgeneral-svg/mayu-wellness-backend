@@ -259,9 +259,14 @@ def get_latest_selection_with_items(db: Session, user_id: int):
 def get_pending_selection_for_payment(db: Session, user_id: int):
     return (
         db.query(models.MonthlySelection)
+        .outerjoin(
+            models.Order,
+            models.Order.monthly_selection_id == models.MonthlySelection.id,
+        )
         .filter(
             models.MonthlySelection.user_id == user_id,
             models.MonthlySelection.status == "confirmed",
+            models.Order.id == None,
         )
         .order_by(
             models.MonthlySelection.year.asc(),
