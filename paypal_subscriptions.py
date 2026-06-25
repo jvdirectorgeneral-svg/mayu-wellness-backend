@@ -565,14 +565,14 @@ def activate_user_subscription_core(
     card = get_or_create_member_card_core(db, user)
     month, year = get_current_cycle()
 
-selection = get_or_create_monthly_selection_for_payment(
-    db=db,
-    user=user,
-    month=month,
-    year=year,
-)
+    selection = get_or_create_monthly_selection_for_payment(
+        db=db,
+        user=user,
+        month=month,
+        year=year,
+    )
 
-    subscription_payment = 
+    subscription_payment = (
         db.query(models.MembershipPayment)
         .filter(
             models.MembershipPayment.paypal_order_id == subscription_id,
@@ -597,7 +597,6 @@ selection = get_or_create_monthly_selection_for_payment(
         "selection_month": selection.month,
         "selection_year": selection.year,
     }
-
 
 @router.get("/debug")
 def debug_subscriptions():
