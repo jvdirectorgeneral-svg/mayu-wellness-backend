@@ -266,9 +266,11 @@ def get_pending_selection_for_payment(db: Session, user_id: int):
         .order_by(
             models.MonthlySelection.year.asc(),
             models.MonthlySelection.month.asc(),
+            models.MonthlySelection.id.asc(),
         )
         .first()
     )
+
 
 def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     if not user.membership_level:
@@ -288,67 +290,6 @@ def get_or_create_initial_monthly_selection(db: Session, user: models.User):
     month, year = get_current_cycle()
 
     selection = (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user.id,
-            models.MonthlySelection.month == month,
-            models.MonthlySelection.year == year,
-        )
-        .first()
-    )
-
-    if selection:
-        selection.plan_id = plan.id
-        selection.editable = True
-        db.commit()
-        db.refresh(selection)
-        return selection
-
-    selection = models.MonthlySelection(
-        user_id=user.id,
-        plan_id=plan.id,
-        month=month,
-        year=year,
-        status="draft",
-        editable=True,
-    )
-
-    db.add(selection)
-    db.commit()
-    db.refresh(selection)
-
-    return selection
-
-
-def get_pending_selection_for_payment(db: Session, user_id: int):
-    return (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.status == "confirmed",
-        )
-        .order_by(
-            models.MonthlySelection.year.asc(),
-            models.MonthlySelection.month.asc(),
-            models.MonthlySelection.id.asc(),
-        )
-        .first()
-    )
-    
-def get_pending_selection_for_payment(db: Session, user_id: int):
-    return (
-        db.query(models.MonthlySelection)
-        .filter(
-            models.MonthlySelection.user_id == user_id,
-            models.MonthlySelection.status == "confirmed",
-        )
-        .order_by(
-            models.MonthlySelection.year.asc(),
-            models.MonthlySelection.month.asc(),
-        )
-        .first()
-    )
-
         db.query(models.MonthlySelection)
         .filter(
             models.MonthlySelection.user_id == user.id,
@@ -450,8 +391,23 @@ def get_or_create_monthly_selection_for_payment(
     return selection
 
 
+def get_order_for_selection(db: Session, user_id: int, month: int, year: int):
+    return (
+        db.query(models.Order)
+        .filter(
+            models.Order.user_id == user_id,
+            models.Order.month == month,
+            models.Order.year == year,
+        )
+        .order_by(models.Order.id.desc())
+        .first()
+    )
+
+
 def extract_paypal_amount(resource: dict, default_amount: float):
-    amount_data = resource.get("amount") or resource.get("seller_receivable_breakdown", {}).get("gross_amount")
+    amount_data = resource.get("amount") or resource.get(
+        "seller_receivable_breakdown", {}
+    ).get("gross_amount")
 
     if isinstance(amount_data, dict):
         value = amount_data.get("total") or amount_data.get("value")
@@ -470,7 +426,6 @@ def create_monthly_membership_payment_from_webhook(
     event: dict,
 ):
     resource = event.get("resource", {})
-    event_type = event.get("event_type")
 
     paypal_payment_id = (
         resource.get("id")
@@ -481,7 +436,7 @@ def create_monthly_membership_payment_from_webhook(
 
     existing = (
         db.query(models.MembershipPayment)
-        .filter(models.MembershipPayment.paypal_order_id == paypal_payment_id)
+        .filter(models.MembershipPayment.paypal_order_id == str(paypal_payment_id))
         .first()
     )
 
@@ -490,14 +445,21 @@ def create_monthly_membership_payment_from_webhook(
 
     selection = get_pending_selection_for_payment(db, user.id)
 
-if selection:
-    month = selection.month
-    year = selection.year
-else:
-    month, year = get_current_cycle()
-    selection = get_or_create_monthly_selection_for_payment(
+    if selection:
+        month = selection.month
+        year = selection.year
+    else:
+        month, year = get_current_cycle()
+        selection = get_or_create_monthly_selection_for_payment(
+            db=db,
+            user=user,
+            month=month,
+            year=year,
+        )
+
+    existing_order = get_order_for_selection(
         db=db,
-        user=user,
+        user_id=user.id,
         month=month,
         year=year,
     )
@@ -508,7 +470,7 @@ else:
 
     payment = models.MembershipPayment(
         user_id=user.id,
-        order_id=None,
+        order_id=existing_order.id if existing_order else None,
         paypal_order_id=str(paypal_payment_id),
         amount=amount,
         currency="USD",
@@ -522,6 +484,7 @@ else:
     safe_set(payment, "raw_payload", json.dumps(event))
     safe_set(payment, "admin_verified", False)
     safe_set(payment, "payer_email", resource.get("payer", {}).get("email_address"))
+    safe_set(payment, "monthly_selection_id", selection.id if selection else None)
 
     db.add(payment)
 
@@ -530,7 +493,6 @@ else:
     user.status = "active"
 
     db.flush()
-
     return payment
 
 
@@ -573,30 +535,43 @@ def activate_user_subscription_core(
         if paypal_payload is not None:
             safe_set(existing_payment, "raw_payload", json.dumps(paypal_payload))
     else:
-       payment = models.MembershipPayment(
-    user_id=user.id,
-    order_id=None,
-    paypal_order_id=subscription_id,
-    amount=MONTHLY_PRICES[plan_level],
-    currency="USD",
-    status="subscription_active",
-)
+        payment = models.MembershipPayment(
+            user_id=user.id,
+            order_id=None,
+            paypal_order_id=subscription_id,
+            amount=MONTHLY_PRICES[plan_level],
+            currency="USD",
+            status="subscription_active",
+        )
 
-safe_set(payment, "provider", "paypal")
-safe_set(payment, "payment_type", "subscription")
-safe_set(payment, "payment_reference", subscription_id)
-safe_set(payment, "admin_verified", False)
+        safe_set(payment, "provider", "paypal")
+        safe_set(payment, "payment_type", "subscription")
+        safe_set(payment, "payment_reference", subscription_id)
+        safe_set(payment, "admin_verified", False)
 
-if paypal_payload is not None:
-    safe_set(payment, "raw_payload", json.dumps(paypal_payload))
+        if paypal_payload is not None:
+            safe_set(payment, "raw_payload", json.dumps(paypal_payload))
 
-db.add(payment)
+        db.add(payment)
 
     db.commit()
     db.refresh(user)
 
     card = get_or_create_member_card_core(db, user)
     selection = get_or_create_initial_monthly_selection(db, user)
+
+    subscription_payment = (
+        db.query(models.MembershipPayment)
+        .filter(
+            models.MembershipPayment.paypal_order_id == subscription_id,
+            models.MembershipPayment.payment_type == "subscription",
+        )
+        .first()
+    )
+
+    if subscription_payment:
+        safe_set(subscription_payment, "monthly_selection_id", selection.id)
+        db.commit()
 
     return {
         "status": "activated",
