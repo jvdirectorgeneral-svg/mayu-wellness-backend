@@ -475,6 +475,7 @@ def get_or_create_order_for_payment(db: Session, user: User, payment: Membership
 
     return order
 
+
 @router.get("/summary")
 def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
@@ -813,10 +814,31 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
         .first()
     )
 
-    if not payment:
-        raise HTTPException(status_code=400, detail="La orden no tiene pago vinculado")
-    if payment.status != "verified" or not payment.admin_verified:
-        raise HTTPException(status_code=400, detail="Primero debes verificar el pago")
+    if payment:
+        if payment.status != "verified" or not payment.admin_verified:
+            raise HTTPException(status_code=400, detail="Primero debes verificar el pago")
+    else:
+        selection = (
+            db.query(MonthlySelection)
+            .filter(
+                MonthlySelection.user_id == order.user_id,
+                MonthlySelection.month == order.month,
+                MonthlySelection.year == order.year,
+            )
+            .first()
+        )
+
+        if not selection:
+            raise HTTPException(
+                status_code=400,
+                detail="La orden no tiene pago vinculado ni selección mensual relacionada",
+            )
+
+        if selection.status not in ["confirmed", "draft"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"La selección mensual no está aprobable. Estado actual: {selection.status}",
+            )
 
     user = db.query(User).filter(User.id == order.user_id).first()
     if user:
@@ -827,7 +849,7 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
 
     order.status = "approved_for_logistics"
     order.user_status_snapshot = "active"
-    order.logistics_notes = "✔ Pago verificado - listo para despacho"
+    order.logistics_notes = "✔ Orden aprobada por administración - lista para despacho"
 
     selection = (
         db.query(MonthlySelection)
@@ -841,6 +863,7 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
 
     if selection:
         selection.editable = False
+        selection.status = "confirmed"
 
     if old_status != "approved_for_logistics":
         add_order_tracking_history(
@@ -848,7 +871,7 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
             order=order,
             current_user=current_user,
             status="approved_for_logistics",
-            note="Orden aprobada manualmente por administración",
+            note="Orden aprobada manualmente por administración y liberada a logística",
         )
 
     db.commit()
@@ -1030,6 +1053,8 @@ def get_membership_cycles(
         })
 
     return {"items": items}
+
+
 @router.get("/membership-payments")
 def get_membership_payments(
     db: Session = Depends(get_db),
