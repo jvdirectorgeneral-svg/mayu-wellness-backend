@@ -10,6 +10,7 @@ from schemas import AmbassadorRegister, AmbassadorLogin
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
 import os
+from datetime import datetime
 
 router = APIRouter(prefix="/ambassadors", tags=["Ambassadors"])
 
@@ -78,6 +79,33 @@ def level_name(level):
     if parsed == 3:
         return "Nivel 3 - Oro"
     return "Sin nivel"
+
+
+def commission_amount_by_level(level):
+    try:
+        parsed = int(level or 0)
+    except Exception:
+        parsed = 0
+
+    if parsed == 1:
+        return 5.00
+    if parsed == 2:
+        return 6.00
+    if parsed == 3:
+        return 7.00
+    return 0.00
+
+
+def get_next_payment_day():
+    today = datetime.utcnow()
+
+    if today.day <= 5:
+        return 5
+
+    if today.day <= 21:
+        return 21
+
+    return 5
 
 
 def format_order_products(order):
@@ -604,13 +632,17 @@ def get_ambassador_dashboard(
     affiliates = []
     active_referrals = 0
     inactive_referrals = 0
+    projected_monthly_commission = 0.00
 
     for referral in referrals:
         referred_user = db.query(models.User).filter(models.User.id == referral.user_id).first()
 
         if referred_user:
+            affiliate_commission_amount = commission_amount_by_level(referred_user.membership_level)
+
             if referred_user.membership_active:
                 active_referrals += 1
+                projected_monthly_commission += affiliate_commission_amount
             else:
                 inactive_referrals += 1
 
@@ -631,6 +663,9 @@ def get_ambassador_dashboard(
                     "address": referred_user.address,
                     "reference": referred_user.reference,
                     "delivery_notes": referred_user.delivery_notes,
+                    "commission_amount": affiliate_commission_amount,
+                    "monthly_commission_amount": affiliate_commission_amount if referred_user.membership_active else 0,
+                    "commission_rule": f"{level_name(referred_user.membership_level)}: ${affiliate_commission_amount:.2f} mensual por socio activo pagado",
                     **order_tracking_data(last_order),
                     "delivery_history": get_delivery_history_for_user(db, referred_user.id),
                 }
@@ -638,7 +673,11 @@ def get_ambassador_dashboard(
 
     total_referrals = len(affiliates)
     total_payments = 0
-    monthly_commission = 0
+    monthly_commission = projected_monthly_commission
+    projected_yearly_commission = projected_monthly_commission * 12
+    next_payment_day = get_next_payment_day()
+    payment_frequency = "Pagos administrativos los días 5 y 21 de cada mes"
+    goal = 100
 
     return {
         "ambassador_id": ambassador.id,
@@ -652,10 +691,28 @@ def get_ambassador_dashboard(
             "inactive_referrals": inactive_referrals,
             "total_payments": total_payments,
             "monthly_commission": monthly_commission,
-            "goal": 100,
+            "projected_monthly_commission": projected_monthly_commission,
+            "projected_yearly_commission": projected_yearly_commission,
+            "next_payment_day": next_payment_day,
+            "payment_frequency": payment_frequency,
+            "goal": goal,
+        },
+        "commission_projection": {
+            "current_active_members": active_referrals,
+            "monthly_income": projected_monthly_commission,
+            "yearly_income": projected_yearly_commission,
+            "next_payment_day": next_payment_day,
+            "payment_frequency": payment_frequency,
+            "status": "Pendiente de pago administrativo",
+            "rule": {
+                "Nivel 1 - Cobre": 5,
+                "Nivel 2 - Plata": 6,
+                "Nivel 3 - Oro": 7,
+            },
+            "message": f"Con tus socios activos actuales, tu proyección mensual es de ${projected_monthly_commission:.2f}. Se paga administrativamente los días 5 y 21 de cada mes.",
         },
         "reward_progress": {
-            "goal": 100,
+            "goal": goal,
             "current": active_referrals,
             "reward": "Viaje a la playa",
         },
