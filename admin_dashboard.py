@@ -288,13 +288,45 @@ def payment_to_dict(payment: MembershipPayment):
     }
 
 
-def order_to_dict(db: Session, order: Order):
+def get_payment_for_order(db: Session, order: Order):
     payment = (
         db.query(MembershipPayment)
         .filter(MembershipPayment.order_id == order.id)
         .order_by(MembershipPayment.created_at.desc())
         .first()
     )
+
+    if payment:
+        return payment
+
+    selection = (
+        db.query(MonthlySelection)
+        .filter(
+            MonthlySelection.user_id == order.user_id,
+            MonthlySelection.month == order.month,
+            MonthlySelection.year == order.year,
+        )
+        .first()
+    )
+
+    if selection and hasattr(MembershipPayment, "monthly_selection_id"):
+        payment = (
+            db.query(MembershipPayment)
+            .filter(MembershipPayment.monthly_selection_id == selection.id)
+            .order_by(MembershipPayment.created_at.desc())
+            .first()
+        )
+
+        if payment:
+            payment.order_id = order.id
+            db.flush()
+            return payment
+
+    return None
+
+
+def order_to_dict(db: Session, order: Order):
+    payment = get_payment_for_order(db, order)
 
     return {
         "id": order.id,
@@ -324,6 +356,8 @@ def order_to_dict(db: Session, order: Order):
         "items_count": len(order.items),
         **order_items_data(order),
         "payment_id": payment.id if payment else None,
+        "payment_type": getattr(payment, "payment_type", None) if payment else None,
+        "provider": getattr(payment, "provider", None) if payment else None,
         "payment_status": payment.status if payment else None,
         "payment_amount": payment.amount if payment else None,
         "payer_email": payment.payer_email if payment else None,
@@ -807,16 +841,12 @@ def approve_order(order_id: int, db: Session = Depends(get_db), current_user: Us
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
-    payment = (
-        db.query(MembershipPayment)
-        .filter(MembershipPayment.order_id == order.id)
-        .order_by(MembershipPayment.created_at.desc())
-        .first()
-    )
+    payment = get_payment_for_order(db, order)
 
     if payment:
         if payment.status != "verified" or not payment.admin_verified:
             raise HTTPException(status_code=400, detail="Primero debes verificar el pago")
+        payment.order_id = order.id
     else:
         selection = (
             db.query(MonthlySelection)
