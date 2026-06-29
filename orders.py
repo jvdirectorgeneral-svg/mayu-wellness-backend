@@ -519,30 +519,47 @@ def approve_order_for_logistics(
         "subscription_paid",
     }
 
-    if (
-        not payment
-        or payment.status not in valid_payment_statuses
-        or not payment.admin_verified
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="La orden necesita un pago de membresía verificado por administración",
-        )
+    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
 
-    payment.order_id = order.id
+    if payment:
+        if payment.status not in valid_payment_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail="El pago vinculado no está en estado válido para liberar la orden",
+            )
+
+        if payment.status == "verified" and not payment.admin_verified:
+            raise HTTPException(
+                status_code=400,
+                detail="Primero debes verificar el pago por administración",
+            )
+
+        payment.order_id = order.id
+
+    else:
+        if not selection:
+            raise HTTPException(
+                status_code=400,
+                detail="La orden no tiene pago vinculado ni selección mensual relacionada",
+            )
+
+        if selection.status not in {"confirmed", "draft"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"La selección mensual no está aprobable. Estado actual: {selection.status}",
+            )
 
     order.status = "approved_for_logistics"
     order.user_status_snapshot = "active"
     order.logistics_notes = (
         payload.approval_notes.strip()
         if payload.approval_notes and payload.approval_notes.strip()
-        else "Pagos OK - orden liberada a logística"
+        else "Orden aprobada por administración - lista para logística"
     )
-
-    selection = get_monthly_selection(db, order.user_id, order.month, order.year)
 
     if selection:
         selection.editable = False
+        selection.status = "confirmed"
         open_next_selection_cycle(db, order.user, selection)
 
     add_tracking_history(
