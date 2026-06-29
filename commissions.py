@@ -75,7 +75,7 @@ def get_plan_by_user_level(db: Session, user: User) -> Plan | None:
 
 
 def has_valid_monthly_payment(db: Session, user_id: int, month: int, year: int) -> bool:
-    payment = (
+    payments = (
         db.query(MembershipPayment)
         .filter(
             MembershipPayment.user_id == user_id,
@@ -84,15 +84,33 @@ def has_valid_monthly_payment(db: Session, user_id: int, month: int, year: int) 
                     "verified",
                     "subscription_paid",
                     "subscription_active",
-                    "subscription_created",
                 ]
             ),
         )
         .order_by(MembershipPayment.created_at.desc())
-        .first()
+        .all()
     )
 
-    return payment is not None
+    for payment in payments:
+        if getattr(payment, "monthly_selection", None):
+            if (
+                payment.monthly_selection.month == month
+                and payment.monthly_selection.year == year
+            ):
+                return True
+
+        if getattr(payment, "order", None):
+            if payment.order.month == month and payment.order.year == year:
+                return True
+
+        if (
+            payment.created_at
+            and payment.created_at.month == month
+            and payment.created_at.year == year
+        ):
+            return True
+
+    return False
 
 
 def get_payment_status(db: Session, user: User, month: int, year: int) -> str:
@@ -262,7 +280,7 @@ def generate_monthly_commissions(
             })
             continue
 
-        if not ambassador.is_active:
+        if not ambassador.is_active or ambassador.status != "active":
             skipped_not_eligible += 1
             skipped_items.append({
                 "ambassador_id": ambassador.id,
