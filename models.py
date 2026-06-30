@@ -1001,7 +1001,7 @@ class EducationResource(Base):
     plant_preparation = Column(Text, nullable=True)
     plant_warnings = Column(Text, nullable=True)
 
-        active = Column(Boolean, default=True, nullable=False)
+    active = Column(Boolean, default=True, nullable=False)
     free_for_members = Column(Boolean, default=True, nullable=False)
 
     # V7.4 Mayu Educación
