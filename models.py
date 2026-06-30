@@ -8,6 +8,7 @@ from sqlalchemy import (
     Float,
     UniqueConstraint,
     Text,
+    JSON,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -1000,8 +1001,17 @@ class EducationResource(Base):
     plant_preparation = Column(Text, nullable=True)
     plant_warnings = Column(Text, nullable=True)
 
-    active = Column(Boolean, default=True, nullable=False)
+        active = Column(Boolean, default=True, nullable=False)
     free_for_members = Column(Boolean, default=True, nullable=False)
+
+    # V7.4 Mayu Educación
+    marketplace_only = Column(Boolean, default=False, nullable=False)
+    language = Column(String, default="es", nullable=False)
+    content_type = Column(String, default="general", nullable=False)
+
+    video_urls = Column(JSON, nullable=True)
+    online_files = Column(JSON, nullable=True)
+    download_pdf_url = Column(Text, nullable=True)
 
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
