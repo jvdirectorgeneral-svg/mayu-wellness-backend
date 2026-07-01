@@ -614,14 +614,6 @@ def view_protected_resource(
         </div>
         """
 
-    if resource.content_text:
-        extra_content_html += f"""
-        <div class="box">
-          <h3>Contenido educativo</h3>
-          <p>{escape(resource.content_text)}</p>
-        </div>
-        """
-
     if resource.download_pdf_url:
         extra_content_html += f"""
         <div class="box">
@@ -983,17 +975,23 @@ async def upload_education_file(
         if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
             raise HTTPException(status_code=400, detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.")
 
-        if content_type.startswith("video/"):
-            resource_type = "video"
-        elif lower_filename.endswith(".pdf"):
-            resource_type = "image"
+                is_video = content_type.startswith("video/") or lower_filename.endswith((".mp4", ".mov", ".m4v"))
+        is_pdf = lower_filename.endswith(".pdf") or content_type == "application/pdf"
+
+        if is_video:
+            upload_resource_type = "video"
+            returned_resource_type = "video"
+        elif is_pdf:
+            upload_resource_type = "raw"
+            returned_resource_type = "pdf"
         else:
-            resource_type = "image"
+            upload_resource_type = "image"
+            returned_resource_type = "image"
 
         result = cloudinary.uploader.upload(
             file.file,
             folder="mayu_education",
-            resource_type=resource_type,
+            resource_type=upload_resource_type,
             use_filename=True,
             unique_filename=True,
             overwrite=False,
@@ -1003,7 +1001,7 @@ async def upload_education_file(
             "message": "Archivo subido correctamente",
             "file_url": result.get("secure_url"),
             "public_id": result.get("public_id"),
-            "resource_type": resource_type,
+            "resource_type": returned_resource_type,
             "filename": filename,
             "content_type": content_type,
         }
