@@ -78,7 +78,7 @@ def order_to_dict(order: models.EducationOrder):
                 "unit_price": item.unit_price_snapshot,
                 "quantity": item.quantity,
                 "total": item.total_snapshot,
-                "access_code_id": item.access_code_id,
+                "access_code": item.access_code,
             }
             for item in order.items
         ],
@@ -171,7 +171,7 @@ def create_education_order(
             unit_price_snapshot=unit_price,
             quantity=quantity,
             total_snapshot=round(line_total, 2),
-            access_code_id=None,
+            access_code=None,
         )
 
         db.add(order_item)
