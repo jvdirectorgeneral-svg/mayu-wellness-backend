@@ -252,14 +252,12 @@ def resource_to_dict(resource, public: bool = False):
         "plant_warnings": resource.plant_warnings,
         "active": resource.active,
         "free_for_members": resource.free_for_members,
-
         "marketplace_only": getattr(resource, "marketplace_only", False),
         "language": getattr(resource, "language", "es"),
         "content_type": getattr(resource, "content_type", "general"),
         "video_urls": getattr(resource, "video_urls", None) or [],
         "online_files": getattr(resource, "online_files", None) or [],
         "download_pdf_url": getattr(resource, "download_pdf_url", None),
-
         "file_url": None if public else resource.file_url,
         "external_url": resource.external_url if resource.resource_type == "link" else (None if public else resource.external_url),
         "protected_view_url": f"/education/resources/{resource.id}/view",
@@ -307,6 +305,16 @@ def cloudinary_pdf_page_url(url: str, page: int):
         return url
 
     return url.replace("/upload/", f"/upload/f_jpg,pg_{page},q_auto,w_1400/")
+
+
+def cloudinary_video_mp4_url(url: str):
+    if not url:
+        return url
+
+    if "/upload/" not in url:
+        return url
+
+    return url.replace("/upload/", "/upload/f_mp4,q_auto/")
 
 
 @router.get("/categories")
@@ -425,10 +433,9 @@ def create_education_store_order(payload: EducationOrderCreate, db: Session = De
         f"Cliente: {buyer_name}",
         f"Teléfono: {buyer_phone}",
         f"Email: {buyer_email}",
+        "",
+        "Contenidos solicitados:",
     ]
-
-    whatsapp_lines.append("")
-    whatsapp_lines.append("Contenidos solicitados:")
 
     for item in items_data:
         whatsapp_lines.append(f"- {item['title']} | Cantidad: {item['quantity']} | Subtotal: ${item['total']:.2f}")
@@ -578,11 +585,67 @@ def view_protected_resource(
 
     file_url = resource.file_url or ""
     external_url = resource.external_url or ""
-    safe_url = escape(file_url or external_url)
     resource_type = resource.resource_type or ""
+    video_urls = resource.video_urls if isinstance(resource.video_urls, list) else []
+    online_files = resource.online_files if isinstance(resource.online_files, list) else []
+
+    main_video_url = ""
+    if resource_type == "video":
+        if file_url:
+            main_video_url = file_url
+        elif external_url:
+            main_video_url = external_url
+        elif video_urls:
+            main_video_url = video_urls[0]
+
+    safe_url = escape(file_url or external_url or main_video_url)
+    safe_video_url = escape(cloudinary_video_mp4_url(main_video_url))
     title = escape(resource.title or "Contenido Mayu")
     user_name = escape(viewer_name)
     user_email = escape(viewer_email)
+
+    extra_content_html = ""
+
+    if resource.description:
+        extra_content_html += f"""
+        <div class="box">
+          <h3>Resumen</h3>
+          <p>{escape(resource.description)}</p>
+        </div>
+        """
+
+    if resource.content_text:
+        extra_content_html += f"""
+        <div class="box">
+          <h3>Contenido educativo</h3>
+          <p>{escape(resource.content_text)}</p>
+        </div>
+        """
+
+    if resource.download_pdf_url:
+        extra_content_html += f"""
+        <div class="box">
+          <h3>PDF descargable</h3>
+          <p><a href="{escape(resource.download_pdf_url)}" target="_blank">Descargar PDF complementario</a></p>
+        </div>
+        """
+
+    if online_files:
+        files_html = ""
+        for f in online_files:
+            if isinstance(f, dict):
+                name = escape(str(f.get("name", "Archivo online")))
+                url = escape(str(f.get("url", "")))
+                if url:
+                    files_html += f'<li><a href="{url}" target="_blank">{name}</a></li>'
+
+        if files_html:
+            extra_content_html += f"""
+            <div class="box">
+              <h3>Archivos online</h3>
+              <ul>{files_html}</ul>
+            </div>
+            """
 
     if resource_type in {"plant_card", "plant_registry"} and not safe_url:
         viewer = f"""
@@ -598,21 +661,25 @@ def view_protected_resource(
           <p>{escape(resource.content_text or "")}</p>
         </div>
         """
-    elif not safe_url:
-        raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
     elif resource_type == "video":
+        if not safe_video_url:
+            raise HTTPException(status_code=404, detail="Este video no tiene enlace disponible")
+
         viewer = f"""
         <div class="video-wrap">
           <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
             oncontextmenu="return false;"
             style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
-            <source src="{safe_url}">
+            <source src="{safe_video_url}" type="video/mp4">
             Tu navegador no puede reproducir este video.
           </video>
           <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
         </div>
         """
     elif resource_type in {"pdf", "document"}:
+        if not safe_url:
+            raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
+
         pages_html = ""
 
         for page in range(1, 81):
@@ -628,6 +695,9 @@ def view_protected_resource(
 
         viewer = pages_html
     else:
+        if not safe_url:
+            raise HTTPException(status_code=404, detail="Este contenido no tiene archivo o enlace disponible")
+
         viewer = f"""
         <div class="page-wrap">
           <img src="{safe_url}" draggable="false"
@@ -658,7 +728,7 @@ def view_protected_resource(
           margin: 0 auto;
           background: white;
           border-radius: 18px;
-          padding: 12px;
+          padding: 18px;
           box-shadow: 0 4px 18px rgba(0,0,0,0.08);
         }}
         .page-wrap, .video-wrap {{
@@ -676,8 +746,15 @@ def view_protected_resource(
           pointer-events: none;
         }}
         .box {{
-          padding: 24px;
+          margin-top: 18px;
+          padding: 20px;
+          border-radius: 16px;
+          background: #f8f8f6;
           line-height: 1.55;
+        }}
+        a {{
+          color: #008080;
+          font-weight: bold;
         }}
       </style>
     </head>
@@ -686,6 +763,7 @@ def view_protected_resource(
         <h2>{title}</h2>
         <p>Acceso protegido Mayu Educación. Usos restantes: {remaining_after_use}</p>
         {viewer}
+        {extra_content_html}
       </div>
     </body>
     </html>
@@ -794,10 +872,7 @@ def create_resource(
         payload.free_for_members = False
 
     if payload.marketplace_only and float(payload.price or 0) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="El contenido solo Marketplace debe tener precio mayor a 0",
-        )
+        raise HTTPException(status_code=400, detail="El contenido solo Marketplace debe tener precio mayor a 0")
 
     resource = models.EducationResource(
         title=title,
@@ -819,14 +894,12 @@ def create_resource(
         plant_warnings=payload.plant_warnings,
         active=payload.active,
         free_for_members=payload.free_for_members,
-
         marketplace_only=payload.marketplace_only,
         language=(payload.language or "es").strip(),
         content_type=(payload.content_type or "general").strip(),
         video_urls=payload.video_urls or [],
         online_files=payload.online_files or [],
         download_pdf_url=payload.download_pdf_url,
-
         created_by=current_user.id,
     )
 
@@ -862,10 +935,7 @@ def update_resource(
     if data.get("marketplace_only") is True:
         price_to_validate = data.get("price", resource.price)
         if float(price_to_validate or 0) <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="El contenido solo Marketplace debe tener precio mayor a 0",
-            )
+            raise HTTPException(status_code=400, detail="El contenido solo Marketplace debe tener precio mayor a 0")
 
     for field, value in data.items():
         if field == "category_id" and value == 0:
@@ -913,7 +983,12 @@ async def upload_education_file(
         if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
             raise HTTPException(status_code=400, detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.")
 
-        resource_type = "video" if content_type.startswith("video/") else "image"
+        if content_type.startswith("video/"):
+            resource_type = "video"
+        elif lower_filename.endswith(".pdf"):
+            resource_type = "image"
+        else:
+            resource_type = "image"
 
         result = cloudinary.uploader.upload(
             file.file,
