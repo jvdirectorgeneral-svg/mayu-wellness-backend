@@ -975,8 +975,26 @@ async def upload_education_file(
         if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
             raise HTTPException(status_code=400, detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.")
 
-                is_video = content_type.startswith("video/") or lower_filename.endswith((".mp4", ".mov", ".m4v"))
-        is_pdf = lower_filename.endswith(".pdf") or content_type == "application/pdf"
+                   try:
+        content_type = file.content_type or ""
+        filename = file.filename or "archivo"
+        lower_filename = filename.lower()
+
+        if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
+            raise HTTPException(
+                status_code=400,
+                detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF."
+            )
+
+        is_video = (
+            content_type.startswith("video/")
+            or lower_filename.endswith((".mp4", ".mov", ".m4v"))
+        )
+
+        is_pdf = (
+            lower_filename.endswith(".pdf")
+            or content_type == "application/pdf"
+        )
 
         if is_video:
             upload_resource_type = "video"
@@ -1010,4 +1028,7 @@ async def upload_education_file(
         raise
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"No se pudo subir el archivo: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo subir el archivo: {str(e)}"
+        )
