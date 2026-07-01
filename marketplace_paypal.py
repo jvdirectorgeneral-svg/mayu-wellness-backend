@@ -10,6 +10,7 @@ import string
 
 import resend
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -1013,9 +1014,32 @@ def capture_marketplace_order(
         "pharmacy_fulfillment": pharmacy_fulfillment,
     }
 
-
 @router.get("/success")
 def paypal_marketplace_success(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    payment, education_fulfillment, pharmacy_fulfillment = capture_marketplace_payment(
+        token,
+        db,
+    )
+
+    if payment.payment_type == "marketplace_education":
+        return RedirectResponse(
+            url="https://mayuwellnesclub.com/#/education-marketplace?payment=success",
+            status_code=302,
+        )
+
+    if payment.payment_type == "marketplace_pharmacy":
+        return RedirectResponse(
+            url="https://mayuwellnesclub.com/#/marketplace?payment=success",
+            status_code=302,
+        )
+
+    return RedirectResponse(
+        url="https://mayuwellnesclub.com/?payment=success",
+        status_code=302,
+    )
     token: str,
     db: Session = Depends(get_db),
 ):
