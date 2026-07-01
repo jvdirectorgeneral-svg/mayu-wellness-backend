@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 from html import escape
 from jose import jwt
 from datetime import datetime
@@ -53,6 +53,13 @@ class EducationResourceCreate(BaseModel):
     active: bool = True
     free_for_members: bool = True
 
+    marketplace_only: bool = False
+    language: str = "es"
+    content_type: str = "general"
+    video_urls: Optional[List[str]] = None
+    online_files: Optional[List[Any]] = None
+    download_pdf_url: Optional[str] = None
+
 
 class EducationResourceUpdate(BaseModel):
     title: Optional[str] = None
@@ -74,6 +81,13 @@ class EducationResourceUpdate(BaseModel):
     plant_warnings: Optional[str] = None
     active: Optional[bool] = None
     free_for_members: Optional[bool] = None
+
+    marketplace_only: Optional[bool] = None
+    language: Optional[str] = None
+    content_type: Optional[str] = None
+    video_urls: Optional[List[str]] = None
+    online_files: Optional[List[Any]] = None
+    download_pdf_url: Optional[str] = None
 
 
 class EducationAccessCodeCreate(BaseModel):
@@ -238,6 +252,14 @@ def resource_to_dict(resource, public: bool = False):
         "plant_warnings": resource.plant_warnings,
         "active": resource.active,
         "free_for_members": resource.free_for_members,
+
+        "marketplace_only": getattr(resource, "marketplace_only", False),
+        "language": getattr(resource, "language", "es"),
+        "content_type": getattr(resource, "content_type", "general"),
+        "video_urls": getattr(resource, "video_urls", None) or [],
+        "online_files": getattr(resource, "online_files", None) or [],
+        "download_pdf_url": getattr(resource, "download_pdf_url", None),
+
         "file_url": None if public else resource.file_url,
         "external_url": resource.external_url if resource.resource_type == "link" else (None if public else resource.external_url),
         "protected_view_url": f"/education/resources/{resource.id}/view",
@@ -313,6 +335,7 @@ def get_public_resources(
         db.query(models.EducationResource)
         .filter(models.EducationResource.active == True)
         .filter(models.EducationResource.free_for_members == True)
+        .filter(models.EducationResource.marketplace_only == False)
     )
 
     if category_id:
@@ -332,6 +355,7 @@ def get_public_resources(
 def get_store_resources(
     category_id: Optional[int] = None,
     search: Optional[str] = None,
+    language: Optional[str] = "es",
     db: Session = Depends(get_db),
 ):
     query = db.query(models.EducationResource).filter(models.EducationResource.active == True)
@@ -341,6 +365,9 @@ def get_store_resources(
 
     if search and search.strip():
         query = query.filter(models.EducationResource.title.ilike(f"%{search.strip()}%"))
+
+    if language and language.strip():
+        query = query.filter(models.EducationResource.language == language.strip())
 
     resources = query.order_by(models.EducationResource.id.desc()).all()
     return {"items": [resource_to_dict(r, public=True) for r in resources]}
@@ -763,6 +790,15 @@ def create_resource(
     if not title:
         raise HTTPException(status_code=400, detail="El título es obligatorio")
 
+    if payload.marketplace_only:
+        payload.free_for_members = False
+
+    if payload.marketplace_only and float(payload.price or 0) <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="El contenido solo Marketplace debe tener precio mayor a 0",
+        )
+
     resource = models.EducationResource(
         title=title,
         category_id=payload.category_id,
@@ -783,6 +819,14 @@ def create_resource(
         plant_warnings=payload.plant_warnings,
         active=payload.active,
         free_for_members=payload.free_for_members,
+
+        marketplace_only=payload.marketplace_only,
+        language=(payload.language or "es").strip(),
+        content_type=(payload.content_type or "general").strip(),
+        video_urls=payload.video_urls or [],
+        online_files=payload.online_files or [],
+        download_pdf_url=payload.download_pdf_url,
+
         created_by=current_user.id,
     )
 
@@ -810,7 +854,20 @@ def update_resource(
     if payload.category_id == 0:
         resource.category_id = None
 
-    for field, value in payload.dict(exclude_unset=True).items():
+    data = payload.dict(exclude_unset=True)
+
+    if data.get("marketplace_only") is True:
+        data["free_for_members"] = False
+
+    if data.get("marketplace_only") is True:
+        price_to_validate = data.get("price", resource.price)
+        if float(price_to_validate or 0) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El contenido solo Marketplace debe tener precio mayor a 0",
+            )
+
+    for field, value in data.items():
         if field == "category_id" and value == 0:
             continue
         setattr(resource, field, value.strip() if isinstance(value, str) else value)
