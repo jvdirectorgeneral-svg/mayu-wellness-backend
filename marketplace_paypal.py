@@ -55,7 +55,7 @@ def get_paypal_client_secret():
 class MarketplacePayPalCreateOrderRequest(BaseModel):
     item_type: str
     item_id: int
-    user_id: int
+    user_id: Optional[int] = None
     quantity: int = 1
     currency: str = "USD"
     buyer_name: Optional[str] = None
@@ -242,6 +242,7 @@ def get_original_payment_payload(payment: models.MembershipPayment):
 
     return payload
 
+
 def send_education_access_email(
     to_email: str,
     buyer_name: str,
@@ -388,13 +389,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         city=city,
         address=address,
         delivery_notes=delivery_notes,
-
         billing_name=billing_name,
         billing_identification=billing_identification,
         billing_email=billing_email,
         billing_phone=billing_phone,
         billing_address=billing_address,
-
         subtotal=subtotal,
         discount_code=discount_code,
         discount_percent=discount_percent,
@@ -572,8 +571,13 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
     db.add(order_item)
     db.flush()
 
+    public_url = os.getenv(
+        "MAYU_APP_PUBLIC_URL",
+        "https://mayu-wellness-backend-v1.onrender.com",
+    ).rstrip("/")
+
     view_url = (
-        f"https://mayu-wellness-backend-v1.onrender.com"
+        f"{public_url}"
         f"/education/resources/{resource.id}/view?access_code={access_code}"
     )
 
@@ -628,22 +632,39 @@ def create_marketplace_paypal_order(
     if payload.quantity <= 0:
         raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
 
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
     item = get_marketplace_item(db, payload.item_type, payload.item_id)
 
-    buyer_email = (payload.buyer_email or user.email or "").strip()
-    buyer_name = (payload.buyer_name or user.name or "").strip()
-    buyer_phone = (payload.buyer_phone or user.phone or "").strip()
+    user = None
 
-    if item["source"] == "education" and not buyer_email:
+    if payload.user_id:
+        user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if item["source"] == "pharmacy" and not user:
         raise HTTPException(
             status_code=400,
-            detail="El email es obligatorio para compras de Mayu Educación",
+            detail="El usuario es obligatorio para compras de farmacia",
         )
+
+    public_user_id = int(os.getenv("MAYU_PUBLIC_USER_ID", "1"))
+    payment_user_id = user.id if user else public_user_id
+
+    buyer_email = (payload.buyer_email or (user.email if user else "") or "").strip()
+    buyer_name = (payload.buyer_name or (user.name if user else "") or "Comprador Mayu").strip()
+    buyer_phone = (payload.buyer_phone or (user.phone if user else "") or "").strip()
+
+    if item["source"] == "education":
+        if not buyer_name:
+            raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+        if not buyer_phone:
+            raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+        if not buyer_email:
+            raise HTTPException(
+                status_code=400,
+                detail="El email es obligatorio para compras de Mayu Educación",
+            )
 
     if item["price"] <= 0:
         raise HTTPException(
@@ -676,7 +697,7 @@ def create_marketplace_paypal_order(
     response = paypal_request("POST", "/v2/checkout/orders", token, paypal_body)
 
     payment = models.MembershipPayment(
-        user_id=user.id,
+        user_id=payment_user_id,
         order_id=None,
         paypal_order_id=response["id"],
         amount=total,
@@ -697,7 +718,7 @@ def create_marketplace_paypal_order(
                 "total": total,
             },
             "buyer": {
-                "user_id": user.id,
+                "user_id": payment_user_id,
                 "name": buyer_name,
                 "email": buyer_email,
                 "phone": buyer_phone,
