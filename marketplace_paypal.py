@@ -1040,24 +1040,6 @@ def paypal_marketplace_success(
         url="https://mayuwellnesclub.com/?payment=success",
         status_code=302,
     )
-    token: str,
-    db: Session = Depends(get_db),
-):
-    payment, education_fulfillment, pharmacy_fulfillment = capture_marketplace_payment(
-        token,
-        db,
-    )
-
-    return {
-        "status": "paid",
-        "message": "Pago marketplace capturado correctamente. Puedes volver a Mayu Wellness Club.",
-        "payment_id": payment.id,
-        "payment_type": payment.payment_type,
-        "paypal_order_id": payment.paypal_order_id,
-        "payer_email": payment.payer_email,
-        "education_fulfillment": education_fulfillment,
-        "pharmacy_fulfillment": pharmacy_fulfillment,
-    }
 
 
 @router.get("/cancel")
