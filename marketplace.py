@@ -817,6 +817,42 @@ def get_marketplace_order(
     return order_to_dict(order)
 
 
+@router.get("/my-orders")
+def get_my_marketplace_orders(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    orders = (
+        db.query(models.MarketplaceOrder)
+        .filter(models.MarketplaceOrder.user_id == current_user.id)
+        .order_by(models.MarketplaceOrder.id.desc())
+        .all()
+    )
+
+    return {"items": [order_to_dict(order) for order in orders]}
+
+
+@router.get("/my-orders/{order_id}")
+def get_my_marketplace_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    order = (
+        db.query(models.MarketplaceOrder)
+        .filter(
+            models.MarketplaceOrder.id == order_id,
+            models.MarketplaceOrder.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+    return order_to_dict(order)
+
+
 @router.get("/admin/orders")
 def get_admin_orders(
     db: Session = Depends(get_db),
