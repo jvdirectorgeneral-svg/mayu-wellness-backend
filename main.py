@@ -26,6 +26,7 @@ from education import router as education_router
 from education_orders import router as education_orders_router
 from routers.payphone import router as payphone_router
 from marketplace_paypal import router as marketplace_paypal_router
+from pharmacy_loyalty import router as pharmacy_loyalty_router
 
 from dependencies import get_current_user
 import models
@@ -78,6 +79,7 @@ app.include_router(education_router)
 app.include_router(education_orders_router)
 app.include_router(payphone_router)
 app.include_router(marketplace_paypal_router)
+app.include_router(pharmacy_loyalty_router)
 
 
 @app.get("/")
