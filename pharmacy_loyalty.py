@@ -2,23 +2,52 @@ import uuid
 import io
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from auth import (
+    ALGORITHM,
+    SECRET_KEY,
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 from database import get_db
 from dependencies import get_current_user
 import models
-from notification_service import safe_send_push_to_user
 import qrcode
 
 
 router = APIRouter(prefix="/pharmacy-loyalty", tags=["Pharmacy Loyalty"])
+security = HTTPBearer()
 POINT_VALUE_CENTS = 1000
+
+
+class PharmacyCustomerRegister(BaseModel):
+    name: str
+    email: str
+    phone: str
+    password: str
+    cedula: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    reference: Optional[str] = None
+    delivery_notes: Optional[str] = None
+    accepted_terms: bool
+    accepted_privacy_policy: bool
+    accepted_digital_policy: bool
+
+
+class PharmacyCustomerLogin(BaseModel):
+    email: str
+    password: str
 
 
 class PharmacyPurchaseCredit(BaseModel):
@@ -35,34 +64,81 @@ def require_pharmacy_admin(user: models.User):
         )
 
 
-def get_or_create_card(db: Session, user_id: int):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+def customer_to_dict(customer: models.PharmacyCustomer):
+    return {
+        "id": customer.id,
+        "name": customer.name,
+        "email": customer.email,
+        "phone": customer.phone,
+        "cedula": customer.cedula,
+        "city": customer.city,
+        "address": customer.address,
+        "reference": customer.reference,
+        "delivery_notes": customer.delivery_notes,
+        "is_active": customer.is_active,
+    }
+
+
+def get_current_pharmacy_customer(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        token_type = payload.get("type")
+        subject = payload.get("sub")
+        if token_type != "pharmacy_customer" or not subject:
+            raise HTTPException(status_code=401, detail="Token Farmacia inválido")
+        prefix = "pharmacy_customer:"
+        if not str(subject).startswith(prefix):
+            raise HTTPException(status_code=401, detail="Token Farmacia inválido")
+        customer_id = int(str(subject).replace(prefix, "", 1))
+    except (JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Token Farmacia inválido")
+
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == customer_id)
+        .first()
+    )
+    if not customer or not customer.is_active:
+        raise HTTPException(status_code=401, detail="Cliente Farmacia no válido")
+    return customer
+
+
+def get_or_create_card(db: Session, customer_id: int):
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == customer_id)
+        .first()
+    )
+    if not customer:
+        raise HTTPException(status_code=404, detail="Cliente Farmacia no encontrado")
 
     card = (
         db.query(models.PharmacyLoyaltyCard)
-        .filter(models.PharmacyLoyaltyCard.user_id == user_id)
+        .filter(models.PharmacyLoyaltyCard.pharmacy_customer_id == customer_id)
         .first()
     )
     if card:
-        return user, card
+        return customer, card
 
     card = models.PharmacyLoyaltyCard(
-        user_id=user_id,
-        card_code=f"FAR-MAYU-{user_id:06d}",
+        pharmacy_customer_id=customer_id,
+        card_code=f"FAR-MAYU-{customer_id:06d}",
         qr_token=str(uuid.uuid4()),
     )
     db.add(card)
     db.flush()
-    return user, card
+    return customer, card
 
 
-def card_to_dict(user, card, include_transactions=True):
+def card_to_dict(customer, card, include_transactions=True):
     data = {
         "id": card.id,
-        "user_id": card.user_id,
-        "customer_name": user.name,
+        "pharmacy_customer_id": card.pharmacy_customer_id,
+        "customer_name": customer.name,
         "card_code": card.card_code,
         "qr_token": card.qr_token,
         "points_balance": card.points_balance,
@@ -119,7 +195,7 @@ def calculate_points(previous_cents: int, purchase_cents: int):
 
 def credit_purchase(
     db: Session,
-    user_id: int,
+    pharmacy_customer_id: int,
     amount,
     source: str,
     reference: Optional[str] = None,
@@ -148,7 +224,7 @@ def credit_purchase(
         if existing:
             return existing.card, existing, False
 
-    _, card = get_or_create_card(db, user_id)
+    _, card = get_or_create_card(db, pharmacy_customer_id)
     amount_cents = _amount_to_cents(amount)
     points, remainder = calculate_points(card.accumulated_cents, amount_cents)
 
@@ -172,26 +248,112 @@ def credit_purchase(
     return card, transaction, True
 
 
-@router.post("/enroll")
-def enroll(
+@router.post("/register")
+def register_pharmacy_customer(
+    payload: PharmacyCustomerRegister,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
 ):
-    user, card = get_or_create_card(db, current_user.id)
+    email = payload.email.strip().lower()
+    cedula = payload.cedula.strip() if payload.cedula else None
+    now = datetime.utcnow()
+
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+    if not payload.phone.strip():
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+    if len(payload.password.strip()) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="La contraseña debe tener al menos 6 caracteres",
+        )
+    if not payload.accepted_terms:
+        raise HTTPException(status_code=400, detail="Debes aceptar términos")
+    if not payload.accepted_privacy_policy:
+        raise HTTPException(status_code=400, detail="Debes aceptar privacidad")
+    if not payload.accepted_digital_policy:
+        raise HTTPException(status_code=400, detail="Debes aceptar notificaciones")
+
+    if db.query(models.PharmacyCustomer).filter_by(email=email).first():
+        raise HTTPException(status_code=400, detail="El correo ya está registrado")
+    if cedula and db.query(models.PharmacyCustomer).filter_by(cedula=cedula).first():
+        raise HTTPException(status_code=400, detail="La cédula ya está registrada")
+
+    customer = models.PharmacyCustomer(
+        name=payload.name.strip(),
+        email=email,
+        password=hash_password(payload.password.strip()),
+        phone=payload.phone.strip(),
+        cedula=cedula,
+        city=payload.city.strip() if payload.city else None,
+        address=payload.address.strip() if payload.address else None,
+        reference=payload.reference.strip() if payload.reference else None,
+        delivery_notes=(
+            payload.delivery_notes.strip() if payload.delivery_notes else None
+        ),
+        accepted_terms=True,
+        accepted_privacy_policy=True,
+        accepted_digital_policy=True,
+        accepted_terms_at=now,
+        accepted_privacy_policy_at=now,
+        accepted_digital_policy_at=now,
+        is_active=True,
+    )
+    db.add(customer)
+    db.flush()
+    _, card = get_or_create_card(db, customer.id)
+    db.commit()
+    db.refresh(customer)
+    db.refresh(card)
+
+    access_token = create_access_token(
+        {"sub": f"pharmacy_customer:{customer.id}", "type": "pharmacy_customer"}
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "customer": customer_to_dict(customer),
+        "card": card_to_dict(customer, card),
+    }
+
+
+@router.post("/login")
+def login_pharmacy_customer(
+    payload: PharmacyCustomerLogin,
+    db: Session = Depends(get_db),
+):
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.email == payload.email.strip().lower())
+        .first()
+    )
+    if not customer or not verify_password(payload.password, customer.password):
+        raise HTTPException(status_code=401, detail="Credenciales Farmacia inválidas")
+    if not customer.is_active:
+        raise HTTPException(status_code=403, detail="Cliente Farmacia desactivado")
+
+    _, card = get_or_create_card(db, customer.id)
     db.commit()
     db.refresh(card)
-    return card_to_dict(user, card)
+    access_token = create_access_token(
+        {"sub": f"pharmacy_customer:{customer.id}", "type": "pharmacy_customer"}
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "customer": customer_to_dict(customer),
+        "card": card_to_dict(customer, card),
+    }
 
 
 @router.get("/me")
 def get_my_card(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_customer: models.PharmacyCustomer = Depends(get_current_pharmacy_customer),
 ):
-    user, card = get_or_create_card(db, current_user.id)
+    customer, card = get_or_create_card(db, current_customer.id)
     db.commit()
     db.refresh(card)
-    return card_to_dict(user, card)
+    return card_to_dict(customer, card)
 
 
 @router.get("/resolve/{identifier}")
@@ -200,6 +362,7 @@ def resolve_card(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    require_pharmacy_admin(current_user)
     card = (
         db.query(models.PharmacyLoyaltyCard)
         .filter(
@@ -208,19 +371,15 @@ def resolve_card(
         )
         .first()
     )
-    if not card or not card.active:
+    if not card or not card.active or not card.pharmacy_customer_id:
         raise HTTPException(status_code=404, detail="Tarjeta Farmacia no válida")
 
-    user = db.query(models.User).filter(models.User.id == card.user_id).first()
-    mode = (
-        "credit"
-        if current_user.role in {"superadmin", "admin", "pharmacy_admin"}
-        else "view"
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
     )
-    if mode == "view" and current_user.id != card.user_id:
-        raise HTTPException(status_code=403, detail="Esta tarjeta no te pertenece")
-
-    return {"mode": mode, "card": card_to_dict(user, card)}
+    return {"mode": "credit", "card": card_to_dict(customer, card)}
 
 
 @router.post("/admin/credit/{identifier}")
@@ -239,7 +398,7 @@ def credit_by_pharmacy(
         )
         .first()
     )
-    if not card or not card.active:
+    if not card or not card.active or not card.pharmacy_customer_id:
         raise HTTPException(status_code=404, detail="Tarjeta Farmacia no válida")
 
     reference = payload.reference.strip()
@@ -248,7 +407,7 @@ def credit_by_pharmacy(
 
     card, transaction, created = credit_purchase(
         db,
-        card.user_id,
+        card.pharmacy_customer_id,
         payload.amount,
         "pharmacy_admin",
         reference=reference,
@@ -257,21 +416,15 @@ def credit_by_pharmacy(
     )
     db.commit()
     db.refresh(card)
-    if created:
-        safe_send_push_to_user(
-            db,
-            card.user_id,
-            "Puntos Farmacia Mayu",
-            (
-                f"Ganaste {transaction.points_delta} punto(s). "
-                f"Tu saldo es {card.points_balance}."
-            ),
-        )
-    user = db.query(models.User).filter(models.User.id == card.user_id).first()
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
     return {
         "created": created,
         "points_earned": transaction.points_delta,
-        "card": card_to_dict(user, card),
+        "card": card_to_dict(customer, card),
     }
 
 
@@ -282,10 +435,14 @@ def public_card(qr_token: str, db: Session = Depends(get_db)):
         .filter(models.PharmacyLoyaltyCard.qr_token == qr_token)
         .first()
     )
-    if not card or not card.active:
+    if not card or not card.active or not card.pharmacy_customer_id:
         return HTMLResponse("<h1>Tarjeta Farmacia no válida</h1>", status_code=404)
-    user = db.query(models.User).filter(models.User.id == card.user_id).first()
-    customer_name = escape(user.name or "Socio Farmacia")
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
+    customer_name = escape(customer.name or "Socio Farmacia")
     card_code = escape(card.card_code)
     return HTMLResponse(
         f"""
@@ -297,7 +454,7 @@ def public_card(qr_token: str, db: Session = Depends(get_db)):
             <p>Tarjeta: {card_code}</p>
             <p style="font-size:42px;font-weight:bold">{card.points_balance} puntos</p>
             <p>Acumulado hacia el próximo punto: ${card.accumulated_cents / 100:.2f}</p>
-            <p>Abre la app Mayu para ver el historial o acreditar una compra.</p>
+            <p>Abre la app Mayu Farmacia para ver historial o acreditar una compra.</p>
           </div>
         </body></html>
         """
@@ -311,7 +468,7 @@ def public_card_qr_image(qr_token: str, db: Session = Depends(get_db)):
         .filter(models.PharmacyLoyaltyCard.qr_token == qr_token)
         .first()
     )
-    if not card or not card.active:
+    if not card or not card.active or not card.pharmacy_customer_id:
         raise HTTPException(status_code=404, detail="Tarjeta Farmacia no válida")
 
     url = (
