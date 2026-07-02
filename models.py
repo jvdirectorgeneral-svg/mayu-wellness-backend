@@ -916,6 +916,13 @@ class MarketplaceOrder(Base):
         cascade="all, delete-orphan",
     )
 
+    tracking_history = relationship(
+        "MarketplaceOrderTrackingHistory",
+        back_populates="order",
+        cascade="all, delete-orphan",
+        order_by="MarketplaceOrderTrackingHistory.created_at",
+    )
+
 
 class MarketplaceOrderItem(Base):
     __tablename__ = "marketplace_order_items"
@@ -947,6 +954,34 @@ class MarketplaceOrderItem(Base):
     product = relationship(
         "MarketplaceProduct",
         back_populates="order_items",
+    )
+
+
+class MarketplaceOrderTrackingHistory(Base):
+    __tablename__ = "marketplace_order_tracking_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    marketplace_order_id = Column(
+        Integer,
+        ForeignKey("marketplace_orders.id"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String, nullable=False, index=True)
+    note = Column(Text, nullable=True)
+    carrier = Column(String, nullable=True)
+    tracking_number = Column(String, nullable=True)
+    tracking_url = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    order = relationship(
+        "MarketplaceOrder",
+        back_populates="tracking_history",
+    )
+    creator = relationship(
+        "User",
+        foreign_keys=[created_by],
     )
 
 
