@@ -16,6 +16,11 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 import models
+from notification_service import (
+    add_tracking_history,
+    notify_customer_order,
+    safe_send_push_to_roles,
+)
 
 router = APIRouter(
     prefix="/payments/paypal/marketplace",
@@ -447,6 +452,27 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         })
 
     db.flush()
+
+    add_tracking_history(
+        db,
+        order,
+        "paid",
+        "Pago confirmado y pedido recibido por Farmacia Mayu.",
+        payment.user_id,
+    )
+    notify_customer_order(
+        db,
+        order,
+        "Compra confirmada",
+        f"Tu pedido {order.order_code} fue recibido por Farmacia Mayu.",
+        include_summary=True,
+    )
+    safe_send_push_to_roles(
+        db,
+        {"pharmacy_admin", "admin", "superadmin"},
+        "Nueva compra Farmacia",
+        f"Pedido {order.order_code} pagado por {buyer_name}.",
+    )
 
     return {
         "marketplace_order_id": order.id,
