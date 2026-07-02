@@ -957,8 +957,6 @@ def delete_resource(
     db.commit()
 
     return {"message": "Contenido educativo eliminado correctamente", "resource_id": resource_id}
-
-
 @router.post("/upload-file")
 async def upload_education_file(
     file: UploadFile = File(...),
@@ -968,14 +966,6 @@ async def upload_education_file(
     configure_cloudinary()
 
     try:
-        content_type = file.content_type or ""
-        filename = file.filename or "archivo"
-        lower_filename = filename.lower()
-
-        if lower_filename.endswith(".doc") or lower_filename.endswith(".docx"):
-            raise HTTPException(status_code=400, detail="Para proteger documentos, conviértelos primero a PDF y súbelos como PDF.")
-
-                   try:
         content_type = file.content_type or ""
         filename = file.filename or "archivo"
         lower_filename = filename.lower()
