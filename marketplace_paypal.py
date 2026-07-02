@@ -21,6 +21,7 @@ from notification_service import (
     notify_customer_order,
     safe_send_push_to_roles,
 )
+from pharmacy_loyalty import credit_purchase
 
 router = APIRouter(
     prefix="/payments/paypal/marketplace",
@@ -460,6 +461,17 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         "Pago confirmado y pedido recibido por Farmacia Mayu.",
         payment.user_id,
     )
+    if payment.user_id:
+        loyalty_card, loyalty_transaction, loyalty_created = credit_purchase(
+            db,
+            payment.user_id,
+            total,
+            "marketplace_paypal",
+            reference=f"marketplace-order-{order.id}",
+            marketplace_order_id=order.id,
+            created_by=payment.user_id,
+            note=f"Compra {order.order_code}",
+        )
     notify_customer_order(
         db,
         order,
@@ -467,6 +479,18 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         f"Tu pedido {order.order_code} fue recibido por Farmacia Mayu.",
         include_summary=True,
     )
+    if payment.user_id and loyalty_created:
+        from notification_service import safe_send_push_to_user
+
+        safe_send_push_to_user(
+            db,
+            payment.user_id,
+            "Puntos Farmacia Mayu",
+            (
+                f"Ganaste {loyalty_transaction.points_delta} punto(s). "
+                f"Tu saldo es {loyalty_card.points_balance}."
+            ),
+        )
     safe_send_push_to_roles(
         db,
         {"pharmacy_admin", "admin", "superadmin"},
