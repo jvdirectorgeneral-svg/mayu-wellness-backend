@@ -10,6 +10,11 @@ import cloudinary.uploader
 from database import SessionLocal
 from dependencies import get_current_user
 import models
+from notification_service import (
+    add_tracking_history,
+    notify_customer_order,
+    safe_send_push_to_roles,
+)
 
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 
@@ -243,6 +248,19 @@ def order_to_dict(order: models.MarketplaceOrder):
                 "total": item.total_snapshot,
             }
             for item in order.items
+        ],
+        "tracking_history": [
+            {
+                "id": event.id,
+                "status": event.status,
+                "note": event.note,
+                "carrier": event.carrier,
+                "tracking_number": event.tracking_number,
+                "tracking_url": event.tracking_url,
+                "created_by": event.created_by,
+                "created_at": event.created_at,
+            }
+            for event in order.tracking_history
         ],
     }
 
@@ -836,7 +854,10 @@ def update_order_by_pharmacy_admin(
     if payload.payment_status is not None:
         order.payment_status = payload.payment_status
 
+    status_changed = False
     if payload.status is not None:
+        previous_status = order.status
+        status_changed = payload.status != previous_status
         order.status = payload.status
 
         if payload.status in {"approved", "admin_approved"}:
@@ -848,11 +869,41 @@ def update_order_by_pharmacy_admin(
         if payload.status == "cancelled":
             order.admin_verified = False
 
+        if status_changed:
+            add_tracking_history(
+                db,
+                order,
+                payload.status,
+                payload.shipping_notes,
+                current_user.id,
+            )
+
     if payload.shipping_notes is not None:
         order.shipping_notes = payload.shipping_notes
 
     db.commit()
     db.refresh(order)
+
+    if status_changed and payload.status in {"approved", "admin_approved"}:
+        notify_customer_order(
+            db,
+            order,
+            "Pedido aprobado",
+            f"Tu pedido {order.order_code} fue aprobado por Farmacia Mayu.",
+        )
+        safe_send_push_to_roles(
+            db,
+            {"pharmacy_logistics", "logistics"},
+            "Pedido listo para preparar",
+            f"El pedido {order.order_code} fue aprobado por Farmacia.",
+        )
+    elif status_changed and payload.status == "cancelled":
+        notify_customer_order(
+            db,
+            order,
+            "Pedido cancelado",
+            f"Tu pedido {order.order_code} fue cancelado. Contáctanos si necesitas ayuda.",
+        )
 
     return {
         "message": "Orden actualizada por farmacia",
@@ -884,7 +935,10 @@ def update_order_by_pharmacy_logistics(
             detail="La orden todavía no ha sido aprobada por Farmacia",
         )
 
+    status_changed = False
     if payload.status is not None:
+        previous_status = order.status
+        status_changed = payload.status != previous_status
         order.status = payload.status
 
         if payload.status == "prepared":
@@ -908,8 +962,35 @@ def update_order_by_pharmacy_logistics(
     if payload.shipping_notes is not None:
         order.shipping_notes = payload.shipping_notes
 
+    if status_changed:
+        add_tracking_history(
+            db,
+            order,
+            payload.status,
+            payload.shipping_notes,
+            current_user.id,
+        )
+
     db.commit()
     db.refresh(order)
+
+    status_notifications = {
+        "prepared": (
+            "Pedido preparado",
+            f"Tu pedido {order.order_code} está preparado.",
+        ),
+        "shipped": (
+            "Pedido enviado",
+            f"Tu pedido {order.order_code} fue enviado. Revisa la información de seguimiento.",
+        ),
+        "delivered": (
+            "Pedido entregado",
+            f"Tu pedido {order.order_code} fue entregado.",
+        ),
+    }
+    if status_changed and payload.status in status_notifications:
+        subject, message = status_notifications[payload.status]
+        notify_customer_order(db, order, subject, message)
 
     return {
         "message": "Orden actualizada por logística",
