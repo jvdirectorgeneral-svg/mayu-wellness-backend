@@ -387,6 +387,64 @@ class MemberCard(Base):
     user = relationship("User", back_populates="member_card")
 
 
+class PharmacyLoyaltyCard(Base):
+    __tablename__ = "pharmacy_loyalty_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    card_code = Column(String, unique=True, nullable=False, index=True)
+    qr_token = Column(String, unique=True, nullable=False, index=True)
+    points_balance = Column(Integer, nullable=False, default=0)
+    accumulated_cents = Column(Integer, nullable=False, default=0)
+    lifetime_points = Column(Integer, nullable=False, default=0)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    user = relationship("User")
+    transactions = relationship(
+        "PharmacyPointsTransaction",
+        back_populates="card",
+        cascade="all, delete-orphan",
+        order_by="PharmacyPointsTransaction.created_at.desc()",
+    )
+
+
+class PharmacyPointsTransaction(Base):
+    __tablename__ = "pharmacy_points_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    card_id = Column(
+        Integer,
+        ForeignKey("pharmacy_loyalty_cards.id"),
+        nullable=False,
+        index=True,
+    )
+    marketplace_order_id = Column(
+        Integer,
+        ForeignKey("marketplace_orders.id"),
+        nullable=True,
+        unique=True,
+    )
+    purchase_amount_cents = Column(Integer, nullable=False)
+    points_delta = Column(Integer, nullable=False)
+    remainder_after_cents = Column(Integer, nullable=False)
+    source = Column(String, nullable=False)
+    reference = Column(String, nullable=True, unique=True)
+    note = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    card = relationship("PharmacyLoyaltyCard", back_populates="transactions")
+    creator = relationship("User", foreign_keys=[created_by])
+    marketplace_order = relationship("MarketplaceOrder")
+
+
 class Commission(Base):
     __tablename__ = "commissions"
 
