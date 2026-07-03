@@ -815,6 +815,7 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
         apns_host = os.getenv("APPLE_APNS_HOST", "https://api.push.apple.com")
         sent = 0
         errors = []
+        successes = []
         with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=20) as client:
             for registration in registrations:
                 try:
@@ -825,10 +826,17 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                             "apns-push-type": "background",
                             "apns-priority": "10",
                         },
-                        json={},
+                        content=b"",
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
+                        successes.append(
+                            {
+                                "registration_id": registration.id,
+                                "status_code": response.status_code,
+                                "apns_id": response.headers.get("apns-id"),
+                            }
+                        )
                     else:
                         errors.append(
                             {
@@ -844,7 +852,27 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                             "detail": str(exc),
                         }
                     )
-        return {"sent": sent, "errors": errors, "registered": len(registrations)}
+        print(
+            json.dumps(
+                {
+                    "event": "mayu_magistral_apple_wallet_push",
+                    "card_id": card.id,
+                    "points_balance": card.points_balance,
+                    "sent": sent,
+                    "registered": len(registrations),
+                    "successes": successes,
+                    "errors": errors,
+                },
+                default=str,
+            ),
+            flush=True,
+        )
+        return {
+            "sent": sent,
+            "errors": errors,
+            "registered": len(registrations),
+            "successes": successes,
+        }
     except Exception as exc:
         return {"sent": 0, "errors": [{"detail": str(exc)}], "registered": len(registrations)}
 
@@ -1380,11 +1408,40 @@ def get_apple_wallet_updated_serials(
         updated_items.append((item, last_updated))
 
     if not updated_items:
+        print(
+            json.dumps(
+                {
+                    "event": "mayu_magistral_apple_wallet_no_updates",
+                    "device": device_library_identifier,
+                    "pass_type": pass_type_identifier,
+                    "passesUpdatedSince": passesUpdatedSince,
+                    "registrations": len(registrations),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
         return Response(status_code=204)
 
-    return {
+    response_payload = {
         "lastUpdated": max(last_updated for _, last_updated in updated_items),
         "serialNumbers": [item.serial_number for item, _ in updated_items],
+    }
+    print(
+        json.dumps(
+            {
+                "event": "mayu_magistral_apple_wallet_updates",
+                "device": device_library_identifier,
+                "pass_type": pass_type_identifier,
+                "passesUpdatedSince": passesUpdatedSince,
+                "response": response_payload,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+    return {
+        **response_payload,
     }
 
 
@@ -1397,6 +1454,20 @@ def get_updated_apple_wallet_pass(
 ):
     customer, card = get_pharmacy_card_by_apple_serial(db, serial_number)
     verify_pharmacy_wallet_request(request, card)
+    print(
+        json.dumps(
+            {
+                "event": "mayu_magistral_apple_wallet_pass_requested",
+                "serial_number": serial_number,
+                "pass_type": pass_type_identifier,
+                "card_id": card.id,
+                "points_balance": card.points_balance,
+                "updated_at": card.updated_at,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
     output_path = build_pharmacy_apple_wallet_file(customer, card)
     return FileResponse(
         path=output_path,
