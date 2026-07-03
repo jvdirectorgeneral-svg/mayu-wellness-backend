@@ -19,6 +19,12 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    pkcs12,
+)
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -739,6 +745,108 @@ def safe_get_apple_wallet_registration_count(db: Session, card_id: int):
         return {"error": str(exc)}
 
 
+def get_wallet_certs_dir():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    certs_dir = os.path.join(base_dir, "certs")
+    if not os.path.exists(certs_dir):
+        certs_dir = os.path.join(os.getcwd(), "certs")
+    return certs_dir
+
+
+def build_apple_wallet_push_cert_files(temp_dir: str):
+    certs_dir = get_wallet_certs_dir()
+    p12_path = os.path.join(certs_dir, "mayu_wallet.p12")
+    password = os.getenv("APPLE_WALLET_P12_PASSWORD") or os.getenv(
+        "APPLE_WALLET_CERT_PASSWORD"
+    )
+    if not os.path.exists(p12_path):
+        raise Exception("No existe certs/mayu_wallet.p12")
+    if not password:
+        raise Exception("Falta APPLE_WALLET_P12_PASSWORD")
+
+    with open(p12_path, "rb") as f:
+        private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+            f.read(),
+            password.encode(),
+        )
+    if not private_key or not certificate:
+        raise Exception("Certificado Apple Wallet inválido")
+
+    cert_path = os.path.join(temp_dir, "apple_wallet_push_cert.pem")
+    key_path = os.path.join(temp_dir, "apple_wallet_push_key.pem")
+
+    with open(cert_path, "wb") as f:
+        f.write(certificate.public_bytes(Encoding.PEM))
+        for item in additional_certificates or []:
+            f.write(item.public_bytes(Encoding.PEM))
+
+    with open(key_path, "wb") as f:
+        f.write(
+            private_key.private_bytes(
+                Encoding.PEM,
+                PrivateFormat.PKCS8,
+                NoEncryption(),
+            )
+        )
+
+    return cert_path, key_path
+
+
+def safe_send_apple_wallet_update_pushes(db: Session, card):
+    pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
+    if not pass_type_id:
+        return {"sent": 0, "errors": [{"detail": "Falta APPLE_PASS_TYPE_ID"}]}
+
+    registrations = (
+        db.query(models.PharmacyAppleWalletRegistration)
+        .filter(models.PharmacyAppleWalletRegistration.card_id == card.id)
+        .all()
+    )
+    if not registrations:
+        return {"sent": 0, "errors": [], "detail": "Sin dispositivos Apple Wallet registrados"}
+
+    try:
+        import httpx
+
+        temp_dir = tempfile.mkdtemp(prefix=f"mayu_magistral_apns_{card.id}_")
+        cert_path, key_path = build_apple_wallet_push_cert_files(temp_dir)
+        apns_host = os.getenv("APPLE_APNS_HOST", "https://api.push.apple.com")
+        sent = 0
+        errors = []
+        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=20) as client:
+            for registration in registrations:
+                try:
+                    response = client.post(
+                        f"{apns_host}/3/device/{registration.push_token}",
+                        headers={
+                            "apns-topic": pass_type_id,
+                            "apns-push-type": "background",
+                            "apns-priority": "10",
+                        },
+                        json={},
+                    )
+                    if response.status_code in {200, 201}:
+                        sent += 1
+                    else:
+                        errors.append(
+                            {
+                                "registration_id": registration.id,
+                                "status_code": response.status_code,
+                                "detail": response.text[:300],
+                            }
+                        )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "registration_id": registration.id,
+                            "detail": str(exc),
+                        }
+                    )
+        return {"sent": sent, "errors": errors, "registered": len(registrations)}
+    except Exception as exc:
+        return {"sent": 0, "errors": [{"detail": str(exc)}], "registered": len(registrations)}
+
+
 @router.post("/admin/credit/{identifier}")
 def credit_by_pharmacy(
     identifier: str,
@@ -793,6 +901,7 @@ def credit_by_pharmacy(
                 f"Saldo actual: {card.points_balance} punto(s)."
             ),
         )
+        wallet_sync["apple"] = safe_send_apple_wallet_update_pushes(db, card)
         wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
         db.commit()
 
@@ -1066,7 +1175,7 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "organizationName": organization_name,
             "description": "Tarjeta Mayu Magistral",
             "logoText": "MAYU MAGISTRAL",
-            "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple/v1",
+            "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple",
             "authenticationToken": pharmacy_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(0,96,84)",
