@@ -396,6 +396,7 @@ class PharmacyCustomer(Base):
     password = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     cedula = Column(String, unique=True, nullable=True, index=True)
+    birth_date = Column(DateTime, nullable=True)
     city = Column(String, nullable=True)
     address = Column(String, nullable=True)
     reference = Column(String, nullable=True)
@@ -414,6 +415,39 @@ class PharmacyCustomer(Base):
         back_populates="pharmacy_customer",
         uselist=False,
         cascade="all, delete-orphan",
+    )
+    push_tokens = relationship(
+        "PharmacyPushNotificationToken",
+        back_populates="pharmacy_customer",
+        cascade="all, delete-orphan",
+    )
+
+
+class PharmacyPushNotificationToken(Base):
+    __tablename__ = "pharmacy_push_notification_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pharmacy_customer_id = Column(
+        Integer,
+        ForeignKey("pharmacy_customers.id"),
+        nullable=False,
+        index=True,
+    )
+    token = Column(Text, nullable=False, unique=True)
+    platform = Column(String, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    birthday_last_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    pharmacy_customer = relationship(
+        "PharmacyCustomer",
+        back_populates="push_tokens",
     )
 
 
