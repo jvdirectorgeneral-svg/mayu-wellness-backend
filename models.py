@@ -487,6 +487,40 @@ class PharmacyLoyaltyCard(Base):
         cascade="all, delete-orphan",
         order_by="PharmacyPointsTransaction.created_at.desc()",
     )
+    apple_wallet_registrations = relationship(
+        "PharmacyAppleWalletRegistration",
+        back_populates="card",
+        cascade="all, delete-orphan",
+    )
+
+
+class PharmacyAppleWalletRegistration(Base):
+    __tablename__ = "pharmacy_apple_wallet_registrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    card_id = Column(
+        Integer,
+        ForeignKey("pharmacy_loyalty_cards.id"),
+        nullable=False,
+        index=True,
+    )
+    device_library_identifier = Column(String, nullable=False, index=True)
+    pass_type_identifier = Column(String, nullable=False, index=True)
+    serial_number = Column(String, nullable=False, index=True)
+    push_token = Column(Text, nullable=False)
+    authentication_token = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    card = relationship(
+        "PharmacyLoyaltyCard",
+        back_populates="apple_wallet_registrations",
+    )
 
 
 class PharmacyPointsTransaction(Base):
