@@ -86,6 +86,22 @@ class PharmacyRecoverCardRequest(BaseModel):
     phone: str
 
 
+def pharmacy_customer_admin_dict(customer, card=None):
+    return {
+        "id": customer.id,
+        "name": customer.name,
+        "email": customer.email,
+        "phone": customer.phone,
+        "birth_date": customer.birth_date,
+        "city": customer.city,
+        "is_active": customer.is_active,
+        "created_at": customer.created_at,
+        "card": card_to_dict(customer, card, include_transactions=False)
+        if card
+        else None,
+    }
+
+
 def require_pharmacy_admin(user: models.User):
     if user.role not in {"superadmin", "admin", "pharmacy_admin"}:
         raise HTTPException(
@@ -644,6 +660,64 @@ def resolve_card(
     return {"mode": "credit", "card": card_to_dict(customer, card)}
 
 
+@router.get("/admin/customers")
+def list_pharmacy_customers(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+    customers = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.is_active == True)
+        .order_by(models.PharmacyCustomer.created_at.desc())
+        .all()
+    )
+    card_by_customer_id = {
+        card.pharmacy_customer_id: card
+        for card in db.query(models.PharmacyLoyaltyCard)
+        .filter(models.PharmacyLoyaltyCard.pharmacy_customer_id.isnot(None))
+        .all()
+    }
+    return {
+        "total": len(customers),
+        "customers": [
+            pharmacy_customer_admin_dict(
+                customer,
+                card_by_customer_id.get(customer.id),
+            )
+            for customer in customers
+        ],
+    }
+
+
+@router.post("/admin/test-push/{identifier}")
+def test_push_by_pharmacy(
+    identifier: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+    card = (
+        db.query(models.PharmacyLoyaltyCard)
+        .filter(
+            (models.PharmacyLoyaltyCard.qr_token == identifier)
+            | (models.PharmacyLoyaltyCard.card_code == identifier)
+        )
+        .first()
+    )
+    if not card or not card.active or not card.pharmacy_customer_id:
+        raise HTTPException(status_code=404, detail="Tarjeta Mayu Magistral no válida")
+
+    result = safe_send_push_to_pharmacy_customer(
+        db=db,
+        pharmacy_customer_id=card.pharmacy_customer_id,
+        title="🔔 Prueba Mayu Magistral",
+        message="Esta es una prueba de notificaciones de tu Tarjeta Mayu Magistral.",
+    )
+    db.commit()
+    return {"push": result}
+
+
 @router.post("/admin/credit/{identifier}")
 def credit_by_pharmacy(
     identifier: str,
@@ -916,7 +990,7 @@ def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": f"{card.card_code}-{card.id}-{card.points_balance}-{uuid.uuid4()}",
+            "serialNumber": f"mayu-magistral-{card.id}",
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": "Tarjeta Mayu Magistral",
