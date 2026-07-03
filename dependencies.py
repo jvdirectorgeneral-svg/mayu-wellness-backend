@@ -40,8 +40,13 @@ def get_current_user(
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido")
 
+    try:
+        parsed_user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Token inválido")
+
     user = db.query(models.User).filter(
-        models.User.id == int(user_id)
+        models.User.id == parsed_user_id
     ).first()
 
     if not user:

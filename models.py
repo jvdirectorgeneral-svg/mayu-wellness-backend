@@ -387,11 +387,81 @@ class MemberCard(Base):
     user = relationship("User", back_populates="member_card")
 
 
+class PharmacyCustomer(Base):
+    __tablename__ = "pharmacy_customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    cedula = Column(String, unique=True, nullable=True, index=True)
+    birth_date = Column(DateTime, nullable=True)
+    city = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    reference = Column(String, nullable=True)
+    delivery_notes = Column(Text, nullable=True)
+    accepted_terms = Column(Boolean, nullable=False, default=False)
+    accepted_privacy_policy = Column(Boolean, nullable=False, default=False)
+    accepted_digital_policy = Column(Boolean, nullable=False, default=False)
+    accepted_terms_at = Column(DateTime, nullable=True)
+    accepted_privacy_policy_at = Column(DateTime, nullable=True)
+    accepted_digital_policy_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    loyalty_card = relationship(
+        "PharmacyLoyaltyCard",
+        back_populates="pharmacy_customer",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    push_tokens = relationship(
+        "PharmacyPushNotificationToken",
+        back_populates="pharmacy_customer",
+        cascade="all, delete-orphan",
+    )
+
+
+class PharmacyPushNotificationToken(Base):
+    __tablename__ = "pharmacy_push_notification_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pharmacy_customer_id = Column(
+        Integer,
+        ForeignKey("pharmacy_customers.id"),
+        nullable=False,
+        index=True,
+    )
+    token = Column(Text, nullable=False, unique=True)
+    platform = Column(String, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    birthday_last_sent_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    pharmacy_customer = relationship(
+        "PharmacyCustomer",
+        back_populates="push_tokens",
+    )
+
+
 class PharmacyLoyaltyCard(Base):
     __tablename__ = "pharmacy_loyalty_cards"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True)
+    pharmacy_customer_id = Column(
+        Integer,
+        ForeignKey("pharmacy_customers.id"),
+        nullable=True,
+        unique=True,
+    )
     card_code = Column(String, unique=True, nullable=False, index=True)
     qr_token = Column(String, unique=True, nullable=False, index=True)
     points_balance = Column(Integer, nullable=False, default=0)
@@ -407,6 +477,10 @@ class PharmacyLoyaltyCard(Base):
     )
 
     user = relationship("User")
+    pharmacy_customer = relationship(
+        "PharmacyCustomer",
+        back_populates="loyalty_card",
+    )
     transactions = relationship(
         "PharmacyPointsTransaction",
         back_populates="card",
