@@ -1523,6 +1523,7 @@ def build_pharmacy_google_wallet_save_url(customer, card):
     private_key = clean_google_private_key(private_key)
 
     class_id = f"{issuer_id}.{class_suffix}"
+    ensure_pharmacy_google_wallet_class(service_account, class_id)
     generic_object = build_pharmacy_google_wallet_object(customer, card, issuer_id, class_id)
 
     claims = {
@@ -1534,6 +1535,52 @@ def build_pharmacy_google_wallet_save_url(customer, card):
 
     token = pyjwt.encode(claims, private_key, algorithm="RS256")
     return f"https://pay.google.com/gp/v/save/{token}"
+
+
+def ensure_pharmacy_google_wallet_class(service_account_info: dict, class_id: str):
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+    )
+    credentials.refresh(GoogleAuthRequest())
+    headers = {
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    }
+    url = f"https://walletobjects.googleapis.com/walletobjects/v1/genericClass/{class_id}"
+    existing = requests.get(url, headers=headers, timeout=20)
+    if existing.status_code == 200:
+        return
+    if existing.status_code != 404:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo verificar clase Google Wallet: {existing.text[:500]}",
+        )
+
+    class_body = {
+        "id": class_id,
+        "issuerName": "Mayu Magistral",
+        "reviewStatus": "UNDER_REVIEW",
+        "hexBackgroundColor": "#006054",
+        "localizedIssuerName": {
+            "defaultValue": {"language": "es", "value": "Mayu Magistral"}
+        },
+        "homepageUri": {
+            "uri": BASE_PUBLIC_URL,
+            "description": "Mayu Magistral",
+        },
+    }
+    created = requests.post(
+        "https://walletobjects.googleapis.com/walletobjects/v1/genericClass",
+        headers=headers,
+        json=class_body,
+        timeout=20,
+    )
+    if created.status_code not in {200, 201}:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo crear clase Google Wallet: {created.text[:500]}",
+        )
 
 
 def pharmacy_google_object_id(card, issuer_id: Optional[str] = None) -> str:
@@ -1614,6 +1661,7 @@ def safe_update_google_wallet_object(customer, card):
     try:
         service_account_info = get_google_wallet_service_account()
         class_id = f"{issuer_id}.{class_suffix}"
+        ensure_pharmacy_google_wallet_class(service_account_info, class_id)
         object_body = build_pharmacy_google_wallet_object(
             customer,
             card,
