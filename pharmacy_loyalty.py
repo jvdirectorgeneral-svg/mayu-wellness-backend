@@ -3,13 +3,14 @@ import io
 import os
 import json
 import tempfile
+import base64
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -39,6 +40,7 @@ from member_cards import (
 import models
 import qrcode
 import jwt as pyjwt
+from pharmacy_assets import TARJETA_SOCIOSFARMACIA_JPG_BASE64
 
 
 router = APIRouter(prefix="/pharmacy-loyalty", tags=["Pharmacy Loyalty"])
@@ -722,10 +724,22 @@ def get_valid_pharmacy_card_by_token(db: Session, qr_token: str):
     return customer, card
 
 
+def pharmacy_card_asset_bytes():
+    return base64.b64decode(TARJETA_SOCIOSFARMACIA_JPG_BASE64)
+
+
+@router.get("/assets/tarjeta_sociosfarmacia.jpg")
+def get_pharmacy_wallet_asset():
+    return Response(
+        content=pharmacy_card_asset_bytes(),
+        media_type="image/jpeg",
+    )
+
+
 def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
-    wallet_image_path = os.path.join(base_dir, "assets", "wallet_oro.png")
+    wallet_image_path = os.path.join(base_dir, "assets", "tarjeta_sociosfarmacia.jpg")
     bg_color = (0, 96, 84)
 
     for filename, size in [
@@ -747,6 +761,11 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
             fit_image_to_canvas(logo_path, target, size, bg_color)
         else:
             create_wallet_icon(target)
+
+    if not os.path.exists(wallet_image_path):
+        wallet_image_path = os.path.join(pass_dir, "tarjeta_sociosfarmacia.jpg")
+        with open(wallet_image_path, "wb") as f:
+            f.write(pharmacy_card_asset_bytes())
 
     if os.path.exists(wallet_image_path):
         cover_image_to_canvas(
@@ -891,6 +910,9 @@ def build_pharmacy_google_wallet_save_url(customer, card):
     public_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}"
     qr_image_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}/image"
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
+    pharmacy_card_asset_url = (
+        f"{BASE_PUBLIC_URL}/pharmacy-loyalty/assets/tarjeta_sociosfarmacia.jpg"
+    )
 
     generic_object = {
         "id": object_id,
@@ -902,9 +924,23 @@ def build_pharmacy_google_wallet_save_url(customer, card):
             "contentDescription": {"defaultValue": {"language": "es", "value": "Mayu Magistral"}},
         },
         "heroImage": {
-            "sourceUri": {"uri": qr_image_url},
-            "contentDescription": {"defaultValue": {"language": "es", "value": "QR Tarjeta Mayu Magistral"}},
+            "sourceUri": {"uri": pharmacy_card_asset_url},
+            "contentDescription": {"defaultValue": {"language": "es", "value": "Tarjeta Mayu Magistral"}},
         },
+        "imageModulesData": [
+            {
+                "id": "pharmacy_card_design",
+                "mainImage": {
+                    "sourceUri": {"uri": pharmacy_card_asset_url},
+                    "contentDescription": {
+                        "defaultValue": {
+                            "language": "es",
+                            "value": "Diseño Tarjeta Mayu Magistral",
+                        }
+                    },
+                },
+            }
+        ],
         "cardTitle": {"defaultValue": {"language": "es", "value": "Tarjeta Mayu Magistral"}},
         "header": {"defaultValue": {"language": "es", "value": customer.name}},
         "subheader": {"defaultValue": {"language": "es", "value": f"{card.points_balance} puntos · {card.card_code}"}},

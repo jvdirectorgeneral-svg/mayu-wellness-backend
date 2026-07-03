@@ -201,6 +201,7 @@ def get_wallet_asset(filename: str):
         "wallet_plata.png",
         "wallet_oro.png",
         "wallet_embajador.png",
+        "tarjeta_sociosfarmacia.jpg",
         "logo_mayu.png",
         "card_cobre.jpg",
         "card_plata.jpg",
