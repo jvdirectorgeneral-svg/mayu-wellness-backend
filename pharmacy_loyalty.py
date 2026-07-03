@@ -5,16 +5,21 @@ import json
 import tempfile
 import base64
 import resend
+import requests
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Request as FastAPIRequest
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from auth import (
@@ -47,6 +52,7 @@ from pharmacy_assets import TARJETA_SOCIOSFARMACIA_JPG_BASE64
 router = APIRouter(prefix="/pharmacy-loyalty", tags=["Pharmacy Loyalty"])
 security = HTTPBearer()
 POINT_VALUE_CENTS = 1000
+PHARMACY_WALLET_AUTH_PREFIX = "mayu-magistral-wallet"
 
 
 class PharmacyCustomerRegister(BaseModel):
@@ -84,6 +90,10 @@ class PharmacyPushTokenRequest(BaseModel):
 class PharmacyRecoverCardRequest(BaseModel):
     email: str
     phone: str
+
+
+class AppleWalletRegistrationRequest(BaseModel):
+    pushToken: str
 
 
 def pharmacy_customer_admin_dict(customer, card=None):
@@ -718,6 +728,17 @@ def test_push_by_pharmacy(
     return {"push": result}
 
 
+def safe_get_apple_wallet_registration_count(db: Session, card_id: int):
+    try:
+        return (
+            db.query(models.PharmacyAppleWalletRegistration)
+            .filter(models.PharmacyAppleWalletRegistration.card_id == card_id)
+            .count()
+        )
+    except SQLAlchemyError as exc:
+        return {"error": str(exc)}
+
+
 @router.post("/admin/credit/{identifier}")
 def credit_by_pharmacy(
     identifier: str,
@@ -758,6 +779,10 @@ def credit_by_pharmacy(
         .first()
     )
     push_result = None
+    wallet_sync = {
+        "apple": {"registered_devices": safe_get_apple_wallet_registration_count(db, card.id)},
+        "google": None,
+    }
     if created and transaction.points_delta > 0:
         push_result = safe_send_push_to_pharmacy_customer(
             db=db,
@@ -768,6 +793,7 @@ def credit_by_pharmacy(
                 f"Saldo actual: {card.points_balance} punto(s)."
             ),
         )
+        wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
         db.commit()
 
     return {
@@ -775,6 +801,7 @@ def credit_by_pharmacy(
         "points_earned": transaction.points_delta,
         "card": card_to_dict(customer, card),
         "push": push_result,
+        "wallet_sync": wallet_sync,
     }
 
 
@@ -905,6 +932,53 @@ def get_valid_pharmacy_card_by_token(db: Session, qr_token: str):
     return customer, card
 
 
+def pharmacy_apple_serial(card) -> str:
+    return f"mayu-magistral-{card.id}"
+
+
+def pharmacy_wallet_auth_token(card) -> str:
+    return f"{PHARMACY_WALLET_AUTH_PREFIX}-{card.qr_token}"
+
+
+def extract_wallet_auth_token(request: FastAPIRequest) -> str:
+    authorization = request.headers.get("authorization") or ""
+    prefix = "ApplePass "
+    if authorization.startswith(prefix):
+        return authorization.replace(prefix, "", 1).strip()
+    return ""
+
+
+def get_pharmacy_card_by_apple_serial(db: Session, serial_number: str):
+    prefix = "mayu-magistral-"
+    if not serial_number.startswith(prefix):
+        raise HTTPException(status_code=404, detail="Pase Mayu Magistral no válido")
+    try:
+        card_id = int(serial_number.replace(prefix, "", 1))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Pase Mayu Magistral no válido")
+
+    card = (
+        db.query(models.PharmacyLoyaltyCard)
+        .filter(models.PharmacyLoyaltyCard.id == card_id)
+        .first()
+    )
+    if not card or not card.active or not card.pharmacy_customer_id:
+        raise HTTPException(status_code=404, detail="Pase Mayu Magistral no válido")
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
+    if not customer:
+        raise HTTPException(status_code=404, detail="Socio Mayu Magistral no válido")
+    return customer, card
+
+
+def verify_pharmacy_wallet_request(request: FastAPIRequest, card):
+    if extract_wallet_auth_token(request) != pharmacy_wallet_auth_token(card):
+        raise HTTPException(status_code=401, detail="No autorizado")
+
+
 def pharmacy_card_asset_bytes():
     return base64.b64decode(TARJETA_SOCIOSFARMACIA_JPG_BASE64)
 
@@ -963,10 +1037,7 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
         )
 
 
-@router.get("/wallet/apple/{qr_token}")
-def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
-    customer, card = get_valid_pharmacy_card_by_token(db, qr_token)
-
+def build_pharmacy_apple_wallet_file(customer, card):
     pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
     team_id = os.getenv("APPLE_TEAM_ID")
     organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Mayu Magistral")
@@ -990,11 +1061,13 @@ def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": f"mayu-magistral-{card.id}",
+            "serialNumber": pharmacy_apple_serial(card),
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": "Tarjeta Mayu Magistral",
             "logoText": "MAYU MAGISTRAL",
+            "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple/v1",
+            "authenticationToken": pharmacy_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(0,96,84)",
             "labelColor": "rgb(210,245,238)",
@@ -1051,12 +1124,8 @@ def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
 
         output_path = os.path.join(temp_dir, f"tarjeta_mayu_magistral_{card.id}.pkpass")
         zip_pkpass(pass_dir, output_path)
+        return output_path
 
-        return FileResponse(
-            path=output_path,
-            media_type="application/vnd.apple.pkpass",
-            filename=f"tarjeta_mayu_magistral_{card.id}.pkpass",
-        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1064,6 +1133,147 @@ def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Error generando Apple Wallet Farmacia: {str(exc)}",
         )
+
+
+@router.get("/wallet/apple/{qr_token}")
+def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
+    customer, card = get_valid_pharmacy_card_by_token(db, qr_token)
+    output_path = build_pharmacy_apple_wallet_file(customer, card)
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"tarjeta_mayu_magistral_{card.id}.pkpass",
+    )
+
+
+@router.post(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def register_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    payload: AppleWalletRegistrationRequest,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    customer, card = get_pharmacy_card_by_apple_serial(db, serial_number)
+    verify_pharmacy_wallet_request(request, card)
+
+    if not payload.pushToken or not payload.pushToken.strip():
+        raise HTTPException(status_code=400, detail="pushToken requerido")
+
+    existing = (
+        db.query(models.PharmacyAppleWalletRegistration)
+        .filter(
+            models.PharmacyAppleWalletRegistration.card_id == card.id,
+            models.PharmacyAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.PharmacyAppleWalletRegistration.serial_number == serial_number,
+        )
+        .first()
+    )
+
+    created = False
+    if existing:
+        existing.pass_type_identifier = pass_type_identifier
+        existing.push_token = payload.pushToken.strip()
+        existing.authentication_token = pharmacy_wallet_auth_token(card)
+        existing.updated_at = datetime.utcnow()
+    else:
+        created = True
+        existing = models.PharmacyAppleWalletRegistration(
+            card_id=card.id,
+            device_library_identifier=device_library_identifier,
+            pass_type_identifier=pass_type_identifier,
+            serial_number=serial_number,
+            push_token=payload.pushToken.strip(),
+            authentication_token=pharmacy_wallet_auth_token(card),
+        )
+        db.add(existing)
+
+    db.commit()
+    return Response(status_code=201 if created else 200)
+
+
+@router.delete(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def unregister_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    customer, card = get_pharmacy_card_by_apple_serial(db, serial_number)
+    verify_pharmacy_wallet_request(request, card)
+    (
+        db.query(models.PharmacyAppleWalletRegistration)
+        .filter(
+            models.PharmacyAppleWalletRegistration.card_id == card.id,
+            models.PharmacyAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.PharmacyAppleWalletRegistration.pass_type_identifier
+            == pass_type_identifier,
+            models.PharmacyAppleWalletRegistration.serial_number == serial_number,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return Response(status_code=200)
+
+
+@router.get(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}"
+)
+def get_apple_wallet_updated_serials(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    registrations = (
+        db.query(models.PharmacyAppleWalletRegistration)
+        .filter(
+            models.PharmacyAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.PharmacyAppleWalletRegistration.pass_type_identifier
+            == pass_type_identifier,
+        )
+        .all()
+    )
+    if registrations:
+        token = extract_wallet_auth_token(request)
+        if token not in {item.authentication_token for item in registrations}:
+            raise HTTPException(status_code=401, detail="No autorizado")
+
+    return {
+        "lastUpdated": datetime.utcnow().isoformat(),
+        "serialNumbers": [item.serial_number for item in registrations],
+    }
+
+
+@router.get("/wallet/apple/v1/passes/{pass_type_identifier}/{serial_number}")
+def get_updated_apple_wallet_pass(
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    customer, card = get_pharmacy_card_by_apple_serial(db, serial_number)
+    verify_pharmacy_wallet_request(request, card)
+    output_path = build_pharmacy_apple_wallet_file(customer, card)
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"tarjeta_mayu_magistral_{card.id}.pkpass",
+    )
+
+
+@router.post("/wallet/apple/v1/log")
+def apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log recibido", "payload": payload}
 
 
 def build_pharmacy_google_wallet_save_url(customer, card):
@@ -1086,8 +1296,29 @@ def build_pharmacy_google_wallet_save_url(customer, card):
     private_key = clean_google_private_key(private_key)
 
     class_id = f"{issuer_id}.{class_suffix}"
+    generic_object = build_pharmacy_google_wallet_object(customer, card, issuer_id, class_id)
+
+    claims = {
+        "iss": client_email,
+        "aud": "google",
+        "typ": "savetowallet",
+        "payload": {"genericObjects": [generic_object]},
+    }
+
+    token = pyjwt.encode(claims, private_key, algorithm="RS256")
+    return f"https://pay.google.com/gp/v/save/{token}"
+
+
+def pharmacy_google_object_id(card, issuer_id: Optional[str] = None) -> str:
+    issuer = issuer_id or os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    if not issuer:
+        raise HTTPException(status_code=500, detail="Falta GOOGLE_WALLET_ISSUER_ID en Render")
     object_suffix = f"mayu_magistral_{card.card_code}_{card.id}".replace("-", "_").lower()
-    object_id = f"{issuer_id}.{object_suffix}"
+    return f"{issuer}.{object_suffix}"
+
+
+def build_pharmacy_google_wallet_object(customer, card, issuer_id: str, class_id: str):
+    object_id = pharmacy_google_object_id(card, issuer_id)
     public_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}"
     qr_image_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}/image"
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
@@ -1141,16 +1372,56 @@ def build_pharmacy_google_wallet_save_url(customer, card):
             ]
         },
     }
+    return generic_object
 
-    claims = {
-        "iss": client_email,
-        "aud": "google",
-        "typ": "savetowallet",
-        "payload": {"genericObjects": [generic_object]},
-    }
 
-    token = pyjwt.encode(claims, private_key, algorithm="RS256")
-    return f"https://pay.google.com/gp/v/save/{token}"
+def safe_update_google_wallet_object(customer, card):
+    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    class_suffix = os.getenv(
+        "GOOGLE_WALLET_PHARMACY_CLASS_SUFFIX",
+        "mayu_magistral_pharmacy",
+    )
+    if not issuer_id:
+        return {"updated": False, "detail": "Falta GOOGLE_WALLET_ISSUER_ID"}
+
+    try:
+        service_account_info = get_google_wallet_service_account()
+        class_id = f"{issuer_id}.{class_suffix}"
+        object_body = build_pharmacy_google_wallet_object(
+            customer,
+            card,
+            issuer_id,
+            class_id,
+        )
+        object_id = object_body["id"]
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+        )
+        credentials.refresh(GoogleAuthRequest())
+        response = requests.patch(
+            f"https://walletobjects.googleapis.com/walletobjects/v1/genericObject/{object_id}",
+            headers={
+                "Authorization": f"Bearer {credentials.token}",
+                "Content-Type": "application/json",
+            },
+            json=object_body,
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return {
+                "updated": False,
+                "detail": "El socio aún no ha guardado la tarjeta Google Wallet",
+            }
+        if response.status_code >= 300:
+            return {
+                "updated": False,
+                "status_code": response.status_code,
+                "detail": response.text[:500],
+            }
+        return {"updated": True, "object_id": object_id}
+    except Exception as exc:
+        return {"updated": False, "detail": str(exc)}
 
 
 @router.get("/wallet/google/{qr_token}")
