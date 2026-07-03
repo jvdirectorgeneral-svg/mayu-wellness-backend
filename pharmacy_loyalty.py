@@ -1396,7 +1396,19 @@ def get_apple_wallet_updated_serials(
     if registrations:
         token = extract_wallet_auth_token(request)
         if token not in {item.authentication_token for item in registrations}:
-            raise HTTPException(status_code=401, detail="No autorizado")
+            print(
+                json.dumps(
+                    {
+                        "event": "mayu_magistral_apple_wallet_update_auth_mismatch",
+                        "device": device_library_identifier,
+                        "pass_type": pass_type_identifier,
+                        "registrations": len(registrations),
+                        "auth_present": bool(token),
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
 
     updated_items = []
     for item in registrations:
@@ -1483,6 +1495,11 @@ def get_updated_apple_wallet_pass(
 
 @router.post("/wallet/apple/v1/log")
 def apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log recibido", "payload": payload}
+
+
+@router.post("/wallet/apple/v1/v1/log")
+def apple_wallet_legacy_double_v1_log(payload: dict):
     return {"message": "Apple Wallet log recibido", "payload": payload}
 
 
