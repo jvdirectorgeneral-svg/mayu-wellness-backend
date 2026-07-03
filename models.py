@@ -387,11 +387,47 @@ class MemberCard(Base):
     user = relationship("User", back_populates="member_card")
 
 
+class PharmacyCustomer(Base):
+    __tablename__ = "pharmacy_customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    cedula = Column(String, unique=True, nullable=True, index=True)
+    city = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+    reference = Column(String, nullable=True)
+    delivery_notes = Column(Text, nullable=True)
+    accepted_terms = Column(Boolean, nullable=False, default=False)
+    accepted_privacy_policy = Column(Boolean, nullable=False, default=False)
+    accepted_digital_policy = Column(Boolean, nullable=False, default=False)
+    accepted_terms_at = Column(DateTime, nullable=True)
+    accepted_privacy_policy_at = Column(DateTime, nullable=True)
+    accepted_digital_policy_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    loyalty_card = relationship(
+        "PharmacyLoyaltyCard",
+        back_populates="pharmacy_customer",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
 class PharmacyLoyaltyCard(Base):
     __tablename__ = "pharmacy_loyalty_cards"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True)
+    pharmacy_customer_id = Column(
+        Integer,
+        ForeignKey("pharmacy_customers.id"),
+        nullable=True,
+        unique=True,
+    )
     card_code = Column(String, unique=True, nullable=False, index=True)
     qr_token = Column(String, unique=True, nullable=False, index=True)
     points_balance = Column(Integer, nullable=False, default=0)
@@ -407,6 +443,10 @@ class PharmacyLoyaltyCard(Base):
     )
 
     user = relationship("User")
+    pharmacy_customer = relationship(
+        "PharmacyCustomer",
+        back_populates="loyalty_card",
+    )
     transactions = relationship(
         "PharmacyPointsTransaction",
         back_populates="card",
