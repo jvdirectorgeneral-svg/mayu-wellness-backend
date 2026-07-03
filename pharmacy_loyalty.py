@@ -1,5 +1,6 @@
 import uuid
 import io
+import os
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
@@ -21,6 +22,7 @@ from auth import (
 )
 from database import get_db
 from dependencies import get_current_user
+from marketing import send_push_notification
 import models
 import qrcode
 
@@ -35,6 +37,7 @@ class PharmacyCustomerRegister(BaseModel):
     email: str
     phone: str
     password: str
+    birth_date: Optional[str] = None
     cedula: Optional[str] = None
     city: Optional[str] = None
     address: Optional[str] = None
@@ -56,6 +59,11 @@ class PharmacyPurchaseCredit(BaseModel):
     note: Optional[str] = None
 
 
+class PharmacyPushTokenRequest(BaseModel):
+    token: str
+    platform: Optional[str] = None
+
+
 def require_pharmacy_admin(user: models.User):
     if user.role not in {"superadmin", "admin", "pharmacy_admin"}:
         raise HTTPException(
@@ -71,6 +79,7 @@ def customer_to_dict(customer: models.PharmacyCustomer):
         "email": customer.email,
         "phone": customer.phone,
         "cedula": customer.cedula,
+        "birth_date": customer.birth_date,
         "city": customer.city,
         "address": customer.address,
         "reference": customer.reference,
@@ -105,6 +114,66 @@ def get_current_pharmacy_customer(
     if not customer or not customer.is_active:
         raise HTTPException(status_code=401, detail="Cliente Farmacia no válido")
     return customer
+
+
+def parse_birth_date(value: Optional[str]):
+    if not value:
+        return None
+    clean = value.strip()
+    if not clean:
+        return None
+    try:
+        return datetime.strptime(clean, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Fecha de nacimiento inválida. Usa formato YYYY-MM-DD",
+        )
+
+
+def deactivate_invalid_pharmacy_token(push_token, error_text: str):
+    invalid_markers = [
+        "UNREGISTERED",
+        "INVALID_ARGUMENT",
+        "registration token is not a valid",
+        "Requested entity was not found",
+    ]
+    if any(marker in error_text for marker in invalid_markers):
+        push_token.is_active = False
+        push_token.updated_at = datetime.utcnow()
+
+
+def safe_send_push_to_pharmacy_customer(
+    db: Session,
+    pharmacy_customer_id: int,
+    title: str,
+    message: str,
+    image_url: Optional[str] = None,
+):
+    push_token = (
+        db.query(models.PharmacyPushNotificationToken)
+        .filter(
+            models.PharmacyPushNotificationToken.pharmacy_customer_id
+            == pharmacy_customer_id,
+            models.PharmacyPushNotificationToken.is_active == True,
+        )
+        .order_by(models.PharmacyPushNotificationToken.updated_at.desc())
+        .first()
+    )
+    if not push_token:
+        return {"sent": False, "detail": "Socio farmacia sin token push activo"}
+
+    try:
+        result = send_push_notification(
+            token=push_token.token,
+            title=title,
+            message=message,
+            image_url=image_url,
+        )
+        return {"sent": True, "token_id": push_token.id, "firebase": result}
+    except Exception as exc:
+        deactivate_invalid_pharmacy_token(push_token, str(exc))
+        return {"sent": False, "token_id": push_token.id, "detail": str(exc)}
 
 
 def get_or_create_card(db: Session, customer_id: int):
@@ -256,6 +325,7 @@ def register_pharmacy_customer(
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip() if payload.cedula else None
     now = datetime.utcnow()
+    birth_date = parse_birth_date(payload.birth_date)
 
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
@@ -284,6 +354,7 @@ def register_pharmacy_customer(
         password=hash_password(payload.password.strip()),
         phone=payload.phone.strip(),
         cedula=cedula,
+        birth_date=birth_date,
         city=payload.city.strip() if payload.city else None,
         address=payload.address.strip() if payload.address else None,
         reference=payload.reference.strip() if payload.reference else None,
@@ -342,6 +413,72 @@ def login_pharmacy_customer(
         "token_type": "bearer",
         "customer": customer_to_dict(customer),
         "card": card_to_dict(customer, card),
+    }
+
+
+@router.post("/push-token")
+def save_pharmacy_push_token(
+    payload: PharmacyPushTokenRequest,
+    db: Session = Depends(get_db),
+    current_customer: models.PharmacyCustomer = Depends(get_current_pharmacy_customer),
+):
+    if not payload.token or not payload.token.strip():
+        raise HTTPException(status_code=400, detail="Token push requerido")
+
+    clean_token = payload.token.strip()
+
+    old_tokens = (
+        db.query(models.PharmacyPushNotificationToken)
+        .filter(
+            models.PharmacyPushNotificationToken.pharmacy_customer_id
+            == current_customer.id,
+            models.PharmacyPushNotificationToken.token != clean_token,
+        )
+        .all()
+    )
+    for item in old_tokens:
+        item.is_active = False
+        item.updated_at = datetime.utcnow()
+
+    existing = (
+        db.query(models.PharmacyPushNotificationToken)
+        .filter(models.PharmacyPushNotificationToken.token == clean_token)
+        .first()
+    )
+
+    created = False
+    if existing:
+        existing.pharmacy_customer_id = current_customer.id
+        existing.platform = payload.platform
+        existing.is_active = True
+        existing.updated_at = datetime.utcnow()
+        push_token = existing
+    else:
+        created = True
+        push_token = models.PharmacyPushNotificationToken(
+            pharmacy_customer_id=current_customer.id,
+            token=clean_token,
+            platform=payload.platform,
+            is_active=True,
+        )
+        db.add(push_token)
+        db.flush()
+
+    welcome_push = safe_send_push_to_pharmacy_customer(
+        db=db,
+        pharmacy_customer_id=current_customer.id,
+        title="✅ Tarjeta Farmacia Mayu activada",
+        message=f"Hola {current_customer.name}, tu tarjeta de puntos ya está lista.",
+    )
+
+    db.commit()
+    db.refresh(push_token)
+
+    return {
+        "message": "Token push farmacia guardado",
+        "token_id": push_token.id,
+        "created": created,
+        "welcome_push": welcome_push,
     }
 
 
@@ -421,10 +558,116 @@ def credit_by_pharmacy(
         .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
         .first()
     )
+    push_result = None
+    if created and transaction.points_delta > 0:
+        push_result = safe_send_push_to_pharmacy_customer(
+            db=db,
+            pharmacy_customer_id=card.pharmacy_customer_id,
+            title="⭐ Puntos Farmacia Mayu acreditados",
+            message=(
+                f"Sumaste {transaction.points_delta} punto(s). "
+                f"Saldo actual: {card.points_balance} punto(s)."
+            ),
+        )
+        db.commit()
+
     return {
         "created": created,
         "points_earned": transaction.points_delta,
         "card": card_to_dict(customer, card),
+        "push": push_result,
+    }
+
+
+def process_pharmacy_birthday_notifications(db: Session):
+    today = datetime.utcnow().date()
+    customers = (
+        db.query(models.PharmacyCustomer)
+        .filter(
+            models.PharmacyCustomer.is_active == True,
+            models.PharmacyCustomer.birth_date.isnot(None),
+        )
+        .all()
+    )
+
+    total_candidates = 0
+    total_sent = 0
+    total_errors = 0
+    skipped_existing = 0
+
+    for customer in customers:
+        if (
+            customer.birth_date.month != today.month
+            or customer.birth_date.day != today.day
+        ):
+            continue
+
+        total_candidates += 1
+
+        push_token = (
+            db.query(models.PharmacyPushNotificationToken)
+            .filter(
+                models.PharmacyPushNotificationToken.pharmacy_customer_id
+                == customer.id,
+                models.PharmacyPushNotificationToken.is_active == True,
+            )
+            .order_by(models.PharmacyPushNotificationToken.updated_at.desc())
+            .first()
+        )
+        if not push_token:
+            total_errors += 1
+            continue
+
+        if (
+            push_token.birthday_last_sent_at
+            and push_token.birthday_last_sent_at.date() == today
+        ):
+            skipped_existing += 1
+            continue
+
+        result = safe_send_push_to_pharmacy_customer(
+            db=db,
+            pharmacy_customer_id=customer.id,
+            title="🎉 Feliz cumpleaños",
+            message=(
+                f"Hola {customer.name}, Farmacia Mayu te desea un día lleno "
+                "de salud y bienestar."
+            ),
+        )
+        if result.get("sent"):
+            push_token.birthday_last_sent_at = datetime.utcnow()
+            push_token.updated_at = datetime.utcnow()
+            total_sent += 1
+        else:
+            total_errors += 1
+
+    return {
+        "birthday_customers": total_candidates,
+        "push_success": total_sent,
+        "errors": total_errors,
+        "skipped_existing": skipped_existing,
+    }
+
+
+@router.post("/birthday/cron/run")
+def run_pharmacy_birthday_cron(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    cron_secret = os.getenv("MARKETING_CRON_SECRET")
+    if not cron_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta MARKETING_CRON_SECRET en Render",
+        )
+    if secret != cron_secret:
+        raise HTTPException(status_code=401, detail="No autorizado")
+
+    result = process_pharmacy_birthday_notifications(db)
+    db.commit()
+    return {
+        "message": "Cumpleaños Farmacia procesados correctamente",
+        "result": result,
     }
 
 
