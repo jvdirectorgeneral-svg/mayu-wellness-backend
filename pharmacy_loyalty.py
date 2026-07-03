@@ -826,7 +826,7 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                             "apns-push-type": "background",
                             "apns-priority": "10",
                         },
-                        content=b"",
+                        json={},
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
