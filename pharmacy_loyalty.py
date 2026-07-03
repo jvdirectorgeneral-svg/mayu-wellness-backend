@@ -1,13 +1,15 @@
 import uuid
 import io
 import os
+import json
+import tempfile
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -23,8 +25,20 @@ from auth import (
 from database import get_db
 from dependencies import get_current_user
 from marketing import send_push_notification
+from member_cards import (
+    BASE_PUBLIC_URL,
+    build_manifest,
+    clean_google_private_key,
+    cover_image_to_canvas,
+    create_wallet_icon,
+    fit_image_to_canvas,
+    get_google_wallet_service_account,
+    sign_manifest,
+    zip_pkpass,
+)
 import models
 import qrcode
+import jwt as pyjwt
 
 
 router = APIRouter(prefix="/pharmacy-loyalty", tags=["Pharmacy Loyalty"])
@@ -219,13 +233,15 @@ def card_to_dict(customer, card, include_transactions=True):
             else POINT_VALUE_CENTS - card.accumulated_cents
         ),
         "active": card.active,
-        "qr_url": (
-            "https://mayu-wellness-backend-v1.onrender.com"
-            f"/pharmacy-loyalty/qr/{card.qr_token}"
-        ),
+        "qr_url": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}",
         "qr_image_url": (
-            "https://mayu-wellness-backend-v1.onrender.com"
-            f"/pharmacy-loyalty/qr/{card.qr_token}/image"
+            f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}/image"
+        ),
+        "apple_wallet_url": (
+            f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple/{card.qr_token}"
+        ),
+        "google_wallet_url": (
+            f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/google/{card.qr_token}"
         ),
     }
     if include_transactions:
@@ -649,10 +665,9 @@ def process_pharmacy_birthday_notifications(db: Session):
     }
 
 
-@router.post("/birthday/cron/run")
-def run_pharmacy_birthday_cron(
+def run_pharmacy_birthday_cron_job(
     secret: str,
-    db: Session = Depends(get_db),
+    db: Session,
 ):
     cron_secret = os.getenv("MARKETING_CRON_SECRET")
     if not cron_secret:
@@ -669,6 +684,263 @@ def run_pharmacy_birthday_cron(
         "message": "Cumpleaños Farmacia procesados correctamente",
         "result": result,
     }
+
+
+@router.post("/birthday/cron/run")
+def run_pharmacy_birthday_cron(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    return run_pharmacy_birthday_cron_job(secret=secret, db=db)
+
+
+@router.get("/birthday/cron/run")
+def run_pharmacy_birthday_cron_get(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    return run_pharmacy_birthday_cron_job(secret=secret, db=db)
+
+
+def get_valid_pharmacy_card_by_token(db: Session, qr_token: str):
+    card = (
+        db.query(models.PharmacyLoyaltyCard)
+        .filter(models.PharmacyLoyaltyCard.qr_token == qr_token)
+        .first()
+    )
+    if not card or not card.active or not card.pharmacy_customer_id:
+        raise HTTPException(status_code=404, detail="Tarjeta Mayu Magistral no válida")
+
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
+    if not customer:
+        raise HTTPException(status_code=404, detail="Socio farmacia no encontrado")
+
+    return customer, card
+
+
+def copy_or_create_pharmacy_wallet_images(pass_dir: str):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+    wallet_image_path = os.path.join(base_dir, "assets", "wallet_oro.png")
+    bg_color = (0, 96, 84)
+
+    for filename, size in [
+        ("icon.png", (29, 29)),
+        ("icon@2x.png", (58, 58)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, bg_color)
+        else:
+            create_wallet_icon(target)
+
+    for filename, size in [
+        ("logo.png", (70, 26)),
+        ("logo@2x.png", (140, 52)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, bg_color)
+        else:
+            create_wallet_icon(target)
+
+    if os.path.exists(wallet_image_path):
+        cover_image_to_canvas(
+            wallet_image_path,
+            os.path.join(pass_dir, "strip.png"),
+            (375, 123),
+            bg_color,
+        )
+        cover_image_to_canvas(
+            wallet_image_path,
+            os.path.join(pass_dir, "strip@2x.png"),
+            (750, 246),
+            bg_color,
+        )
+
+
+@router.get("/wallet/apple/{qr_token}")
+def pharmacy_apple_wallet(qr_token: str, db: Session = Depends(get_db)):
+    customer, card = get_valid_pharmacy_card_by_token(db, qr_token)
+
+    pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
+    team_id = os.getenv("APPLE_TEAM_ID")
+    organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Mayu Magistral")
+
+    if not pass_type_id:
+        raise HTTPException(status_code=500, detail="Falta APPLE_PASS_TYPE_ID")
+    if not team_id:
+        raise HTTPException(status_code=500, detail="Falta APPLE_TEAM_ID")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    certs_dir = os.path.join(base_dir, "certs")
+    if not os.path.exists(certs_dir):
+        certs_dir = os.path.join(os.getcwd(), "certs")
+
+    temp_dir = tempfile.mkdtemp(prefix=f"mayu_magistral_pkpass_{card.id}_")
+    pass_dir = os.path.join(temp_dir, "pass")
+    os.makedirs(pass_dir, exist_ok=True)
+
+    try:
+        public_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}"
+        pass_json = {
+            "formatVersion": 1,
+            "passTypeIdentifier": pass_type_id,
+            "serialNumber": f"{card.card_code}-{card.id}-{card.points_balance}-{uuid.uuid4()}",
+            "teamIdentifier": team_id,
+            "organizationName": organization_name,
+            "description": "Tarjeta Mayu Magistral",
+            "logoText": "MAYU MAGISTRAL",
+            "foregroundColor": "rgb(255,255,255)",
+            "backgroundColor": "rgb(0,96,84)",
+            "labelColor": "rgb(210,245,238)",
+            "suppressStripShine": True,
+            "sharingProhibited": False,
+            "storeCard": {
+                "primaryFields": [
+                    {
+                        "key": "points",
+                        "label": "BALANCE EN PUNTOS",
+                        "value": str(card.points_balance),
+                    }
+                ],
+                "secondaryFields": [
+                    {
+                        "key": "name",
+                        "label": "TARJETA DE",
+                        "value": customer.name,
+                    },
+                    {
+                        "key": "benefit",
+                        "label": "RECLAMA",
+                        "value": "Beneficios Mayu Magistral",
+                    },
+                ],
+                "auxiliaryFields": [
+                    {
+                        "key": "code",
+                        "label": "CÓDIGO",
+                        "value": card.card_code,
+                    }
+                ],
+                "backFields": [
+                    {"key": "email", "label": "Correo", "value": customer.email},
+                    {"key": "phone", "label": "Teléfono", "value": customer.phone},
+                    {"key": "city", "label": "Ciudad", "value": customer.city or "-"},
+                    {"key": "web", "label": "Tarjeta web", "value": public_url},
+                ],
+            },
+            "barcode": {
+                "format": "PKBarcodeFormatQR",
+                "message": public_url,
+                "messageEncoding": "iso-8859-1",
+                "altText": card.card_code,
+            },
+        }
+
+        with open(os.path.join(pass_dir, "pass.json"), "w", encoding="utf-8") as f:
+            json.dump(pass_json, f, ensure_ascii=False, separators=(",", ":"))
+
+        copy_or_create_pharmacy_wallet_images(pass_dir)
+        build_manifest(pass_dir)
+        sign_manifest(pass_dir, certs_dir)
+
+        output_path = os.path.join(temp_dir, f"tarjeta_mayu_magistral_{card.id}.pkpass")
+        zip_pkpass(pass_dir, output_path)
+
+        return FileResponse(
+            path=output_path,
+            media_type="application/vnd.apple.pkpass",
+            filename=f"tarjeta_mayu_magistral_{card.id}.pkpass",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando Apple Wallet Farmacia: {str(exc)}",
+        )
+
+
+def build_pharmacy_google_wallet_save_url(customer, card):
+    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    class_suffix = os.getenv(
+        "GOOGLE_WALLET_PHARMACY_CLASS_SUFFIX",
+        "mayu_magistral_pharmacy",
+    )
+
+    if not issuer_id:
+        raise HTTPException(status_code=500, detail="Falta GOOGLE_WALLET_ISSUER_ID en Render")
+
+    service_account = get_google_wallet_service_account()
+    client_email = service_account.get("client_email")
+    private_key = service_account.get("private_key")
+
+    if not client_email or not private_key:
+        raise HTTPException(status_code=500, detail="JSON de Google Wallet incompleto")
+
+    private_key = clean_google_private_key(private_key)
+
+    class_id = f"{issuer_id}.{class_suffix}"
+    object_suffix = f"mayu_magistral_{card.card_code}_{card.id}".replace("-", "_").lower()
+    object_id = f"{issuer_id}.{object_suffix}"
+    public_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}"
+    qr_image_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}/image"
+    logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
+
+    generic_object = {
+        "id": object_id,
+        "classId": class_id,
+        "state": "ACTIVE",
+        "hexBackgroundColor": "#006054",
+        "logo": {
+            "sourceUri": {"uri": logo_url},
+            "contentDescription": {"defaultValue": {"language": "es", "value": "Mayu Magistral"}},
+        },
+        "heroImage": {
+            "sourceUri": {"uri": qr_image_url},
+            "contentDescription": {"defaultValue": {"language": "es", "value": "QR Tarjeta Mayu Magistral"}},
+        },
+        "cardTitle": {"defaultValue": {"language": "es", "value": "Tarjeta Mayu Magistral"}},
+        "header": {"defaultValue": {"language": "es", "value": customer.name}},
+        "subheader": {"defaultValue": {"language": "es", "value": f"{card.points_balance} puntos · {card.card_code}"}},
+        "barcode": {
+            "type": "QR_CODE",
+            "value": public_url,
+            "alternateText": card.card_code,
+        },
+        "textModulesData": [
+            {"id": "points", "header": "Balance en puntos", "body": str(card.points_balance)},
+            {"id": "code", "header": "Código", "body": card.card_code},
+            {"id": "rule", "header": "Regla", "body": "1 punto por cada $10 acumulados"},
+        ],
+        "linksModuleData": {
+            "uris": [
+                {"id": "web", "uri": public_url, "description": "Ver tarjeta"},
+            ]
+        },
+    }
+
+    claims = {
+        "iss": client_email,
+        "aud": "google",
+        "typ": "savetowallet",
+        "payload": {"genericObjects": [generic_object]},
+    }
+
+    token = pyjwt.encode(claims, private_key, algorithm="RS256")
+    return f"https://pay.google.com/gp/v/save/{token}"
+
+
+@router.get("/wallet/google/{qr_token}")
+def pharmacy_google_wallet(qr_token: str, db: Session = Depends(get_db)):
+    customer, card = get_valid_pharmacy_card_by_token(db, qr_token)
+    save_url = build_pharmacy_google_wallet_save_url(customer, card)
+    return RedirectResponse(url=save_url)
 
 
 @router.get("/qr/{qr_token}", response_class=HTMLResponse)
@@ -692,7 +964,7 @@ def public_card(qr_token: str, db: Session = Depends(get_db)):
         <html><head><meta name="viewport" content="width=device-width"></head>
         <body style="font-family:Arial;background:#f4f4f1;padding:24px">
           <div style="max-width:520px;margin:auto;background:white;padding:28px;border-radius:24px">
-            <h1>Farmacia Mayu</h1>
+            <h1>Tarjeta Mayu Magistral</h1>
             <h2>{customer_name}</h2>
             <p>Tarjeta: {card_code}</p>
             <p style="font-size:42px;font-weight:bold">{card.points_balance} puntos</p>
