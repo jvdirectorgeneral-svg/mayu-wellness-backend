@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import base64
+import resend
 from html import escape
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
@@ -80,6 +81,11 @@ class PharmacyPushTokenRequest(BaseModel):
     platform: Optional[str] = None
 
 
+class PharmacyRecoverCardRequest(BaseModel):
+    email: str
+    phone: str
+
+
 def require_pharmacy_admin(user: models.User):
     if user.role not in {"superadmin", "admin", "pharmacy_admin"}:
         raise HTTPException(
@@ -145,6 +151,58 @@ def parse_birth_date(value: Optional[str]):
             status_code=400,
             detail="Fecha de nacimiento inválida. Usa formato YYYY-MM-DD",
         )
+
+
+def normalize_phone(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return "".join(ch for ch in value if ch.isdigit())
+
+
+def safe_send_pharmacy_email(to_email: str, subject: str, message: str):
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    from_email = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+
+    if not resend_api_key or not to_email:
+        return {"sent": False, "detail": "Email no configurado"}
+
+    try:
+        resend.api_key = resend_api_key
+        resend.Emails.send(
+            {
+                "from": from_email,
+                "to": [to_email],
+                "subject": subject,
+                "html": f"""
+                <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
+                    <h2 style="margin-bottom:16px; color:#00695C;">Mayu Magistral</h2>
+                    <div style="font-size:16px; line-height:1.7; white-space:pre-line;">
+                        {message}
+                    </div>
+                    <br>
+                    <p style="color:#00695C;">Equipo Mayu Magistral</p>
+                </div>
+                """,
+            }
+        )
+        return {"sent": True}
+    except Exception as exc:
+        return {"sent": False, "detail": str(exc)}
+
+
+def build_pharmacy_card_email_message(customer, card):
+    card_data = card_to_dict(customer, card, include_transactions=False)
+    return (
+        f"Hola {customer.name},\n\n"
+        "Tu Tarjeta Mayu Magistral está lista.\n\n"
+        f"Código de tarjeta: {card.card_code}\n"
+        f"Puntos actuales: {card.points_balance}\n\n"
+        "Descargar para iPhone / Apple Wallet:\n"
+        f"{card_data['apple_wallet_url']}\n\n"
+        "Descargar para Android / Google Wallet:\n"
+        f"{card_data['google_wallet_url']}\n\n"
+        "También puedes mostrar tu QR desde la app para que Farmacia Mayu registre tus compras."
+    )
 
 
 def deactivate_invalid_pharmacy_token(push_token, error_text: str):
@@ -394,6 +452,12 @@ def register_pharmacy_customer(
     db.refresh(customer)
     db.refresh(card)
 
+    welcome_email = safe_send_pharmacy_email(
+        customer.email,
+        "Tu Tarjeta Mayu Magistral está lista",
+        build_pharmacy_card_email_message(customer, card),
+    )
+
     access_token = create_access_token(
         {"sub": f"pharmacy_customer:{customer.id}", "type": "pharmacy_customer"}
     )
@@ -402,6 +466,7 @@ def register_pharmacy_customer(
         "token_type": "bearer",
         "customer": customer_to_dict(customer),
         "card": card_to_dict(customer, card),
+        "welcome_email": welcome_email,
     }
 
 
@@ -497,6 +562,48 @@ def save_pharmacy_push_token(
         "token_id": push_token.id,
         "created": created,
         "welcome_push": welcome_push,
+    }
+
+
+@router.post("/recover-card")
+def recover_pharmacy_card(
+    payload: PharmacyRecoverCardRequest,
+    db: Session = Depends(get_db),
+):
+    email = payload.email.strip().lower()
+    phone = normalize_phone(payload.phone)
+    if not email or not phone:
+        raise HTTPException(status_code=400, detail="Correo y teléfono son obligatorios")
+
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(
+            models.PharmacyCustomer.email == email,
+            models.PharmacyCustomer.is_active == True,
+        )
+        .first()
+    )
+    if not customer or normalize_phone(customer.phone) != phone:
+        raise HTTPException(
+            status_code=404,
+            detail="No encontramos una Tarjeta Mayu Magistral con ese correo y teléfono",
+        )
+
+    customer, card = get_or_create_card(db, customer.id)
+    db.commit()
+    db.refresh(card)
+
+    email_result = safe_send_pharmacy_email(
+        customer.email,
+        "Recupera tu Tarjeta Mayu Magistral",
+        build_pharmacy_card_email_message(customer, card),
+    )
+
+    return {
+        "message": "Tarjeta encontrada. Te enviamos los enlaces de descarga si el correo está configurado.",
+        "email_sent": email_result.get("sent", False),
+        "email": email_result,
+        "card": card_to_dict(customer, card),
     }
 
 
