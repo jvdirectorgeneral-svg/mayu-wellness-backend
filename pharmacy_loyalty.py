@@ -7,8 +7,9 @@ import base64
 import resend
 import requests
 from html import escape
+from email.utils import format_datetime
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -408,6 +409,7 @@ def credit_purchase(
     card.points_balance += points
     card.lifetime_points += points
     card.accumulated_cents = remainder
+    card.updated_at = datetime.utcnow()
 
     transaction = models.PharmacyPointsTransaction(
         card_id=card.id,
@@ -1049,6 +1051,16 @@ def pharmacy_wallet_auth_token(card) -> str:
     return f"{PHARMACY_WALLET_AUTH_PREFIX}-{card.qr_token}"
 
 
+def pharmacy_apple_last_updated(card) -> str:
+    updated_at = card.updated_at or card.created_at or datetime.utcnow()
+    return updated_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def pharmacy_apple_last_modified(card) -> str:
+    updated_at = card.updated_at or card.created_at or datetime.utcnow()
+    return format_datetime(updated_at.replace(tzinfo=timezone.utc), usegmt=True)
+
+
 def extract_wallet_auth_token(request: FastAPIRequest) -> str:
     authorization = request.headers.get("authorization") or ""
     prefix = "ApplePass "
@@ -1341,6 +1353,7 @@ def get_apple_wallet_updated_serials(
     pass_type_identifier: str,
     request: FastAPIRequest,
     db: Session = Depends(get_db),
+    passesUpdatedSince: Optional[str] = None,
 ):
     registrations = (
         db.query(models.PharmacyAppleWalletRegistration)
@@ -1357,9 +1370,21 @@ def get_apple_wallet_updated_serials(
         if token not in {item.authentication_token for item in registrations}:
             raise HTTPException(status_code=401, detail="No autorizado")
 
+    updated_items = []
+    for item in registrations:
+        if not item.card:
+            continue
+        last_updated = pharmacy_apple_last_updated(item.card)
+        if passesUpdatedSince and last_updated <= passesUpdatedSince:
+            continue
+        updated_items.append((item, last_updated))
+
+    if not updated_items:
+        return Response(status_code=204)
+
     return {
-        "lastUpdated": datetime.utcnow().isoformat(),
-        "serialNumbers": [item.serial_number for item in registrations],
+        "lastUpdated": max(last_updated for _, last_updated in updated_items),
+        "serialNumbers": [item.serial_number for item, _ in updated_items],
     }
 
 
@@ -1377,6 +1402,11 @@ def get_updated_apple_wallet_pass(
         path=output_path,
         media_type="application/vnd.apple.pkpass",
         filename=f"tarjeta_mayu_magistral_{card.id}.pkpass",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Last-Modified": pharmacy_apple_last_modified(card),
+        },
     )
 
 
