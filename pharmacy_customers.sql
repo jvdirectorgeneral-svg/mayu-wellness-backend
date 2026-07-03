@@ -32,3 +32,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_pharmacy_loyalty_cards_customer
 
 CREATE INDEX IF NOT EXISTS ix_pharmacy_customers_email
     ON public.pharmacy_customers(email);
+
+ALTER TABLE public.pharmacy_customers
+    ADD COLUMN IF NOT EXISTS birth_date TIMESTAMP WITHOUT TIME ZONE;
+
+CREATE TABLE IF NOT EXISTS public.pharmacy_push_notification_tokens (
+    id SERIAL PRIMARY KEY,
+    pharmacy_customer_id INTEGER NOT NULL
+        REFERENCES public.pharmacy_customers(id) ON DELETE CASCADE,
+    token TEXT NOT NULL UNIQUE,
+    platform VARCHAR,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    birthday_last_sent_at TIMESTAMP WITHOUT TIME ZONE,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_pharmacy_push_tokens_customer
+    ON public.pharmacy_push_notification_tokens(pharmacy_customer_id);
+
+CREATE INDEX IF NOT EXISTS ix_pharmacy_push_tokens_active
+    ON public.pharmacy_push_notification_tokens(is_active);
+
+CREATE INDEX IF NOT EXISTS ix_pharmacy_customers_birth_date
+    ON public.pharmacy_customers(birth_date);
