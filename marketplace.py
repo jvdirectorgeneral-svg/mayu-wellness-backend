@@ -15,6 +15,7 @@ from notification_service import (
     notify_customer_order,
     safe_send_push_to_roles,
 )
+from pharmacy_loyalty import credit_marketplace_order_if_paid
 
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 
@@ -88,6 +89,7 @@ class MarketplaceOrderCreate(BaseModel):
 
     items: List[MarketplaceOrderItemCreate]
     discount_code: Optional[str] = None
+    pharmacy_loyalty_identifier: Optional[str] = None
     payment_method: str = "whatsapp"
 
 
@@ -214,6 +216,7 @@ def order_to_dict(order: models.MarketplaceOrder):
         "billing_address": getattr(order, "billing_address", None),
         "subtotal": order.subtotal,
         "discount_code": getattr(order, "discount_code", None),
+        "pharmacy_loyalty_identifier": getattr(order, "pharmacy_loyalty_identifier", None),
         "discount_percent": getattr(order, "discount_percent", 0),
         "discount_amount": getattr(order, "discount_amount", 0),
         "total": order.total,
@@ -263,6 +266,68 @@ def order_to_dict(order: models.MarketplaceOrder):
             for event in order.tracking_history
         ],
     }
+
+
+def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
+    lines = [
+        f"Hola Mayu, deseo confirmar mi pedido {order.order_code}.",
+        "",
+        "🛒 Productos:",
+    ]
+
+    for item in order.items:
+        product_name = item.product_name_snapshot or "Producto Mayu"
+        quantity = item.quantity or 1
+        line_total = float(item.total_snapshot or 0)
+        lines.append(f"- {product_name} x{quantity}: ${line_total:.2f} USD")
+
+    lines.extend(
+        [
+            "",
+            "🚚 Datos de entrega:",
+            f"Cliente: {order.customer_name}",
+            f"Teléfono: {order.customer_phone}",
+        ]
+    )
+
+    if order.customer_email:
+        lines.append(f"Email: {order.customer_email}")
+    if order.city:
+        lines.append(f"Ciudad: {order.city}")
+    if order.address:
+        lines.append(f"Dirección: {order.address}")
+    if order.delivery_notes:
+        lines.append(f"Notas de entrega: {order.delivery_notes}")
+
+    if getattr(order, "billing_name", None) or getattr(order, "billing_identification", None):
+        lines.extend(["", "🧾 Datos de facturación:"])
+        if order.billing_name:
+            lines.append(f"Nombre/Razón social: {order.billing_name}")
+        if order.billing_identification:
+            lines.append(f"Cédula/RUC: {order.billing_identification}")
+        if order.billing_email:
+            lines.append(f"Email factura: {order.billing_email}")
+        if order.billing_phone:
+            lines.append(f"Teléfono factura: {order.billing_phone}")
+        if order.billing_address:
+            lines.append(f"Dirección factura: {order.billing_address}")
+
+    lines.extend(["", f"Subtotal: ${float(order.subtotal or 0):.2f} USD"])
+
+    discount_amount = float(getattr(order, "discount_amount", 0) or 0)
+    if discount_amount > 0:
+        if getattr(order, "discount_code", None):
+            lines.append(f"Código Mayu Wellness Club: {order.discount_code}")
+        lines.append(f"Descuento Mayu Wellness Club 10%: -${discount_amount:.2f} USD")
+
+    if getattr(order, "pharmacy_loyalty_identifier", None):
+        lines.append(f"Tarjeta Mayu Magistral: {order.pharmacy_loyalty_identifier}")
+
+    lines.append(f"Total: ${float(order.total or 0):.2f} USD")
+    lines.append("")
+    lines.append("Gracias, quedo atento/a a la confirmación.")
+
+    return "\n".join(lines)
 
 
 def generate_order_code():
@@ -746,6 +811,11 @@ def create_marketplace_order(
         billing_address=payload.billing_address,
         subtotal=round(subtotal, 2),
         discount_code=discount_code,
+        pharmacy_loyalty_identifier=(
+            payload.pharmacy_loyalty_identifier.strip()
+            if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
+            else None
+        ),
         discount_percent=discount_percent,
         discount_amount=discount_amount,
         total=total,
@@ -776,20 +846,8 @@ def create_marketplace_order(
         product.stock = product.stock - quantity
         db.add(order_item)
 
-    whatsapp_lines = [
-        f"Hola Mayu, deseo confirmar mi pedido {order.order_code}.",
-        f"Cliente: {order.customer_name}",
-        f"Teléfono: {order.customer_phone}",
-        f"Subtotal: ${order.subtotal:.2f} USD",
-    ]
-
-    if discount_amount > 0:
-        whatsapp_lines.append(f"Código socio Mayu Club: {discount_code}")
-        whatsapp_lines.append(f"Descuento socio Mayu Club 10%: -${discount_amount:.2f} USD")
-
-    whatsapp_lines.append(f"Total: ${order.total:.2f} USD")
-
-    order.whatsapp_message = "\n".join(whatsapp_lines)
+    db.flush()
+    order.whatsapp_message = build_marketplace_whatsapp_message(order)
 
     db.commit()
     db.refresh(order)
@@ -917,6 +975,13 @@ def update_order_by_pharmacy_admin(
     if payload.shipping_notes is not None:
         order.shipping_notes = payload.shipping_notes
 
+    loyalty_result = None
+    if (
+        payload.payment_status is not None
+        and payload.payment_status.strip().lower() == "paid"
+    ):
+        loyalty_result = credit_marketplace_order_if_paid(db, order)
+
     db.commit()
     db.refresh(order)
 
@@ -944,6 +1009,7 @@ def update_order_by_pharmacy_admin(
     return {
         "message": "Orden actualizada por farmacia",
         "order": order_to_dict(order),
+        "loyalty": loyalty_result,
     }
 
 

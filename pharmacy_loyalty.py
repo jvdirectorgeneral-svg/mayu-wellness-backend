@@ -427,6 +427,188 @@ def credit_purchase(
     return card, transaction, True
 
 
+def _clean_phone(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+def _phones_match(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # Ecuador: permite enlazar 098... con 59398... sin mezclar registros distintos.
+    if len(left) >= 9 and len(right) >= 9:
+        return left[-9:] == right[-9:]
+    return False
+
+
+def _identifier_variants(value: Optional[str]) -> set:
+    if not value:
+        return set()
+    raw = str(value).strip()
+    if not raw:
+        return set()
+    without_query = raw.split("?", 1)[0].split("#", 1)[0].strip()
+    last_segment = without_query.rstrip("/").split("/")[-1].strip()
+    variants = {raw, without_query, last_segment}
+    variants.update({item.upper() for item in list(variants) if item})
+    variants.update({item.lower() for item in list(variants) if item})
+    variants.discard("")
+    return variants
+
+
+def find_pharmacy_customer_for_marketplace_order(db: Session, order):
+    identifiers = _identifier_variants(
+        getattr(order, "pharmacy_loyalty_identifier", None)
+        or getattr(order, "mayu_magistral_identifier", None)
+        or getattr(order, "pharmacy_card_code", None)
+    )
+    if identifiers:
+        card = (
+            db.query(models.PharmacyLoyaltyCard)
+            .filter(
+                models.PharmacyLoyaltyCard.active == True,
+                models.PharmacyLoyaltyCard.pharmacy_customer_id.isnot(None),
+                (
+                    models.PharmacyLoyaltyCard.qr_token.in_(identifiers)
+                    | models.PharmacyLoyaltyCard.card_code.in_(identifiers)
+                ),
+            )
+            .first()
+        )
+        if card and card.pharmacy_customer_id:
+            return (
+                db.query(models.PharmacyCustomer)
+                .filter(
+                    models.PharmacyCustomer.id == card.pharmacy_customer_id,
+                    models.PharmacyCustomer.is_active == True,
+                )
+                .first()
+            )
+
+    emails = {
+        (getattr(order, "customer_email", None) or "").strip().lower(),
+        (getattr(order, "billing_email", None) or "").strip().lower(),
+    }
+    emails.discard("")
+
+    phones = {
+        _clean_phone(getattr(order, "customer_phone", None)),
+        _clean_phone(getattr(order, "billing_phone", None)),
+    }
+    phones.discard("")
+
+    candidates = []
+    if emails:
+        candidates.extend(
+            db.query(models.PharmacyCustomer)
+            .filter(
+                models.PharmacyCustomer.is_active == True,
+                models.PharmacyCustomer.email.in_(emails),
+            )
+            .all()
+        )
+
+    if phones:
+        for customer in (
+            db.query(models.PharmacyCustomer)
+            .filter(models.PharmacyCustomer.is_active == True)
+            .all()
+        ):
+            customer_phone = _clean_phone(customer.phone)
+            if any(_phones_match(customer_phone, phone) for phone in phones):
+                candidates.append(customer)
+
+    seen = set()
+    unique_candidates = []
+    for customer in candidates:
+        if customer.id in seen:
+            continue
+        seen.add(customer.id)
+        unique_candidates.append(customer)
+
+    if not unique_candidates:
+        return None
+
+    for customer in unique_candidates:
+        email_match = customer.email.strip().lower() in emails
+        customer_phone = _clean_phone(customer.phone)
+        phone_match = any(_phones_match(customer_phone, phone) for phone in phones)
+        if email_match and phone_match:
+            return customer
+
+    return unique_candidates[0]
+
+
+def credit_marketplace_order_if_paid(db: Session, order):
+    payment_status = (getattr(order, "payment_status", "") or "").strip().lower()
+    if payment_status != "paid":
+        return {"credited": False, "detail": "El pedido aún no está pagado"}
+
+    existing = (
+        db.query(models.PharmacyPointsTransaction)
+        .filter(models.PharmacyPointsTransaction.marketplace_order_id == order.id)
+        .first()
+    )
+    if existing:
+        return {
+            "credited": False,
+            "already_credited": True,
+            "points_earned": existing.points_delta,
+            "transaction_id": existing.id,
+        }
+
+    customer = find_pharmacy_customer_for_marketplace_order(db, order)
+    if not customer:
+        return {
+            "credited": False,
+            "detail": "No existe socio Mayu Magistral con el correo/teléfono del pedido",
+        }
+
+    card, transaction, created = credit_purchase(
+        db,
+        customer.id,
+        getattr(order, "total", 0) or 0,
+        "marketplace_online",
+        reference=f"marketplace:{order.order_code}",
+        marketplace_order_id=order.id,
+        note="Compra online Marketplace Farmacia pagada",
+    )
+    db.flush()
+
+    push_result = None
+    wallet_sync = {
+        "apple": {"registered_devices": safe_get_apple_wallet_registration_count(db, card.id)},
+        "google": None,
+    }
+    if created and transaction.points_delta > 0:
+        push_result = safe_send_push_to_pharmacy_customer(
+            db=db,
+            pharmacy_customer_id=customer.id,
+            title="⭐ Puntos Mayu Magistral acreditados",
+            message=(
+                f"Tu compra online {order.order_code} sumó "
+                f"{transaction.points_delta} punto(s). "
+                f"Saldo actual: {card.points_balance} punto(s)."
+            ),
+        )
+        wallet_sync["apple"] = safe_send_apple_wallet_update_pushes(db, card)
+        wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
+
+    return {
+        "credited": created,
+        "customer_id": customer.id,
+        "card_id": card.id,
+        "points_earned": transaction.points_delta,
+        "points_balance": card.points_balance,
+        "transaction_id": transaction.id,
+        "push": push_result,
+        "wallet_sync": wallet_sync,
+    }
+
+
 @router.post("/register")
 def register_pharmacy_customer(
     payload: PharmacyCustomerRegister,
@@ -815,6 +997,7 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
         apns_host = os.getenv("APPLE_APNS_HOST", "https://api.push.apple.com")
         sent = 0
         errors = []
+        successes = []
         with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=20) as client:
             for registration in registrations:
                 try:
@@ -829,6 +1012,13 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
+                        successes.append(
+                            {
+                                "registration_id": registration.id,
+                                "status_code": response.status_code,
+                                "apns_id": response.headers.get("apns-id"),
+                            }
+                        )
                     else:
                         errors.append(
                             {
@@ -844,7 +1034,27 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                             "detail": str(exc),
                         }
                     )
-        return {"sent": sent, "errors": errors, "registered": len(registrations)}
+        print(
+            json.dumps(
+                {
+                    "event": "mayu_magistral_apple_wallet_push",
+                    "card_id": card.id,
+                    "points_balance": card.points_balance,
+                    "sent": sent,
+                    "registered": len(registrations),
+                    "successes": successes,
+                    "errors": errors,
+                },
+                default=str,
+            ),
+            flush=True,
+        )
+        return {
+            "sent": sent,
+            "errors": errors,
+            "registered": len(registrations),
+            "successes": successes,
+        }
     except Exception as exc:
         return {"sent": 0, "errors": [{"detail": str(exc)}], "registered": len(registrations)}
 
@@ -1368,7 +1578,19 @@ def get_apple_wallet_updated_serials(
     if registrations:
         token = extract_wallet_auth_token(request)
         if token not in {item.authentication_token for item in registrations}:
-            raise HTTPException(status_code=401, detail="No autorizado")
+            print(
+                json.dumps(
+                    {
+                        "event": "mayu_magistral_apple_wallet_update_auth_mismatch",
+                        "device": device_library_identifier,
+                        "pass_type": pass_type_identifier,
+                        "registrations": len(registrations),
+                        "auth_present": bool(token),
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
 
     updated_items = []
     for item in registrations:
@@ -1380,11 +1602,40 @@ def get_apple_wallet_updated_serials(
         updated_items.append((item, last_updated))
 
     if not updated_items:
+        print(
+            json.dumps(
+                {
+                    "event": "mayu_magistral_apple_wallet_no_updates",
+                    "device": device_library_identifier,
+                    "pass_type": pass_type_identifier,
+                    "passesUpdatedSince": passesUpdatedSince,
+                    "registrations": len(registrations),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
         return Response(status_code=204)
 
-    return {
+    response_payload = {
         "lastUpdated": max(last_updated for _, last_updated in updated_items),
         "serialNumbers": [item.serial_number for item, _ in updated_items],
+    }
+    print(
+        json.dumps(
+            {
+                "event": "mayu_magistral_apple_wallet_updates",
+                "device": device_library_identifier,
+                "pass_type": pass_type_identifier,
+                "passesUpdatedSince": passesUpdatedSince,
+                "response": response_payload,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+    return {
+        **response_payload,
     }
 
 
@@ -1397,6 +1648,20 @@ def get_updated_apple_wallet_pass(
 ):
     customer, card = get_pharmacy_card_by_apple_serial(db, serial_number)
     verify_pharmacy_wallet_request(request, card)
+    print(
+        json.dumps(
+            {
+                "event": "mayu_magistral_apple_wallet_pass_requested",
+                "serial_number": serial_number,
+                "pass_type": pass_type_identifier,
+                "card_id": card.id,
+                "points_balance": card.points_balance,
+                "updated_at": card.updated_at,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
     output_path = build_pharmacy_apple_wallet_file(customer, card)
     return FileResponse(
         path=output_path,
@@ -1412,6 +1677,11 @@ def get_updated_apple_wallet_pass(
 
 @router.post("/wallet/apple/v1/log")
 def apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log recibido", "payload": payload}
+
+
+@router.post("/wallet/apple/v1/v1/log")
+def apple_wallet_legacy_double_v1_log(payload: dict):
     return {"message": "Apple Wallet log recibido", "payload": payload}
 
 
@@ -1435,6 +1705,7 @@ def build_pharmacy_google_wallet_save_url(customer, card):
     private_key = clean_google_private_key(private_key)
 
     class_id = f"{issuer_id}.{class_suffix}"
+    ensure_pharmacy_google_wallet_class(service_account, class_id)
     generic_object = build_pharmacy_google_wallet_object(customer, card, issuer_id, class_id)
 
     claims = {
@@ -1446,6 +1717,52 @@ def build_pharmacy_google_wallet_save_url(customer, card):
 
     token = pyjwt.encode(claims, private_key, algorithm="RS256")
     return f"https://pay.google.com/gp/v/save/{token}"
+
+
+def ensure_pharmacy_google_wallet_class(service_account_info: dict, class_id: str):
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+    )
+    credentials.refresh(GoogleAuthRequest())
+    headers = {
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    }
+    url = f"https://walletobjects.googleapis.com/walletobjects/v1/genericClass/{class_id}"
+    existing = requests.get(url, headers=headers, timeout=20)
+    if existing.status_code == 200:
+        return
+    if existing.status_code != 404:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo verificar clase Google Wallet: {existing.text[:500]}",
+        )
+
+    class_body = {
+        "id": class_id,
+        "issuerName": "Mayu Magistral",
+        "reviewStatus": "UNDER_REVIEW",
+        "hexBackgroundColor": "#006054",
+        "localizedIssuerName": {
+            "defaultValue": {"language": "es", "value": "Mayu Magistral"}
+        },
+        "homepageUri": {
+            "uri": BASE_PUBLIC_URL,
+            "description": "Mayu Magistral",
+        },
+    }
+    created = requests.post(
+        "https://walletobjects.googleapis.com/walletobjects/v1/genericClass",
+        headers=headers,
+        json=class_body,
+        timeout=20,
+    )
+    if created.status_code not in {200, 201}:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo crear clase Google Wallet: {created.text[:500]}",
+        )
 
 
 def pharmacy_google_object_id(card, issuer_id: Optional[str] = None) -> str:
@@ -1526,6 +1843,7 @@ def safe_update_google_wallet_object(customer, card):
     try:
         service_account_info = get_google_wallet_service_account()
         class_id = f"{issuer_id}.{class_suffix}"
+        ensure_pharmacy_google_wallet_class(service_account_info, class_id)
         object_body = build_pharmacy_google_wallet_object(
             customer,
             card,
