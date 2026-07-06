@@ -22,7 +22,10 @@ from notification_service import (
     safe_send_push_to_roles,
 )
 from marketplace import build_marketplace_whatsapp_message
-from pharmacy_loyalty import credit_marketplace_order_if_paid
+from pharmacy_loyalty import (
+    credit_marketplace_order_if_paid,
+    sync_marketplace_loyalty_wallet_after_commit,
+)
 
 router = APIRouter(
     prefix="/payments/paypal/marketplace",
@@ -305,7 +308,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     )
 
     if existing_order:
-        loyalty_result = credit_marketplace_order_if_paid(db, existing_order)
+        loyalty_result = credit_marketplace_order_if_paid(
+            db,
+            existing_order,
+            sync_wallet=False,
+        )
         return {
             "marketplace_order_id": existing_order.id,
             "marketplace_order_code": existing_order.order_code,
@@ -491,7 +498,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         f"Pedido {order.order_code} pagado por {buyer_name}.",
     )
 
-    loyalty_result = credit_marketplace_order_if_paid(db, order)
+    loyalty_result = credit_marketplace_order_if_paid(db, order, sync_wallet=False)
 
     return {
         "marketplace_order_id": order.id,
@@ -999,6 +1006,14 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
         pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
         db.commit()
         db.refresh(payment)
+        if pharmacy_fulfillment and pharmacy_fulfillment.get("loyalty"):
+            pharmacy_fulfillment["loyalty"] = (
+                sync_marketplace_loyalty_wallet_after_commit(
+                    db,
+                    pharmacy_fulfillment["loyalty"],
+                    pharmacy_fulfillment.get("marketplace_order_code"),
+                )
+            )
         return payment, education_fulfillment, pharmacy_fulfillment
 
     token = get_token()
@@ -1037,6 +1052,12 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
 
     db.commit()
     db.refresh(payment)
+    if pharmacy_fulfillment and pharmacy_fulfillment.get("loyalty"):
+        pharmacy_fulfillment["loyalty"] = sync_marketplace_loyalty_wallet_after_commit(
+            db,
+            pharmacy_fulfillment["loyalty"],
+            pharmacy_fulfillment.get("marketplace_order_code"),
+        )
 
     return payment, education_fulfillment, pharmacy_fulfillment
 

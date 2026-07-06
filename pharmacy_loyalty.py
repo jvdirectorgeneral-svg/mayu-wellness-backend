@@ -542,7 +542,54 @@ def find_pharmacy_customer_for_marketplace_order(db: Session, order):
     return unique_candidates[0]
 
 
-def credit_marketplace_order_if_paid(db: Session, order):
+def sync_marketplace_loyalty_wallet_after_commit(
+    db: Session,
+    loyalty_result: Optional[dict],
+    order_code: Optional[str] = None,
+):
+    if not loyalty_result or not loyalty_result.get("credited"):
+        return loyalty_result
+
+    points_earned = loyalty_result.get("points_earned") or 0
+    card_id = loyalty_result.get("card_id")
+    customer_id = loyalty_result.get("customer_id")
+    if not card_id or not customer_id or points_earned <= 0:
+        return loyalty_result
+
+    card = (
+        db.query(models.PharmacyLoyaltyCard)
+        .filter(models.PharmacyLoyaltyCard.id == card_id)
+        .first()
+    )
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == customer_id)
+        .first()
+    )
+    if not card or not customer:
+        return loyalty_result
+
+    push_result = safe_send_push_to_pharmacy_customer(
+        db=db,
+        pharmacy_customer_id=customer.id,
+        title="⭐ Puntos Mayu Magistral acreditados",
+        message=(
+            f"Tu compra online {order_code or ''} sumó "
+            f"{points_earned} punto(s). "
+            f"Saldo actual: {card.points_balance} punto(s)."
+        ),
+    )
+    wallet_sync = {
+        "apple": safe_send_apple_wallet_update_pushes(db, card),
+        "google": safe_update_google_wallet_object(customer, card),
+    }
+    loyalty_result["push"] = push_result
+    loyalty_result["wallet_sync"] = wallet_sync
+    loyalty_result["points_balance"] = card.points_balance
+    return loyalty_result
+
+
+def credit_marketplace_order_if_paid(db: Session, order, sync_wallet: bool = True):
     payment_status = (getattr(order, "payment_status", "") or "").strip().lower()
     if payment_status != "paid":
         return {"credited": False, "detail": "El pedido aún no está pagado"}
@@ -578,35 +625,26 @@ def credit_marketplace_order_if_paid(db: Session, order):
     )
     db.flush()
 
-    push_result = None
-    wallet_sync = {
-        "apple": {"registered_devices": safe_get_apple_wallet_registration_count(db, card.id)},
-        "google": None,
-    }
-    if created and transaction.points_delta > 0:
-        push_result = safe_send_push_to_pharmacy_customer(
-            db=db,
-            pharmacy_customer_id=customer.id,
-            title="⭐ Puntos Mayu Magistral acreditados",
-            message=(
-                f"Tu compra online {order.order_code} sumó "
-                f"{transaction.points_delta} punto(s). "
-                f"Saldo actual: {card.points_balance} punto(s)."
-            ),
-        )
-        wallet_sync["apple"] = safe_send_apple_wallet_update_pushes(db, card)
-        wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
-
-    return {
+    result = {
         "credited": created,
         "customer_id": customer.id,
         "card_id": card.id,
         "points_earned": transaction.points_delta,
         "points_balance": card.points_balance,
         "transaction_id": transaction.id,
-        "push": push_result,
-        "wallet_sync": wallet_sync,
+        "push": None,
+        "wallet_sync": {
+            "apple": {"registered_devices": safe_get_apple_wallet_registration_count(db, card.id)},
+            "google": None,
+        },
     }
+    if sync_wallet:
+        result = sync_marketplace_loyalty_wallet_after_commit(
+            db,
+            result,
+            getattr(order, "order_code", None),
+        )
+    return result
 
 
 @router.post("/register")
