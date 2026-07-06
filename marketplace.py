@@ -15,7 +15,10 @@ from notification_service import (
     notify_customer_order,
     safe_send_push_to_roles,
 )
-from pharmacy_loyalty import credit_marketplace_order_if_paid
+from pharmacy_loyalty import (
+    credit_marketplace_order_if_paid,
+    sync_marketplace_loyalty_wallet_after_commit,
+)
 
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 
@@ -980,10 +983,20 @@ def update_order_by_pharmacy_admin(
         payload.payment_status is not None
         and payload.payment_status.strip().lower() == "paid"
     ):
-        loyalty_result = credit_marketplace_order_if_paid(db, order)
+        loyalty_result = credit_marketplace_order_if_paid(
+            db,
+            order,
+            sync_wallet=False,
+        )
 
     db.commit()
     db.refresh(order)
+    if loyalty_result:
+        loyalty_result = sync_marketplace_loyalty_wallet_after_commit(
+            db,
+            loyalty_result,
+            order.order_code,
+        )
 
     if status_changed and payload.status in {"approved", "admin_approved"}:
         notify_customer_order(
