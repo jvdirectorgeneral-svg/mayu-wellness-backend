@@ -21,6 +21,8 @@ from notification_service import (
     notify_customer_order,
     safe_send_push_to_roles,
 )
+from marketplace import build_marketplace_whatsapp_message
+from pharmacy_loyalty import credit_marketplace_order_if_paid
 
 router = APIRouter(
     prefix="/payments/paypal/marketplace",
@@ -91,6 +93,7 @@ class MarketplacePayPalCreateCartOrderRequest(BaseModel):
     billing_address: Optional[str] = None
 
     discount_code: Optional[str] = None
+    pharmacy_loyalty_identifier: Optional[str] = None
     currency: str = "USD"
     items: List[MarketplaceCartItemCreate]
 
@@ -302,9 +305,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     )
 
     if existing_order:
+        loyalty_result = credit_marketplace_order_if_paid(db, existing_order)
         return {
             "marketplace_order_id": existing_order.id,
             "marketplace_order_code": existing_order.order_code,
+            "loyalty": loyalty_result,
             "already_created": True,
         }
 
@@ -382,6 +387,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
 
     subtotal = round(subtotal, 2)
     discount_code = marketplace.get("discount_code")
+    pharmacy_loyalty_identifier = (
+        marketplace.get("pharmacy_loyalty_identifier")
+        or marketplace.get("mayu_magistral_identifier")
+        or marketplace.get("pharmacy_card_code")
+    )
     discount_percent = float(marketplace.get("discount_percent") or 0)
     discount_amount = float(marketplace.get("discount_amount") or 0)
     total = round(subtotal - discount_amount, 2)
@@ -402,6 +412,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         billing_address=billing_address,
         subtotal=subtotal,
         discount_code=discount_code,
+        pharmacy_loyalty_identifier=(
+            str(pharmacy_loyalty_identifier).strip()
+            if pharmacy_loyalty_identifier and str(pharmacy_loyalty_identifier).strip()
+            else None
+        ),
         discount_percent=discount_percent,
         discount_amount=discount_amount,
         total=total,
@@ -452,6 +467,8 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         })
 
     db.flush()
+    order.whatsapp_message = build_marketplace_whatsapp_message(order)
+    db.flush()
 
     add_tracking_history(
         db,
@@ -474,6 +491,8 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         f"Pedido {order.order_code} pagado por {buyer_name}.",
     )
 
+    loyalty_result = credit_marketplace_order_if_paid(db, order)
+
     return {
         "marketplace_order_id": order.id,
         "marketplace_order_code": order.order_code,
@@ -481,6 +500,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         "subtotal": subtotal,
         "discount_amount": discount_amount,
         "total": total,
+        "loyalty": loyalty_result,
         "already_created": False,
     }
 
@@ -714,7 +734,7 @@ def create_marketplace_paypal_order(
             }
         ],
         "application_context": {
-            "brand_name": "Mayu Wellness Club",
+            "brand_name": "Mayu Magistral",
             "user_action": "PAY_NOW",
             "return_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/marketplace/success",
             "cancel_url": "https://mayu-wellness-backend-v1.onrender.com/payments/paypal/marketplace/cancel",
@@ -904,6 +924,11 @@ def create_marketplace_paypal_cart_order(
                 "quantity": sum(item["quantity"] for item in items_data),
                 "subtotal": subtotal,
                 "discount_code": discount_code,
+                "pharmacy_loyalty_identifier": (
+                    payload.pharmacy_loyalty_identifier.strip()
+                    if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
+                    else None
+                ),
                 "discount_percent": discount_percent,
                 "discount_amount": discount_amount,
                 "total": total,
@@ -1058,7 +1083,12 @@ def paypal_marketplace_success(
 
     if payment.payment_type == "marketplace_pharmacy":
         return RedirectResponse(
-            url="https://mayuwellnesclub.com/#/marketplace?payment=success",
+            url=(
+                "mayuapp://marketplace/paypal-success"
+                f"?paypal_order_id={payment.paypal_order_id}"
+                f"&payment_id={payment.id}"
+                "&payment=success"
+            ),
             status_code=302,
         )
 
