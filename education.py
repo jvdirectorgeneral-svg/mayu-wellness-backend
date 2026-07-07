@@ -659,13 +659,14 @@ def view_protected_resource(
 
         viewer = f"""
         <div class="video-wrap">
-          <video controls controlsList="nodownload noplaybackrate" disablePictureInPicture
+          <video id="mayuProtectedVideo" controls playsinline webkit-playsinline
+            controlsList="nodownload nofullscreen noremoteplayback noplaybackrate" disablePictureInPicture
             oncontextmenu="return false;"
-            style="width:100%;max-height:80vh;border-radius:16px;background:#000;">
+            style="width:100%;max-height:80vh;border-radius:16px;background:#000;display:block;">
             <source src="{safe_video_url}" type="video/mp4">
             Tu navegador no puede reproducir este video.
           </video>
-          <div class="page-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
+          <div class="page-watermark video-watermark">MAYU EDUCACIÓN<br>{user_name}<br>{user_email}</div>
         </div>
         """
     elif resource_type in {"pdf", "document"}:
@@ -726,6 +727,11 @@ def view_protected_resource(
         .page-wrap, .video-wrap {{
           position: relative;
         }}
+        .video-wrap {{
+          overflow: hidden;
+          border-radius: 16px;
+          background: #000;
+        }}
         .page-watermark {{
           position: absolute;
           top: 40%;
@@ -736,6 +742,15 @@ def view_protected_resource(
           font-size: 30px;
           text-align: center;
           pointer-events: none;
+        }}
+        .video-watermark {{
+          position: absolute;
+          z-index: 5;
+          top: 50%;
+          left: 50%;
+          width: 80%;
+          color: rgba(0,128,128,0.30);
+          text-shadow: 0 1px 8px rgba(255,255,255,0.16);
         }}
         .box {{
           margin-top: 18px;
@@ -757,6 +772,17 @@ def view_protected_resource(
         {viewer}
         {extra_content_html}
       </div>
+      <script>
+        const video = document.getElementById('mayuProtectedVideo');
+        if (video) {{
+          video.addEventListener('webkitbeginfullscreen', function () {{
+            try {{ video.webkitExitFullscreen(); }} catch (e) {{}}
+          }});
+          video.addEventListener('enterpictureinpicture', function () {{
+            try {{ document.exitPictureInPicture(); }} catch (e) {{}}
+          }});
+        }}
+      </script>
     </body>
     </html>
     """
