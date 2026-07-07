@@ -403,6 +403,13 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     discount_amount = float(marketplace.get("discount_amount") or 0)
     total = round(subtotal - discount_amount, 2)
 
+    payment_provider = (getattr(payment, "provider", None) or "paypal").strip() or "paypal"
+    payment_reference = (
+        getattr(payment, "payment_reference", None)
+        or getattr(payment, "paypal_order_id", None)
+        or str(payment.id)
+    )
+
     order = models.MarketplaceOrder(
         order_code=generate_marketplace_order_code(),
         user_id=payment.user_id,
@@ -428,11 +435,13 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         discount_amount=discount_amount,
         total=total,
         currency=payment.currency,
-        payment_method="paypal",
+        payment_method=payment_provider,
         payment_status="paid",
         status="paid",
         whatsapp_message=None,
         raw_payment_payload=json.dumps({
+            "payment_provider": payment_provider,
+            "payment_reference": payment_reference,
             "paypal_order_id": payment.paypal_order_id,
             "membership_payment_id": payment.id,
             "marketplace": marketplace,

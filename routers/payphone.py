@@ -2,7 +2,7 @@ import os
 import time
 import json
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +13,8 @@ from database import SessionLocal
 from dependencies import get_current_user
 import models
 from member_cards import get_or_create_card
+from marketplace_paypal import fulfill_pharmacy_payment_if_needed
+from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -63,12 +65,39 @@ class PayphoneConfirmRequest(BaseModel):
     transactionId: Optional[str] = None
 
 
+class PayphoneMarketplaceCartItem(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+class PayphoneMarketplaceCartRequest(BaseModel):
+    item_type: str = "pharmacy"
+    user_id: int
+    buyer_name: Optional[str] = None
+    buyer_phone: Optional[str] = None
+    buyer_email: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    delivery_notes: Optional[str] = None
+
+    billing_name: Optional[str] = None
+    billing_identification: Optional[str] = None
+    billing_email: Optional[str] = None
+    billing_phone: Optional[str] = None
+    billing_address: Optional[str] = None
+
+    discount_code: Optional[str] = None
+    pharmacy_loyalty_identifier: Optional[str] = None
+    currency: str = "USD"
+    items: List[PayphoneMarketplaceCartItem]
+
+
 def cents(amount: float) -> int:
     return int(round(float(amount) * 100))
 
 
 def generate_client_transaction_id(prefix: str = "MW") -> str:
-    raw = f"{prefix}{int(time.time())}"
+    raw = f"{prefix}{int(time.time() * 1000)}"
     return raw[:15]
 
 
@@ -458,6 +487,237 @@ def process_membership_initial_confirmation(
     )
 
 
+def build_marketplace_payphone_payment(
+    payload: PayphoneMarketplaceCartRequest,
+    db: Session,
+):
+    if payload.item_type.strip().lower() != "pharmacy":
+        raise HTTPException(status_code=400, detail="Este endpoint es solo para carrito de farmacia")
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="El carrito está vacío")
+
+    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    buyer_name = (payload.buyer_name or user.name or "").strip()
+    buyer_phone = (payload.buyer_phone or user.phone or "").strip()
+    buyer_email = (payload.buyer_email or user.email or "").strip()
+
+    if not buyer_name:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+
+    if not buyer_phone:
+        raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
+
+    subtotal = 0.0
+    items_data = []
+
+    for item in payload.items:
+        if item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
+
+        product = (
+            db.query(models.MarketplaceProduct)
+            .filter(models.MarketplaceProduct.id == item.product_id)
+            .filter(models.MarketplaceProduct.active == True)
+            .first()
+        )
+
+        if not product:
+            raise HTTPException(status_code=404, detail=f"Producto {item.product_id} no encontrado")
+
+        if product.stock < item.quantity:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {product.name}")
+
+        unit_price = float(product.price or 0)
+        line_total = round(unit_price * item.quantity, 2)
+        subtotal += line_total
+
+        items_data.append({
+            "product_id": product.id,
+            "title": product.name,
+            "quantity": item.quantity,
+            "unit_price": unit_price,
+            "total": line_total,
+        })
+
+    subtotal = round(subtotal, 2)
+    discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
+    discount_percent = 0.0
+    discount_amount = 0.0
+
+    if discount_code:
+        discount_percent = 10.0
+        discount_amount = round(subtotal * 0.10, 2)
+
+    total = round(subtotal - discount_amount, 2)
+
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="El total debe ser mayor a cero")
+
+    client_transaction_id = generate_client_transaction_id("MP")
+    description = f"Mayu Marketplace Farmacia - {len(items_data)} productos"
+
+    payphone_data = create_payphone_link(
+        amount=total,
+        description=description,
+        client_transaction_id=client_transaction_id,
+        buyer_email=buyer_email,
+        buyer_name=buyer_name,
+    )
+
+    payment = models.MembershipPayment(
+        user_id=user.id,
+        order_id=None,
+        amount=total,
+        currency=payload.currency,
+        status="created",
+        provider="payphone",
+        payment_type="marketplace_pharmacy",
+        payment_reference=client_transaction_id,
+        payer_email=buyer_email,
+        raw_payload=json.dumps({
+            "payphone": payphone_data,
+            "marketplace": {
+                "item_type": "pharmacy",
+                "items": [
+                    {
+                        "product_id": item["product_id"],
+                        "title": item["title"],
+                        "quantity": item["quantity"],
+                        "unit_price": item["unit_price"],
+                        "total": item["total"],
+                    }
+                    for item in items_data
+                ],
+                "quantity": sum(item["quantity"] for item in items_data),
+                "subtotal": subtotal,
+                "discount_code": discount_code,
+                "pharmacy_loyalty_identifier": (
+                    payload.pharmacy_loyalty_identifier.strip()
+                    if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
+                    else None
+                ),
+                "discount_percent": discount_percent,
+                "discount_amount": discount_amount,
+                "total": total,
+            },
+            "buyer": {
+                "user_id": user.id,
+                "name": buyer_name,
+                "email": buyer_email,
+                "phone": buyer_phone,
+                "city": payload.city,
+                "address": payload.address,
+                "delivery_notes": payload.delivery_notes,
+            },
+            "billing": {
+                "name": payload.billing_name,
+                "identification": payload.billing_identification,
+                "email": payload.billing_email,
+                "phone": payload.billing_phone,
+                "address": payload.billing_address,
+            },
+        }),
+    )
+
+    safe_set(payment, "paypal_order_id", client_transaction_id)
+
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "message": "Link PayPhone carrito farmacia creado",
+        "payment_id": payment.id,
+        "clientTransactionId": client_transaction_id,
+        "item_type": "pharmacy",
+        "items": items_data,
+        "subtotal": subtotal,
+        "discount_code": discount_code,
+        "discount_percent": discount_percent,
+        "discount_amount": discount_amount,
+        "amount": total,
+        "currency": payload.currency,
+        "buyer_name": buyer_name,
+        "buyer_phone": buyer_phone,
+        "buyer_email": buyer_email,
+        "payment_url": payphone_data.get("link"),
+        "payphone": payphone_data,
+    }
+
+
+def confirm_marketplace_payphone_payment(
+    payload: PayphoneConfirmRequest,
+    db: Session,
+):
+    payment = find_local_payment(
+        db=db,
+        client_transaction_id=payload.clientTransactionId,
+        transaction_id=payload.transactionId,
+        payphone_id=payload.id,
+    )
+
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pago marketplace PayPhone no encontrado")
+
+    if payment.payment_type != "marketplace_pharmacy":
+        raise HTTPException(status_code=400, detail="Este pago no pertenece a Marketplace Farmacia")
+
+    payphone_payload = {
+        "id": payload.id,
+        "clientTransactionId": payload.clientTransactionId or payment.payment_reference,
+        "transactionId": payload.transactionId,
+        "source": "manual_confirm_after_link_payment",
+        "note": (
+            "Confirmación manual del link PayPhone. "
+            "Se procesa el pedido marketplace, puntos y Wallet."
+        ),
+    }
+
+    if payment.status not in ["paid", "verified"]:
+        previous_payload = payment.raw_payload
+        payment.status = "paid"
+        payment.paid_at = datetime.utcnow()
+        payment.admin_verified = True
+        payment.admin_verified_at = datetime.utcnow()
+        payment.raw_payload = json.dumps({
+            "previous_payload": previous_payload,
+            "payphone": payphone_payload,
+        })
+
+        if payload.transactionId:
+            payment.payment_reference = payload.transactionId
+
+    pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
+
+    db.commit()
+    db.refresh(payment)
+
+    if pharmacy_fulfillment and pharmacy_fulfillment.get("loyalty"):
+        pharmacy_fulfillment["loyalty"] = sync_marketplace_loyalty_wallet_after_commit(
+            db,
+            pharmacy_fulfillment.get("loyalty"),
+            pharmacy_fulfillment.get("marketplace_order_code"),
+        )
+
+    return {
+        "success": True,
+        "message": "Pago PayPhone confirmado y pedido marketplace procesado.",
+        "payment_id": payment.id,
+        "payment_status": payment.status,
+        "payment_type": payment.payment_type,
+        "clientTransactionId": payload.clientTransactionId or payment.paypal_order_id,
+        "transactionId": payload.transactionId,
+        "amount": float(payment.amount or 0),
+        "currency": payment.currency,
+        "pharmacy_fulfillment": pharmacy_fulfillment,
+    }
+
+
 @router.get("/health")
 def payphone_health():
     return {
@@ -575,6 +835,22 @@ def create_membership_initial_payment(
     }
 
 
+@router.post("/marketplace/create-cart-order")
+def create_marketplace_payphone_cart_order(
+    payload: PayphoneMarketplaceCartRequest,
+    db: Session = Depends(get_db),
+):
+    return build_marketplace_payphone_payment(payload, db)
+
+
+@router.post("/marketplace/confirm-order")
+def confirm_marketplace_payphone_order(
+    payload: PayphoneConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    return confirm_marketplace_payphone_payment(payload, db)
+
+
 @router.post("/confirm")
 def confirm_payment(
     payload: PayphoneConfirmRequest,
@@ -640,14 +916,26 @@ async def payphone_webhook(
         }
 
     if is_payphone_paid(payload):
+        if payment.payment_type == "marketplace_pharmacy":
+            confirm_payload = PayphoneConfirmRequest(
+                id=payload.get("id"),
+                clientTransactionId=client_transaction_id,
+                transactionId=payload.get("transactionId"),
+            )
+            return confirm_marketplace_payphone_payment(confirm_payload, db)
+
         return activate_membership_from_payment(
             db=db,
             payment=payment,
             payphone_payload=payload,
         )
 
+    previous_payload = payment.raw_payload
     payment.status = "pending"
-    payment.raw_payload = json.dumps(payload)
+    payment.raw_payload = json.dumps({
+        "previous_payload": previous_payload,
+        "payphone_pending": payload,
+    })
     db.commit()
 
     return {
