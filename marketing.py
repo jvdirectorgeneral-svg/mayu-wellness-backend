@@ -4,6 +4,7 @@ import resend
 import requests
 import cloudinary
 import cloudinary.uploader
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -22,6 +23,8 @@ from models import (
     MarketingCampaignRecipient,
     MarketingEvent,
     PushNotificationToken,
+    MarketplaceOrder,
+    EducationOrder,
 )
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
@@ -34,6 +37,8 @@ VALID_TARGET_GROUPS = {
     "active_members",
     "inactive_members",
     "ambassadors",
+    "pharmacy_marketplace",
+    "education_marketplace",
 }
 VALID_CAMPAIGN_STATUS = {"draft", "scheduled", "sent"}
 
@@ -295,37 +300,199 @@ def recipient_to_dict(recipient: MarketingCampaignRecipient):
         "clicked": recipient.clicked_at is not None,
         "read": recipient.read_at is not None,
         "error_message": recipient.error_message,
+        "whatsapp_url": build_marketing_whatsapp_url(
+            recipient.phone_snapshot,
+            recipient.campaign.message if recipient.campaign else None,
+        )
+        if recipient.campaign and recipient.campaign.channel == "whatsapp"
+        else None,
     }
 
 
-def contact_to_dict(user: User, channel: str):
+def normalize_whatsapp_phone(phone: Optional[str]):
+    if not phone:
+        return None
+
+    digits = "".join(ch for ch in str(phone) if ch.isdigit())
+
+    if not digits:
+        return None
+
+    if digits.startswith("00"):
+        digits = digits[2:]
+
+    if digits.startswith("593"):
+        return digits
+
+    if digits.startswith("0") and len(digits) >= 9:
+        return "593" + digits[1:]
+
+    if len(digits) == 9:
+        return "593" + digits
+
+    return digits
+
+
+def build_marketing_whatsapp_url(phone: Optional[str], message: Optional[str] = None):
+    normalized = normalize_whatsapp_phone(phone)
+    if not normalized:
+        return None
+
+    url = f"https://wa.me/{normalized}"
+    if message:
+        url += f"?text={quote(message)}"
+    return url
+
+
+def make_user_contact(user: User, source: str = "mayu_wellness"):
     return {
         "id": user.id,
+        "user_id": user.id,
         "name": user.name,
         "role": user.role,
         "membership_active": user.membership_active,
         "email": user.email,
         "phone": user.phone,
-        "contact": user.email if channel == "email" else user.phone,
+        "source": source,
+    }
+
+
+def make_order_contact(
+    *,
+    source: str,
+    order_id: int,
+    order_code: str,
+    name: str,
+    email: Optional[str],
+    phone: Optional[str],
+    total: Optional[float],
+    paid_at: Optional[datetime],
+    user_id: Optional[int] = None,
+):
+    return {
+        "id": f"{source}:{order_id}",
+        "user_id": user_id,
+        "name": name or "Cliente Mayu",
+        "role": source,
+        "membership_active": None,
+        "email": email,
+        "phone": phone,
+        "source": source,
+        "order_id": order_id,
+        "order_code": order_code,
+        "total": total,
+        "paid_at": paid_at,
+    }
+
+
+def dedupe_contacts(contacts):
+    seen = set()
+    unique = []
+
+    for contact in contacts:
+        email = (contact.get("email") or "").strip().lower()
+        phone = normalize_whatsapp_phone(contact.get("phone")) or ""
+        key = email or phone or str(contact.get("id"))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique.append(contact)
+
+    return unique
+
+
+def contact_to_dict(contact, channel: str, message: Optional[str] = None):
+    if isinstance(contact, User):
+        contact = make_user_contact(contact)
+
+    email = contact.get("email")
+    phone = contact.get("phone")
+
+    return {
+        "id": contact.get("id"),
+        "user_id": contact.get("user_id"),
+        "name": contact.get("name"),
+        "role": contact.get("role"),
+        "membership_active": contact.get("membership_active"),
+        "email": email,
+        "phone": phone,
+        "contact": email if channel == "email" else phone,
         "channel": channel,
+        "source": contact.get("source"),
+        "order_id": contact.get("order_id"),
+        "order_code": contact.get("order_code"),
+        "total": contact.get("total"),
+        "paid_at": contact.get("paid_at"),
+        "whatsapp_url": build_marketing_whatsapp_url(phone, message)
+        if channel == "whatsapp"
+        else None,
     }
 
 
 def get_audience_users(db: Session, target_group: str):
-    query = db.query(User).filter(User.is_active == True)
+    if target_group in {"members", "active_members", "inactive_members", "ambassadors"}:
+        query = db.query(User).filter(User.is_active == True)
 
-    if target_group == "members":
-        query = query.filter(User.role == "member")
-    elif target_group == "active_members":
-        query = query.filter(User.role == "member", User.membership_active == True)
-    elif target_group == "inactive_members":
-        query = query.filter(User.role == "member", User.membership_active == False)
-    elif target_group == "ambassadors":
-        query = query.filter(User.role == "ambassador")
-    else:
-        raise HTTPException(status_code=400, detail="Audiencia inválida")
+        if target_group == "members":
+            query = query.filter(User.role == "member")
+        elif target_group == "active_members":
+            query = query.filter(User.role == "member", User.membership_active == True)
+        elif target_group == "inactive_members":
+            query = query.filter(User.role == "member", User.membership_active == False)
+        elif target_group == "ambassadors":
+            query = query.filter(User.role == "ambassador")
 
-    return query.order_by(User.name.asc()).all()
+        return [make_user_contact(user) for user in query.order_by(User.name.asc()).all()]
+
+    if target_group == "pharmacy_marketplace":
+        orders = (
+            db.query(MarketplaceOrder)
+            .filter(MarketplaceOrder.payment_status == "paid")
+            .order_by(MarketplaceOrder.created_at.desc())
+            .all()
+        )
+
+        return dedupe_contacts([
+            make_order_contact(
+                source="pharmacy_marketplace",
+                order_id=order.id,
+                order_code=order.order_code,
+                name=order.customer_name,
+                email=order.customer_email or order.billing_email,
+                phone=order.customer_phone or order.billing_phone,
+                total=order.total,
+                paid_at=order.paid_at,
+                user_id=order.user_id,
+            )
+            for order in orders
+        ])
+
+    if target_group == "education_marketplace":
+        orders = (
+            db.query(EducationOrder)
+            .filter(EducationOrder.payment_status == "paid")
+            .order_by(EducationOrder.created_at.desc())
+            .all()
+        )
+
+        return dedupe_contacts([
+            make_order_contact(
+                source="education_marketplace",
+                order_id=order.id,
+                order_code=order.order_code,
+                name=order.buyer_name,
+                email=order.buyer_email,
+                phone=order.buyer_phone,
+                total=order.total,
+                paid_at=order.paid_at,
+                user_id=order.user_id,
+            )
+            for order in orders
+        ])
+
+    raise HTTPException(status_code=400, detail="Audiencia inválida")
 
 
 def add_marketing_event(
@@ -402,21 +569,37 @@ def send_push_to_latest_user_token(
 
 
 def send_campaign_now(db: Session, campaign: MarketingCampaign):
-    users = get_audience_users(db, campaign.target_group)
+    contacts = get_audience_users(db, campaign.target_group)
 
     created_recipients = 0
     total_success = 0
     total_errors = 0
 
-    for user in users:
-        existing_recipient = (
-            db.query(MarketingCampaignRecipient)
-            .filter(
-                MarketingCampaignRecipient.campaign_id == campaign.id,
-                MarketingCampaignRecipient.user_id == user.id,
-            )
-            .first()
+    for contact in contacts:
+        user_id = contact.get("user_id")
+        email = contact.get("email")
+        phone = contact.get("phone")
+        name = contact.get("name") or "Cliente Mayu"
+        role = contact.get("role") or contact.get("source") or campaign.target_group
+
+        existing_query = db.query(MarketingCampaignRecipient).filter(
+            MarketingCampaignRecipient.campaign_id == campaign.id,
         )
+
+        if user_id:
+            existing_query = existing_query.filter(
+                MarketingCampaignRecipient.user_id == user_id,
+            )
+        elif email:
+            existing_query = existing_query.filter(
+                MarketingCampaignRecipient.email_snapshot == email,
+            )
+        elif phone:
+            existing_query = existing_query.filter(
+                MarketingCampaignRecipient.phone_snapshot == phone,
+            )
+
+        existing_recipient = existing_query.first()
 
         if existing_recipient:
             continue
@@ -428,7 +611,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         try:
             if campaign.channel == "email":
                 send_marketing_email(
-                    to_email=user.email,
+                    to_email=email,
                     subject=campaign.subject or campaign.title,
                     message=campaign.message,
                     image_url=getattr(campaign, "image_url", None),
@@ -436,9 +619,14 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                 total_success += 1
 
             elif campaign.channel == "push":
+                if not user_id:
+                    raise Exception(
+                        "Este contacto no está enlazado a usuario de app con token push"
+                    )
+
                 send_push_to_latest_user_token(
                     db=db,
-                    user_id=user.id,
+                    user_id=user_id,
                     title=campaign.title,
                     message=campaign.message,
                     image_url=getattr(campaign, "image_url", None),
@@ -446,7 +634,9 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                 total_success += 1
 
             elif campaign.channel == "whatsapp":
-                delivery_status = "sent"
+                if not build_marketing_whatsapp_url(phone, campaign.message):
+                    raise Exception("Contacto sin teléfono válido para WhatsApp")
+                delivery_status = "ready"
                 total_success += 1
 
         except Exception as e:
@@ -457,11 +647,11 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
 
         recipient = MarketingCampaignRecipient(
             campaign_id=campaign.id,
-            user_id=user.id,
-            name_snapshot=user.name,
-            email_snapshot=user.email,
-            phone_snapshot=user.phone,
-            role_snapshot=user.role,
+            user_id=user_id,
+            name_snapshot=name,
+            email_snapshot=email,
+            phone_snapshot=phone,
+            role_snapshot=role,
             delivery_status=delivery_status,
             sent_at=sent_at,
             error_message=error_message,
@@ -474,7 +664,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
             db=db,
             campaign_id=campaign.id,
             recipient_id=recipient.id,
-            user_id=user.id,
+            user_id=user_id,
             event_type=delivery_status,
             channel=campaign.channel,
             metadata=error_message,
@@ -489,7 +679,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
         "campaign_id": campaign.id,
         "channel": campaign.channel,
         "target_group": campaign.target_group,
-        "total_recipients": len(users),
+        "total_recipients": len(contacts),
         "new_recipients_created": created_recipients,
         "total_success": total_success,
         "total_errors": total_errors,
@@ -1008,7 +1198,7 @@ def audience_preview(
         "channel": channel,
         "target_group": target_group,
         "total_contacts": len(users),
-        "items": [contact_to_dict(user, channel) for user in users],
+        "items": [contact_to_dict(user, channel, message=None) for user in users],
     }
 
 
