@@ -553,6 +553,69 @@ class PharmacyPointsTransaction(Base):
     marketplace_order = relationship("MarketplaceOrder")
 
 
+class DoctorPrescriber(Base):
+    __tablename__ = "doctor_prescribers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password = Column(String, nullable=False)
+    phone = Column(String, nullable=False)
+    cedula = Column(String, unique=True, nullable=True, index=True)
+    birth_date = Column(DateTime, nullable=True)
+    city = Column(String, nullable=True)
+    address = Column(String, nullable=True)
+
+    bank_name = Column(String, nullable=True)
+    bank_account_type = Column(String, nullable=False)
+    bank_account_number = Column(String, nullable=False)
+
+    doctor_code = Column(String, unique=True, nullable=False, index=True)
+    qr_token = Column(String, unique=True, nullable=False, index=True)
+    commission_rate_bps = Column(Integer, nullable=False, default=3000)
+    total_sales_cents = Column(Integer, nullable=False, default=0)
+    commission_balance_cents = Column(Integer, nullable=False, default=0)
+    lifetime_commission_cents = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    transactions = relationship(
+        "DoctorCommissionTransaction",
+        back_populates="doctor",
+        cascade="all, delete-orphan",
+        order_by="DoctorCommissionTransaction.created_at.desc()",
+    )
+
+
+class DoctorCommissionTransaction(Base):
+    __tablename__ = "doctor_commission_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_prescriber_id = Column(
+        Integer,
+        ForeignKey("doctor_prescribers.id"),
+        nullable=False,
+        index=True,
+    )
+    sale_amount_cents = Column(Integer, nullable=False)
+    commission_cents = Column(Integer, nullable=False)
+    commission_rate_bps = Column(Integer, nullable=False, default=3000)
+    source = Column(String, nullable=False)
+    reference = Column(String, nullable=True, unique=True)
+    note = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    doctor = relationship("DoctorPrescriber", back_populates="transactions")
+    creator = relationship("User", foreign_keys=[created_by])
+
+
 class Commission(Base):
     __tablename__ = "commissions"
 
