@@ -604,16 +604,24 @@ class DoctorCommissionTransaction(Base):
         index=True,
     )
     sale_amount_cents = Column(Integer, nullable=False)
+    gross_commission_cents = Column(Integer, nullable=True)
+    deduction_bps = Column(Integer, nullable=False, default=0)
+    deduction_cents = Column(Integer, nullable=False, default=0)
     commission_cents = Column(Integer, nullable=False)
     commission_rate_bps = Column(Integer, nullable=False, default=3000)
     source = Column(String, nullable=False)
     reference = Column(String, nullable=True, unique=True)
     note = Column(Text, nullable=True)
+    payout_status = Column(String, nullable=False, default="pending")
+    paid_at = Column(DateTime, nullable=True)
+    paid_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    payout_note = Column(Text, nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     doctor = relationship("DoctorPrescriber", back_populates="transactions")
     creator = relationship("User", foreign_keys=[created_by])
+    payer = relationship("User", foreign_keys=[paid_by])
 
 
 class Commission(Base):
