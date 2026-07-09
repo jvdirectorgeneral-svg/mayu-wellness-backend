@@ -15,6 +15,11 @@ import models
 from member_cards import get_or_create_card
 from marketplace_paypal import fulfill_pharmacy_payment_if_needed
 from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
+from marketplace import (
+    sync_marketplace_doctor_wallet_after_commit,
+    validate_doctor_prescriber_identifier,
+    validate_member_discount_code,
+)
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -88,6 +93,7 @@ class PayphoneMarketplaceCartRequest(BaseModel):
 
     discount_code: Optional[str] = None
     pharmacy_loyalty_identifier: Optional[str] = None
+    doctor_prescriber_identifier: Optional[str] = None
     currency: str = "USD"
     items: List[PayphoneMarketplaceCartItem]
 
@@ -546,12 +552,18 @@ def build_marketplace_payphone_payment(
 
     subtotal = round(subtotal, 2)
     discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
+    discount_info = validate_member_discount_code(db, discount_code)
+    doctor_info = validate_doctor_prescriber_identifier(
+        db,
+        payload.doctor_prescriber_identifier,
+    )
     discount_percent = 0.0
     discount_amount = 0.0
 
-    if discount_code:
-        discount_percent = 10.0
-        discount_amount = round(subtotal * 0.10, 2)
+    if discount_info:
+        discount_code = discount_info["discount_code"]
+        discount_percent = discount_info["discount_percent"]
+        discount_amount = round(subtotal * (discount_percent / 100), 2)
 
     total = round(subtotal - discount_amount, 2)
 
@@ -600,6 +612,9 @@ def build_marketplace_payphone_payment(
                     payload.pharmacy_loyalty_identifier.strip()
                     if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
                     else None
+                ),
+                "doctor_prescriber_identifier": (
+                    doctor_info["doctor_prescriber_identifier"] if doctor_info else None
                 ),
                 "discount_percent": discount_percent,
                 "discount_amount": discount_amount,
@@ -702,6 +717,14 @@ def confirm_marketplace_payphone_payment(
             db,
             pharmacy_fulfillment.get("loyalty"),
             pharmacy_fulfillment.get("marketplace_order_code"),
+        )
+    if pharmacy_fulfillment and pharmacy_fulfillment.get("doctor_commission"):
+        pharmacy_fulfillment["doctor_commission"] = (
+            sync_marketplace_doctor_wallet_after_commit(
+                db,
+                pharmacy_fulfillment.get("doctor_commission"),
+                pharmacy_fulfillment.get("marketplace_order_code"),
+            )
         )
 
     return {
