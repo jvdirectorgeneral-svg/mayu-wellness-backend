@@ -12,6 +12,9 @@ import hashlib
 import zipfile
 import tempfile
 import jwt
+import requests
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 from cryptography.hazmat.primitives.serialization import pkcs12, Encoding
 from cryptography.hazmat.primitives.serialization.pkcs7 import (
@@ -678,9 +681,62 @@ def clean_google_private_key(private_key: str):
     return private_key.replace("\\n", "\n").strip()
 
 
+def member_google_class_suffix() -> str:
+    configured = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "").strip()
+    if not configured or configured == "mayu_membership":
+        return "mayu_membership_generic_v2"
+    return configured
+
+
+def ensure_member_google_wallet_class(service_account_info: dict, class_id: str):
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+    )
+    credentials.refresh(GoogleAuthRequest())
+    headers = {
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    }
+    url = f"https://walletobjects.googleapis.com/walletobjects/v1/genericClass/{class_id}"
+    existing = requests.get(url, headers=headers, timeout=20)
+    if existing.status_code == 200:
+        return
+    if existing.status_code != 404:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo verificar clase Google Wallet socios: {existing.text[:500]}",
+        )
+
+    class_body = {
+        "id": class_id,
+        "issuerName": CLUB_NAME,
+        "reviewStatus": "UNDER_REVIEW",
+        "hexBackgroundColor": "#0F172A",
+        "localizedIssuerName": {
+            "defaultValue": {"language": "es", "value": CLUB_NAME}
+        },
+        "homepageUri": {
+            "uri": BASE_PUBLIC_URL,
+            "description": CLUB_NAME,
+        },
+    }
+    created = requests.post(
+        "https://walletobjects.googleapis.com/walletobjects/v1/genericClass",
+        headers=headers,
+        json=class_body,
+        timeout=20,
+    )
+    if created.status_code not in {200, 201}:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo crear clase Google Wallet socios: {created.text[:500]}",
+        )
+
+
 def build_google_wallet_save_url(user, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
-    class_suffix = os.getenv("GOOGLE_WALLET_CLASS_SUFFIX", "mayu_membership")
+    class_suffix = member_google_class_suffix()
 
     if not issuer_id:
         raise HTTPException(status_code=500, detail="Falta GOOGLE_WALLET_ISSUER_ID en Render")
@@ -698,6 +754,7 @@ def build_google_wallet_save_url(user, card):
     visual = get_card_visual_data(None, user, card)
 
     class_id = f"{issuer_id}.{class_suffix}"
+    ensure_member_google_wallet_class(service_account, class_id)
     object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}".replace("-", "_").lower()
     object_id = f"{issuer_id}.{object_suffix}"
 
