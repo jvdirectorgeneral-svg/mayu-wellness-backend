@@ -21,7 +21,13 @@ from notification_service import (
     notify_customer_order,
     safe_send_push_to_roles,
 )
-from marketplace import build_marketplace_whatsapp_message
+from marketplace import (
+    build_marketplace_whatsapp_message,
+    credit_marketplace_doctor_if_paid,
+    sync_marketplace_doctor_wallet_after_commit,
+    validate_doctor_prescriber_identifier,
+    validate_member_discount_code,
+)
 from pharmacy_loyalty import (
     credit_marketplace_order_if_paid,
     sync_marketplace_loyalty_wallet_after_commit,
@@ -97,6 +103,7 @@ class MarketplacePayPalCreateCartOrderRequest(BaseModel):
 
     discount_code: Optional[str] = None
     pharmacy_loyalty_identifier: Optional[str] = None
+    doctor_prescriber_identifier: Optional[str] = None
     currency: str = "USD"
     items: List[MarketplaceCartItemCreate]
 
@@ -313,10 +320,16 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
             existing_order,
             sync_wallet=False,
         )
+        doctor_result = credit_marketplace_doctor_if_paid(
+            db,
+            existing_order,
+            sync_wallet=False,
+        )
         return {
             "marketplace_order_id": existing_order.id,
             "marketplace_order_code": existing_order.order_code,
             "loyalty": loyalty_result,
+            "doctor_commission": doctor_result,
             "already_created": True,
         }
 
@@ -399,6 +412,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         or marketplace.get("mayu_magistral_identifier")
         or marketplace.get("pharmacy_card_code")
     )
+    doctor_prescriber_identifier = marketplace.get("doctor_prescriber_identifier")
     discount_percent = float(marketplace.get("discount_percent") or 0)
     discount_amount = float(marketplace.get("discount_amount") or 0)
     total = round(subtotal - discount_amount, 2)
@@ -429,6 +443,11 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         pharmacy_loyalty_identifier=(
             str(pharmacy_loyalty_identifier).strip()
             if pharmacy_loyalty_identifier and str(pharmacy_loyalty_identifier).strip()
+            else None
+        ),
+        doctor_prescriber_identifier=(
+            str(doctor_prescriber_identifier).strip()
+            if doctor_prescriber_identifier and str(doctor_prescriber_identifier).strip()
             else None
         ),
         discount_percent=discount_percent,
@@ -508,6 +527,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     )
 
     loyalty_result = credit_marketplace_order_if_paid(db, order, sync_wallet=False)
+    doctor_result = credit_marketplace_doctor_if_paid(db, order, sync_wallet=False)
 
     return {
         "marketplace_order_id": order.id,
@@ -517,6 +537,7 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
         "discount_amount": discount_amount,
         "total": total,
         "loyalty": loyalty_result,
+        "doctor_commission": doctor_result,
         "already_created": False,
     }
 
@@ -877,12 +898,18 @@ def create_marketplace_paypal_cart_order(
 
     subtotal = round(subtotal, 2)
     discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
+    discount_info = validate_member_discount_code(db, discount_code)
+    doctor_info = validate_doctor_prescriber_identifier(
+        db,
+        payload.doctor_prescriber_identifier,
+    )
     discount_percent = 0.0
     discount_amount = 0.0
 
-    if discount_code:
-        discount_percent = 10.0
-        discount_amount = round(subtotal * 0.10, 2)
+    if discount_info:
+        discount_code = discount_info["discount_code"]
+        discount_percent = discount_info["discount_percent"]
+        discount_amount = round(subtotal * (discount_percent / 100), 2)
 
     total = round(subtotal - discount_amount, 2)
 
@@ -944,6 +971,9 @@ def create_marketplace_paypal_cart_order(
                     payload.pharmacy_loyalty_identifier.strip()
                     if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
                     else None
+                ),
+                "doctor_prescriber_identifier": (
+                    doctor_info["doctor_prescriber_identifier"] if doctor_info else None
                 ),
                 "discount_percent": discount_percent,
                 "discount_amount": discount_amount,
@@ -1023,6 +1053,14 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
                     pharmacy_fulfillment.get("marketplace_order_code"),
                 )
             )
+        if pharmacy_fulfillment and pharmacy_fulfillment.get("doctor_commission"):
+            pharmacy_fulfillment["doctor_commission"] = (
+                sync_marketplace_doctor_wallet_after_commit(
+                    db,
+                    pharmacy_fulfillment["doctor_commission"],
+                    pharmacy_fulfillment.get("marketplace_order_code"),
+                )
+            )
         return payment, education_fulfillment, pharmacy_fulfillment
 
     token = get_token()
@@ -1066,6 +1104,14 @@ def capture_marketplace_payment(paypal_order_id: str, db: Session):
             db,
             pharmacy_fulfillment["loyalty"],
             pharmacy_fulfillment.get("marketplace_order_code"),
+        )
+    if pharmacy_fulfillment and pharmacy_fulfillment.get("doctor_commission"):
+        pharmacy_fulfillment["doctor_commission"] = (
+            sync_marketplace_doctor_wallet_after_commit(
+                db,
+                pharmacy_fulfillment["doctor_commission"],
+                pharmacy_fulfillment.get("marketplace_order_code"),
+            )
         )
 
     return payment, education_fulfillment, pharmacy_fulfillment
