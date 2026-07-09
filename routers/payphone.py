@@ -15,6 +15,7 @@ import models
 from member_cards import get_or_create_card
 from marketplace_paypal import fulfill_pharmacy_payment_if_needed
 from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
+from marketplace import sync_marketplace_doctor_wallet_after_commit
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -702,6 +703,14 @@ def confirm_marketplace_payphone_payment(
             db,
             pharmacy_fulfillment.get("loyalty"),
             pharmacy_fulfillment.get("marketplace_order_code"),
+        )
+    if pharmacy_fulfillment and pharmacy_fulfillment.get("doctor_commission"):
+        pharmacy_fulfillment["doctor_commission"] = (
+            sync_marketplace_doctor_wallet_after_commit(
+                db,
+                pharmacy_fulfillment.get("doctor_commission"),
+                pharmacy_fulfillment.get("marketplace_order_code"),
+            )
         )
 
     return {
