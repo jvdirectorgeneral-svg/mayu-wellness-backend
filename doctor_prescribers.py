@@ -282,7 +282,6 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
     </div>
     """
 
-
 def copy_or_create_doctor_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
