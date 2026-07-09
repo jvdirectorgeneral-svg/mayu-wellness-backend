@@ -1,12 +1,14 @@
 import uuid
 import io
 import os
+import json
+import tempfile
 import requests
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -25,8 +27,14 @@ from database import get_db
 from dependencies import get_current_user
 from member_cards import (
     BASE_PUBLIC_URL,
+    build_manifest,
     clean_google_private_key,
+    cover_image_to_canvas,
+    create_wallet_icon,
+    fit_image_to_canvas,
     get_google_wallet_service_account,
+    sign_manifest,
+    zip_pkpass,
 )
 from notification_service import safe_send_email
 import models
@@ -275,6 +283,144 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
     """
 
 
+def copy_or_create_doctor_wallet_images(pass_dir: str):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+    background_path = os.path.join(base_dir, "assets", "doctor_prescriber_card_bg.png")
+    bg_color = (0, 96, 84)
+
+    for filename, size in [
+        ("icon.png", (29, 29)),
+        ("icon@2x.png", (58, 58)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, bg_color)
+        else:
+            create_wallet_icon(target)
+
+    for filename, size in [
+        ("logo.png", (70, 26)),
+        ("logo@2x.png", (140, 52)),
+    ]:
+        target = os.path.join(pass_dir, filename)
+        if os.path.exists(logo_path):
+            fit_image_to_canvas(logo_path, target, size, bg_color)
+        else:
+            create_wallet_icon(target)
+
+    if os.path.exists(background_path):
+        cover_image_to_canvas(
+            background_path,
+            os.path.join(pass_dir, "strip.png"),
+            (375, 123),
+            bg_color,
+        )
+        cover_image_to_canvas(
+            background_path,
+            os.path.join(pass_dir, "strip@2x.png"),
+            (750, 246),
+            bg_color,
+        )
+
+
+def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
+    pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
+    team_id = os.getenv("APPLE_TEAM_ID")
+    organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Doctor Prescriptor Mayu")
+
+    if not pass_type_id:
+        raise HTTPException(status_code=500, detail="Falta APPLE_PASS_TYPE_ID")
+    if not team_id:
+        raise HTTPException(status_code=500, detail="Falta APPLE_TEAM_ID")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    certs_dir = os.path.join(base_dir, "certs")
+    if not os.path.exists(certs_dir):
+        certs_dir = os.path.join(os.getcwd(), "certs")
+
+    temp_dir = tempfile.mkdtemp(prefix=f"mayu_doctor_pkpass_{doctor.id}_")
+    pass_dir = os.path.join(temp_dir, "pass")
+    os.makedirs(pass_dir, exist_ok=True)
+
+    try:
+        public_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/qr/{doctor.qr_token}"
+        commission_value = f"${round((doctor.commission_balance_cents or 0) / 100, 2):.2f}"
+        sales_value = f"${round((doctor.total_sales_cents or 0) / 100, 2):.2f}"
+        pass_json = {
+            "formatVersion": 1,
+            "passTypeIdentifier": pass_type_id,
+            "serialNumber": f"{doctor.doctor_code}-{doctor.id}",
+            "teamIdentifier": team_id,
+            "organizationName": organization_name,
+            "description": "Tarjeta Doctor Prescriptor Mayu",
+            "logoText": "DOCTOR PRESCRIPTOR MAYU",
+            "foregroundColor": "rgb(255,255,255)",
+            "backgroundColor": "rgb(0,96,84)",
+            "labelColor": "rgb(210,245,238)",
+            "suppressStripShine": True,
+            "sharingProhibited": False,
+            "storeCard": {
+                "primaryFields": [
+                    {
+                        "key": "commission",
+                        "label": "COMISION ACUMULADA",
+                        "value": commission_value,
+                    }
+                ],
+                "secondaryFields": [
+                    {
+                        "key": "name",
+                        "label": "DOCTOR",
+                        "value": doctor.name,
+                    },
+                    {
+                        "key": "rate",
+                        "label": "COMISION",
+                        "value": "30% medico prescriptor",
+                    },
+                ],
+                "auxiliaryFields": [
+                    {
+                        "key": "code",
+                        "label": "CODIGO",
+                        "value": doctor.doctor_code,
+                    }
+                ],
+                "backFields": [
+                    {"key": "sales", "label": "Ventas acumuladas", "value": sales_value},
+                    {"key": "email", "label": "Correo", "value": doctor.email},
+                    {"key": "phone", "label": "Telefono", "value": doctor.phone},
+                    {"key": "web", "label": "Tarjeta web", "value": public_url},
+                ],
+            },
+            "barcode": {
+                "format": "PKBarcodeFormatQR",
+                "message": public_url,
+                "messageEncoding": "iso-8859-1",
+                "altText": doctor.doctor_code,
+            },
+        }
+
+        with open(os.path.join(pass_dir, "pass.json"), "w", encoding="utf-8") as f:
+            json.dump(pass_json, f, ensure_ascii=False, separators=(",", ":"))
+
+        copy_or_create_doctor_wallet_images(pass_dir)
+        build_manifest(pass_dir)
+        sign_manifest(pass_dir, certs_dir)
+
+        output_path = os.path.join(temp_dir, f"doctor_prescriptor_mayu_{doctor.id}.pkpass")
+        zip_pkpass(pass_dir, output_path)
+        return output_path
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando Apple Wallet Doctor: {str(exc)}",
+        )
+
+
 @router.get("/assets/doctor_prescriber_card_bg.png")
 def get_doctor_prescriber_card_background():
     base_dir = os.path.dirname(__file__)
@@ -317,7 +463,7 @@ def public_doctor_card(qr_token: str, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/wallet/apple/{qr_token}", response_class=HTMLResponse)
+@router.get("/wallet/apple/{qr_token}")
 def doctor_apple_wallet_placeholder(qr_token: str, db: Session = Depends(get_db)):
     doctor = (
         db.query(models.DoctorPrescriber)
@@ -326,16 +472,12 @@ def doctor_apple_wallet_placeholder(qr_token: str, db: Session = Depends(get_db)
     )
     if not doctor or not doctor.is_active:
         raise HTTPException(status_code=404, detail="Doctor Prescriptor no válido")
-    return """
-    <html>
-      <body style="font-family:Arial;background:#f4f4f1;padding:24px">
-        <div style="max-width:520px;margin:auto;background:white;padding:28px;border-radius:24px">
-          <h2>Apple Wallet Doctor Prescriptor Mayu</h2>
-          <p>La tarjeta Doctor Prescriptor ya está activa. La generación Wallet real se conectará en el siguiente bloque, separada de Mayu Wellness Club y Mayu Magistral.</p>
-        </div>
-      </body>
-    </html>
-    """
+    output_path = build_doctor_apple_wallet_file(doctor)
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"doctor_prescriptor_mayu_{doctor.id}.pkpass",
+    )
 
 
 @router.get("/wallet/google/{qr_token}")
