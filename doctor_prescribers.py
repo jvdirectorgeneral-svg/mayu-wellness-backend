@@ -1292,6 +1292,66 @@ def mark_doctor_commission_paid(
     }
 
 
+@router.post("/admin/pay/{identifier}")
+def pay_doctor_balance(
+    identifier: str,
+    payload: DoctorPayoutRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+    doctor = _find_doctor(db, identifier)
+    if not doctor or not doctor.is_active:
+        raise HTTPException(status_code=404, detail="Doctor Prescriptor no válido")
+
+    pending_transactions = (
+        db.query(models.DoctorCommissionTransaction)
+        .filter(models.DoctorCommissionTransaction.doctor_prescriber_id == doctor.id)
+        .filter(models.DoctorCommissionTransaction.payout_status == "pending")
+        .order_by(models.DoctorCommissionTransaction.created_at.asc())
+        .all()
+    )
+
+    if not pending_transactions:
+        wallet_sync = safe_update_doctor_wallets(db, doctor)
+        return {
+            "paid": True,
+            "message": "El doctor no tiene saldo pendiente",
+            "paid_transactions": 0,
+            "paid_amount": 0,
+            "wallet_sync": wallet_sync,
+            "doctor": doctor_to_dict(doctor),
+        }
+
+    payout_note = payload.note.strip() if payload.note and payload.note.strip() else None
+    paid_total_cents = 0
+    paid_now = datetime.utcnow()
+
+    for tx in pending_transactions:
+        tx.payout_status = "paid"
+        tx.paid_at = paid_now
+        tx.paid_by = current_user.id
+        tx.payout_note = payout_note
+        paid_total_cents += tx.commission_cents or 0
+
+    doctor.commission_balance_cents = 0
+
+    db.commit()
+    db.refresh(doctor)
+
+    wallet_sync = safe_update_doctor_wallets(db, doctor)
+
+    return {
+        "paid": True,
+        "message": "Saldo doctor pagado y reiniciado en 0",
+        "paid_transactions": len(pending_transactions),
+        "paid_amount_cents": paid_total_cents,
+        "paid_amount": round(paid_total_cents / 100, 2),
+        "wallet_sync": wallet_sync,
+        "doctor": doctor_to_dict(doctor),
+    }
+
+
 @router.post("/admin/credit/{identifier}")
 def credit_doctor_sale(
     identifier: str,
