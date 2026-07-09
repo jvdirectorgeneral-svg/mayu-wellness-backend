@@ -1727,7 +1727,7 @@ def build_pharmacy_google_wallet_save_url(customer, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     class_suffix = os.getenv(
         "GOOGLE_WALLET_PHARMACY_CLASS_SUFFIX",
-        "mayu_magistral_pharmacy",
+        "mayu_magistral_pharmacy_generic_v2",
     )
 
     if not issuer_id:
@@ -1873,7 +1873,7 @@ def safe_update_google_wallet_object(customer, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     class_suffix = os.getenv(
         "GOOGLE_WALLET_PHARMACY_CLASS_SUFFIX",
-        "mayu_magistral_pharmacy",
+        "mayu_magistral_pharmacy_generic_v2",
     )
     if not issuer_id:
         return {"updated": False, "detail": "Falta GOOGLE_WALLET_ISSUER_ID"}
