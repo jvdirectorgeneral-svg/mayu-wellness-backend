@@ -4,17 +4,26 @@ import os
 import json
 import tempfile
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi import Request as FastAPIRequest
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    pkcs12,
+)
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from auth import (
     ALGORITHM,
@@ -46,6 +55,7 @@ router = APIRouter(prefix="/doctor-prescribers", tags=["Doctor Prescribers"])
 security = HTTPBearer()
 COMMISSION_RATE_BPS = 3000
 DOCTOR_WALLET_CLASS_SUFFIX = "doctor_prescriptor_mayu"
+DOCTOR_WALLET_AUTH_PREFIX = "mayu-doctor-wallet"
 
 
 class DoctorRegisterRequest(BaseModel):
@@ -85,6 +95,10 @@ class DoctorSaleCreditRequest(BaseModel):
 
 class DoctorPayoutRequest(BaseModel):
     note: Optional[str] = None
+
+
+class AppleWalletRegistrationRequest(BaseModel):
+    pushToken: str
 
 
 def require_pharmacy_admin(user: models.User):
@@ -154,6 +168,32 @@ def phone_variants(value: Optional[str]) -> set[str]:
 
 def phones_match(left: Optional[str], right: Optional[str]) -> bool:
     return bool(phone_variants(left) & phone_variants(right))
+
+
+def doctor_apple_serial(doctor: models.DoctorPrescriber) -> str:
+    return f"mayu-doctor-{doctor.id}"
+
+
+def doctor_wallet_auth_token(doctor: models.DoctorPrescriber) -> str:
+    return f"{DOCTOR_WALLET_AUTH_PREFIX}-{doctor.qr_token}"
+
+
+def doctor_apple_last_updated(doctor: models.DoctorPrescriber) -> str:
+    updated_at = doctor.updated_at or doctor.created_at or datetime.utcnow()
+    return updated_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def doctor_apple_last_modified(doctor: models.DoctorPrescriber) -> str:
+    updated_at = doctor.updated_at or doctor.created_at or datetime.utcnow()
+    return format_datetime(updated_at.replace(tzinfo=timezone.utc), usegmt=True)
+
+
+def extract_wallet_auth_token(request: FastAPIRequest) -> str:
+    authorization = request.headers.get("authorization") or ""
+    prefix = "ApplePass "
+    if authorization.startswith(prefix):
+        return authorization.replace(prefix, "", 1).strip()
+    return ""
 
 
 def _next_doctor_code(db: Session) -> str:
@@ -282,7 +322,6 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
     </div>
     """
 
-
 def copy_or_create_doctor_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
@@ -350,11 +389,13 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": f"{doctor.doctor_code}-{doctor.id}",
+            "serialNumber": doctor_apple_serial(doctor),
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": "Tarjeta Doctor Prescriptor Mayu",
             "logoText": "DOCTOR PRESCRIPTOR MAYU",
+            "webServiceURL": f"{BASE_PUBLIC_URL}/doctor-prescribers/wallet/apple",
+            "authenticationToken": doctor_wallet_auth_token(doctor),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(0,96,84)",
             "labelColor": "rgb(210,245,238)",
@@ -478,6 +519,296 @@ def doctor_apple_wallet_placeholder(qr_token: str, db: Session = Depends(get_db)
         media_type="application/vnd.apple.pkpass",
         filename=f"doctor_prescriptor_mayu_{doctor.id}.pkpass",
     )
+
+
+def get_doctor_by_apple_serial(db: Session, serial_number: str):
+    prefix = "mayu-doctor-"
+    if not serial_number.startswith(prefix):
+        raise HTTPException(status_code=404, detail="Pase Doctor Prescriptor no válido")
+    try:
+        doctor_id = int(serial_number.replace(prefix, "", 1))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Pase Doctor Prescriptor no válido")
+
+    doctor = (
+        db.query(models.DoctorPrescriber)
+        .filter(models.DoctorPrescriber.id == doctor_id)
+        .first()
+    )
+    if not doctor or not doctor.is_active:
+        raise HTTPException(status_code=404, detail="Pase Doctor Prescriptor no válido")
+    return doctor
+
+
+def verify_doctor_wallet_request(request: FastAPIRequest, doctor: models.DoctorPrescriber):
+    if extract_wallet_auth_token(request) != doctor_wallet_auth_token(doctor):
+        raise HTTPException(status_code=401, detail="No autorizado")
+
+
+def get_wallet_certs_dir():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    certs_dir = os.path.join(base_dir, "certs")
+    if not os.path.exists(certs_dir):
+        certs_dir = os.path.join(os.getcwd(), "certs")
+    return certs_dir
+
+
+def build_apple_wallet_push_cert_files(temp_dir: str):
+    certs_dir = get_wallet_certs_dir()
+    p12_path = os.path.join(certs_dir, "mayu_wallet.p12")
+    password = os.getenv("APPLE_WALLET_P12_PASSWORD") or os.getenv(
+        "APPLE_WALLET_CERT_PASSWORD"
+    )
+    if not os.path.exists(p12_path):
+        raise Exception("No existe certs/mayu_wallet.p12")
+    if not password:
+        raise Exception("Falta APPLE_WALLET_P12_PASSWORD")
+
+    with open(p12_path, "rb") as f:
+        private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+            f.read(),
+            password.encode(),
+        )
+    if not private_key or not certificate:
+        raise Exception("Certificado Apple Wallet inválido")
+
+    cert_path = os.path.join(temp_dir, "apple_wallet_push_cert.pem")
+    key_path = os.path.join(temp_dir, "apple_wallet_push_key.pem")
+
+    with open(cert_path, "wb") as f:
+        f.write(certificate.public_bytes(Encoding.PEM))
+        for item in additional_certificates or []:
+            f.write(item.public_bytes(Encoding.PEM))
+
+    with open(key_path, "wb") as f:
+        f.write(
+            private_key.private_bytes(
+                Encoding.PEM,
+                PrivateFormat.PKCS8,
+                NoEncryption(),
+            )
+        )
+
+    return cert_path, key_path
+
+
+def safe_get_doctor_apple_wallet_registration_count(db: Session, doctor_id: int):
+    try:
+        return (
+            db.query(models.DoctorAppleWalletRegistration)
+            .filter(models.DoctorAppleWalletRegistration.doctor_prescriber_id == doctor_id)
+            .count()
+        )
+    except SQLAlchemyError as exc:
+        return {"error": str(exc)}
+
+
+def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.DoctorPrescriber):
+    pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
+    if not pass_type_id:
+        return {"sent": 0, "errors": [{"detail": "Falta APPLE_PASS_TYPE_ID"}]}
+
+    registrations = (
+        db.query(models.DoctorAppleWalletRegistration)
+        .filter(models.DoctorAppleWalletRegistration.doctor_prescriber_id == doctor.id)
+        .all()
+    )
+    if not registrations:
+        return {"sent": 0, "errors": [], "detail": "Sin dispositivos Apple Wallet registrados"}
+
+    try:
+        import httpx
+
+        temp_dir = tempfile.mkdtemp(prefix=f"mayu_doctor_apns_{doctor.id}_")
+        cert_path, key_path = build_apple_wallet_push_cert_files(temp_dir)
+        apns_host = os.getenv("APPLE_APNS_HOST", "https://api.push.apple.com")
+        sent = 0
+        errors = []
+        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=20) as client:
+            for registration in registrations:
+                try:
+                    response = client.post(
+                        f"{apns_host}/3/device/{registration.push_token}",
+                        headers={
+                            "apns-topic": pass_type_id,
+                            "apns-push-type": "background",
+                            "apns-priority": "10",
+                        },
+                        json={},
+                    )
+                    if response.status_code in {200, 201}:
+                        sent += 1
+                    else:
+                        errors.append(
+                            {
+                                "registration_id": registration.id,
+                                "status_code": response.status_code,
+                                "detail": response.text[:300],
+                            }
+                        )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "registration_id": registration.id,
+                            "detail": str(exc),
+                        }
+                    )
+        return {
+            "sent": sent,
+            "registered_devices": len(registrations),
+            "errors": errors,
+        }
+    except Exception as exc:
+        return {"sent": 0, "errors": [{"detail": str(exc)}]}
+
+
+@router.post(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def register_doctor_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    payload: AppleWalletRegistrationRequest,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    doctor = get_doctor_by_apple_serial(db, serial_number)
+    verify_doctor_wallet_request(request, doctor)
+
+    if not payload.pushToken or not payload.pushToken.strip():
+        raise HTTPException(status_code=400, detail="pushToken requerido")
+
+    existing = (
+        db.query(models.DoctorAppleWalletRegistration)
+        .filter(
+            models.DoctorAppleWalletRegistration.doctor_prescriber_id == doctor.id,
+            models.DoctorAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.DoctorAppleWalletRegistration.serial_number == serial_number,
+        )
+        .first()
+    )
+
+    created = False
+    if existing:
+        existing.pass_type_identifier = pass_type_identifier
+        existing.push_token = payload.pushToken.strip()
+        existing.authentication_token = doctor_wallet_auth_token(doctor)
+        existing.updated_at = datetime.utcnow()
+    else:
+        created = True
+        existing = models.DoctorAppleWalletRegistration(
+            doctor_prescriber_id=doctor.id,
+            device_library_identifier=device_library_identifier,
+            pass_type_identifier=pass_type_identifier,
+            serial_number=serial_number,
+            push_token=payload.pushToken.strip(),
+            authentication_token=doctor_wallet_auth_token(doctor),
+        )
+        db.add(existing)
+
+    db.commit()
+    return Response(status_code=201 if created else 200)
+
+
+@router.delete(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def unregister_doctor_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    doctor = get_doctor_by_apple_serial(db, serial_number)
+    verify_doctor_wallet_request(request, doctor)
+    (
+        db.query(models.DoctorAppleWalletRegistration)
+        .filter(
+            models.DoctorAppleWalletRegistration.doctor_prescriber_id == doctor.id,
+            models.DoctorAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.DoctorAppleWalletRegistration.pass_type_identifier
+            == pass_type_identifier,
+            models.DoctorAppleWalletRegistration.serial_number == serial_number,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return Response(status_code=200)
+
+
+@router.get(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}"
+)
+def get_doctor_apple_wallet_updated_serials(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+    passesUpdatedSince: Optional[str] = None,
+):
+    registrations = (
+        db.query(models.DoctorAppleWalletRegistration)
+        .filter(
+            models.DoctorAppleWalletRegistration.device_library_identifier
+            == device_library_identifier,
+            models.DoctorAppleWalletRegistration.pass_type_identifier
+            == pass_type_identifier,
+        )
+        .all()
+    )
+
+    if registrations:
+        token = extract_wallet_auth_token(request)
+        if token not in {item.authentication_token for item in registrations}:
+            raise HTTPException(status_code=401, detail="No autorizado")
+
+    updated_items = []
+    for item in registrations:
+        if not item.doctor:
+            continue
+        last_updated = doctor_apple_last_updated(item.doctor)
+        if passesUpdatedSince and last_updated <= passesUpdatedSince:
+            continue
+        updated_items.append((item, last_updated))
+
+    if not updated_items:
+        return Response(status_code=204)
+
+    return {
+        "lastUpdated": max(last_updated for _, last_updated in updated_items),
+        "serialNumbers": [item.serial_number for item, _ in updated_items],
+    }
+
+
+@router.get("/wallet/apple/v1/passes/{pass_type_identifier}/{serial_number}")
+def get_updated_doctor_apple_wallet_pass(
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    doctor = get_doctor_by_apple_serial(db, serial_number)
+    verify_doctor_wallet_request(request, doctor)
+    output_path = build_doctor_apple_wallet_file(doctor)
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"doctor_prescriptor_mayu_{doctor.id}.pkpass",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Last-Modified": doctor_apple_last_modified(doctor),
+        },
+    )
+
+
+@router.post("/wallet/apple/v1/log")
+def doctor_apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log doctor recibido", "payload": payload}
 
 
 @router.get("/wallet/google/{qr_token}")
@@ -684,6 +1015,13 @@ def safe_update_doctor_google_wallet_object(doctor: models.DoctorPrescriber):
         return {"updated": True, "object_id": object_body["id"]}
     except Exception as exc:
         return {"updated": False, "detail": str(exc)}
+
+
+def safe_update_doctor_wallets(db: Session, doctor: models.DoctorPrescriber):
+    return {
+        "google": safe_update_doctor_google_wallet_object(doctor),
+        "apple": safe_send_doctor_apple_wallet_update_pushes(db, doctor),
+    }
 
 
 def get_current_doctor(
@@ -1001,7 +1339,7 @@ def credit_doctor_sale(
     db.commit()
     db.refresh(doctor)
     db.refresh(transaction)
-    wallet_sync = safe_update_doctor_google_wallet_object(doctor)
+    wallet_sync = safe_update_doctor_wallets(db, doctor)
 
     return {
         "created": True,
@@ -1011,6 +1349,6 @@ def credit_doctor_sale(
         "deduction_percent": round(deduction_bps / 100, 2),
         "deduction_amount": round(deduction_cents / 100, 2),
         "commission_earned": round(commission_cents / 100, 2),
-        "wallet_sync": {"google": wallet_sync},
+        "wallet_sync": wallet_sync,
         "doctor": doctor_to_dict(doctor),
     }

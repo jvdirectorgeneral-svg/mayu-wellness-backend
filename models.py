@@ -591,6 +591,40 @@ class DoctorPrescriber(Base):
         cascade="all, delete-orphan",
         order_by="DoctorCommissionTransaction.created_at.desc()",
     )
+    apple_wallet_registrations = relationship(
+        "DoctorAppleWalletRegistration",
+        back_populates="doctor",
+        cascade="all, delete-orphan",
+    )
+
+
+class DoctorAppleWalletRegistration(Base):
+    __tablename__ = "doctor_apple_wallet_registrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_prescriber_id = Column(
+        Integer,
+        ForeignKey("doctor_prescribers.id"),
+        nullable=False,
+        index=True,
+    )
+    device_library_identifier = Column(String, nullable=False, index=True)
+    pass_type_identifier = Column(String, nullable=False, index=True)
+    serial_number = Column(String, nullable=False, index=True)
+    push_token = Column(Text, nullable=False)
+    authentication_token = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    doctor = relationship(
+        "DoctorPrescriber",
+        back_populates="apple_wallet_registrations",
+    )
 
 
 class DoctorCommissionTransaction(Base):

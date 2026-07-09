@@ -100,7 +100,16 @@ def notify_customer_order(
 ) -> None:
     email = order.customer_email or order.billing_email
     detail = ""
+    doctor_notice = ""
     if include_summary:
+        if getattr(order, "doctor_prescriber_identifier", None):
+            doctor_notice = f"""
+            <div style="margin:16px 0;padding:14px 16px;border-radius:14px;background:#f4f4f1;border:1px solid #d8e6e2">
+              <p style="margin:0 0 8px 0"><strong>Doctor afiliado:</strong> {html.escape(order.doctor_prescriber_identifier or "")}</p>
+              <p style="margin:0 0 6px 0"><strong>Comisión registrada:</strong> 30% de la compra.</p>
+              <p style="margin:0"><strong>Pago administrativo:</strong> mensual, cada día 21.</p>
+            </div>
+            """
         detail = f"""
         <table style="width:100%;border-collapse:collapse">
           <thead><tr><th>Producto</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead>
@@ -109,6 +118,7 @@ def notify_customer_order(
         <p>Subtotal: ${float(order.subtotal or 0):.2f}</p>
         <p>Descuento: ${float(order.discount_amount or 0):.2f}</p>
         <p><strong>Total: ${float(order.total or 0):.2f} {order.currency}</strong></p>
+        {doctor_notice}
         """
 
     tracking = ""

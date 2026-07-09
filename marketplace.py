@@ -19,7 +19,10 @@ from pharmacy_loyalty import (
     credit_marketplace_order_if_paid,
     sync_marketplace_loyalty_wallet_after_commit,
 )
-from doctor_prescribers import safe_update_doctor_google_wallet_object
+from doctor_prescribers import (
+    safe_send_doctor_apple_wallet_update_pushes,
+    safe_update_doctor_google_wallet_object,
+)
 
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 
@@ -524,7 +527,11 @@ def sync_marketplace_doctor_wallet_after_commit(
         return doctor_result
 
     google_sync = safe_update_doctor_google_wallet_object(doctor)
-    doctor_result["wallet_sync"] = {"google": google_sync}
+    apple_sync = safe_send_doctor_apple_wallet_update_pushes(db, doctor)
+    doctor_result["wallet_sync"] = {
+        "google": google_sync,
+        "apple": apple_sync,
+    }
     doctor_result["doctor_code"] = doctor.doctor_code
     doctor_result["order_code"] = order_code
     return doctor_result
