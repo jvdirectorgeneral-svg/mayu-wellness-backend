@@ -1104,6 +1104,7 @@ class MarketplaceOrder(Base):
 
     discount_code = Column(String, nullable=True)
     pharmacy_loyalty_identifier = Column(String, nullable=True, index=True)
+    doctor_prescriber_identifier = Column(String, nullable=True, index=True)
     discount_percent = Column(Float, nullable=False, default=0)
     discount_amount = Column(Float, nullable=False, default=0)
 
