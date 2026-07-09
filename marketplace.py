@@ -19,6 +19,7 @@ from pharmacy_loyalty import (
     credit_marketplace_order_if_paid,
     sync_marketplace_loyalty_wallet_after_commit,
 )
+from doctor_prescribers import safe_update_doctor_google_wallet_object
 
 router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 
@@ -93,6 +94,7 @@ class MarketplaceOrderCreate(BaseModel):
     items: List[MarketplaceOrderItemCreate]
     discount_code: Optional[str] = None
     pharmacy_loyalty_identifier: Optional[str] = None
+    doctor_prescriber_identifier: Optional[str] = None
     payment_method: str = "whatsapp"
 
 
@@ -220,6 +222,7 @@ def order_to_dict(order: models.MarketplaceOrder):
         "subtotal": order.subtotal,
         "discount_code": getattr(order, "discount_code", None),
         "pharmacy_loyalty_identifier": getattr(order, "pharmacy_loyalty_identifier", None),
+        "doctor_prescriber_identifier": getattr(order, "doctor_prescriber_identifier", None),
         "discount_percent": getattr(order, "discount_percent", 0),
         "discount_amount": getattr(order, "discount_amount", 0),
         "total": order.total,
@@ -325,6 +328,8 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
 
     if getattr(order, "pharmacy_loyalty_identifier", None):
         lines.append(f"Tarjeta Mayu Magistral: {order.pharmacy_loyalty_identifier}")
+    if getattr(order, "doctor_prescriber_identifier", None):
+        lines.append(f"Doctor Prescriptor Mayu: {order.doctor_prescriber_identifier}")
 
     lines.append(f"Total: ${float(order.total or 0):.2f} USD")
     lines.append("")
@@ -338,11 +343,33 @@ def generate_order_code():
     return f"MP-MAYU-{now.strftime('%Y%m%d%H%M%S')}"
 
 
-def validate_member_discount_code(db: Session, discount_code: Optional[str]):
-    if not discount_code or not discount_code.strip():
+def _normalize_marketplace_identifier(value: Optional[str]) -> Optional[str]:
+    if value is None:
         return None
 
-    code = discount_code.strip()
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+
+    if "://" in cleaned:
+        for marker in (
+            "/doctor-prescribers/qr/",
+            "/member-cards/validate/",
+            "/pharmacy-loyalty/qr/",
+        ):
+            if marker in cleaned:
+                tail = cleaned.split(marker, 1)[1]
+                return tail.split("?", 1)[0].split("/", 1)[0].strip() or None
+        cleaned = cleaned.rstrip("/").rsplit("/", 1)[-1]
+        cleaned = cleaned.split("?", 1)[0].strip()
+
+    return cleaned or None
+
+
+def validate_member_discount_code(db: Session, discount_code: Optional[str]):
+    code = _normalize_marketplace_identifier(discount_code)
+    if not code:
+        return None
 
     member_card = (
         db.query(models.MemberCard)
@@ -376,6 +403,131 @@ def validate_member_discount_code(db: Session, discount_code: Optional[str]):
         "discount_code": code,
         "discount_percent": 10.0,
     }
+
+
+def validate_doctor_prescriber_identifier(db: Session, identifier: Optional[str]):
+    cleaned = _normalize_marketplace_identifier(identifier)
+    if not cleaned:
+        return None
+
+    doctor = (
+        db.query(models.DoctorPrescriber)
+        .filter(
+            (models.DoctorPrescriber.doctor_code == cleaned)
+            | (models.DoctorPrescriber.qr_token == cleaned)
+        )
+        .first()
+    )
+
+    if not doctor:
+        raise HTTPException(status_code=400, detail="Código de doctor no válido")
+
+    if not getattr(doctor, "is_active", True):
+        raise HTTPException(status_code=403, detail="Doctor inactivo. No aplica registro.")
+
+    return {
+        "doctor": doctor,
+        "doctor_prescriber_identifier": doctor.doctor_code,
+        "commission_rate_percent": doctor.commission_rate_bps / 100,
+    }
+
+
+def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = True):
+    payment_status = (getattr(order, "payment_status", "") or "").strip().lower()
+    if payment_status != "paid":
+        return {"credited": False, "detail": "El pedido aún no está pagado"}
+
+    doctor_identifier = _normalize_marketplace_identifier(
+        getattr(order, "doctor_prescriber_identifier", None)
+    )
+    if not doctor_identifier:
+        return {"credited": False, "detail": "El pedido no tiene doctor prescriptor"}
+
+    reference = f"marketplace:{getattr(order, 'order_code', '')}"
+    existing = (
+        db.query(models.DoctorCommissionTransaction)
+        .filter(models.DoctorCommissionTransaction.reference == reference)
+        .first()
+    )
+    if existing:
+        return {
+            "credited": False,
+            "already_credited": True,
+            "doctor_id": existing.doctor_prescriber_id,
+            "transaction_id": existing.id,
+            "commission_earned": round((existing.commission_cents or 0) / 100, 2),
+        }
+
+    doctor_info = validate_doctor_prescriber_identifier(db, doctor_identifier)
+    doctor = doctor_info["doctor"]
+    sale_amount = round(float(getattr(order, "total", 0) or 0), 2)
+    sale_cents = int(round(sale_amount * 100))
+    if sale_cents <= 0:
+        return {"credited": False, "detail": "El total del pedido no permite acreditar comisión"}
+
+    gross_commission_cents = int(round(sale_cents * doctor.commission_rate_bps / 10000))
+    transaction = models.DoctorCommissionTransaction(
+        doctor_prescriber_id=doctor.id,
+        sale_amount_cents=sale_cents,
+        gross_commission_cents=gross_commission_cents,
+        deduction_bps=0,
+        deduction_cents=0,
+        commission_cents=gross_commission_cents,
+        commission_rate_bps=doctor.commission_rate_bps,
+        source="marketplace_online",
+        reference=reference,
+        note="Compra online Marketplace Farmacia con código/QR Doctor Prescriptor",
+    )
+    doctor.total_sales_cents += sale_cents
+    doctor.commission_balance_cents += gross_commission_cents
+    doctor.lifetime_commission_cents += gross_commission_cents
+    db.add(transaction)
+    db.flush()
+
+    result = {
+        "credited": True,
+        "doctor_id": doctor.id,
+        "doctor_code": doctor.doctor_code,
+        "commission_rate_percent": doctor.commission_rate_bps / 100,
+        "sale_amount": round(sale_cents / 100, 2),
+        "commission_earned": round(gross_commission_cents / 100, 2),
+        "transaction_id": transaction.id,
+        "wallet_sync": {"google": None},
+    }
+    if sync_wallet:
+        result = sync_marketplace_doctor_wallet_after_commit(
+            db,
+            result,
+            getattr(order, "order_code", None),
+        )
+    return result
+
+
+def sync_marketplace_doctor_wallet_after_commit(
+    db: Session,
+    doctor_result: Optional[dict],
+    order_code: Optional[str] = None,
+):
+    if not doctor_result or not doctor_result.get("credited"):
+        return doctor_result
+
+    doctor_id = doctor_result.get("doctor_id")
+    if not doctor_id:
+        return doctor_result
+
+    doctor = (
+        db.query(models.DoctorPrescriber)
+        .filter(models.DoctorPrescriber.id == doctor_id)
+        .first()
+    )
+    if not doctor:
+        return doctor_result
+
+    google_sync = safe_update_doctor_google_wallet_object(doctor)
+    doctor_result["wallet_sync"] = {"google": google_sync}
+    doctor_result["doctor_code"] = doctor.doctor_code
+    doctor_result["order_code"] = order_code
+    return doctor_result
 
 
 @router.post("/upload-image")
@@ -784,6 +936,10 @@ def create_marketplace_order(
         )
 
     discount_info = validate_member_discount_code(db, payload.discount_code)
+    doctor_info = validate_doctor_prescriber_identifier(
+        db,
+        payload.doctor_prescriber_identifier,
+    )
 
     discount_code = None
     discount_percent = 0.0
@@ -818,6 +974,9 @@ def create_marketplace_order(
             payload.pharmacy_loyalty_identifier.strip()
             if payload.pharmacy_loyalty_identifier and payload.pharmacy_loyalty_identifier.strip()
             else None
+        ),
+        doctor_prescriber_identifier=(
+            doctor_info["doctor_prescriber_identifier"] if doctor_info else None
         ),
         discount_percent=discount_percent,
         discount_amount=discount_amount,
@@ -979,11 +1138,17 @@ def update_order_by_pharmacy_admin(
         order.shipping_notes = payload.shipping_notes
 
     loyalty_result = None
+    doctor_result = None
     if (
         payload.payment_status is not None
         and payload.payment_status.strip().lower() == "paid"
     ):
         loyalty_result = credit_marketplace_order_if_paid(
+            db,
+            order,
+            sync_wallet=False,
+        )
+        doctor_result = credit_marketplace_doctor_if_paid(
             db,
             order,
             sync_wallet=False,
@@ -995,6 +1160,12 @@ def update_order_by_pharmacy_admin(
         loyalty_result = sync_marketplace_loyalty_wallet_after_commit(
             db,
             loyalty_result,
+            order.order_code,
+        )
+    if doctor_result:
+        doctor_result = sync_marketplace_doctor_wallet_after_commit(
+            db,
+            doctor_result,
             order.order_code,
         )
 
@@ -1023,6 +1194,7 @@ def update_order_by_pharmacy_admin(
         "message": "Orden actualizada por farmacia",
         "order": order_to_dict(order),
         "loyalty": loyalty_result,
+        "doctor_commission": doctor_result,
     }
 
 
