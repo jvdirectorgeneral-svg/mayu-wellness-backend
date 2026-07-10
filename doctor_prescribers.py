@@ -309,7 +309,7 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
       <p>Estos son los datos para recuperar tu tarjeta Doctor Prescriptor Mayu.</p>
       <div style="background:#f4f4f1;border-radius:18px;padding:18px;margin:18px 0">
         <p><strong>Código:</strong> {code}</p>
-        <p><strong>Comisión acumulada:</strong> ${float(commission):.2f}</p>
+        <p><strong>Saldo pendiente:</strong> ${float(commission):.2f}</p>
         <p><strong>Comisión:</strong> 30% médico prescriptor</p>
       </div>
       <p style="text-align:center">
@@ -405,7 +405,7 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                 "primaryFields": [
                     {
                         "key": "commission",
-                        "label": "COMISION ACUMULADA",
+                        "label": "SALDO PENDIENTE",
                         "value": commission_value,
                     }
                 ],
@@ -934,7 +934,7 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         "subheader": {
             "defaultValue": {
                 "language": "es",
-                "value": f"{commission_value} comisión acumulada · {doctor.doctor_code}",
+                "value": f"{commission_value} saldo pendiente · {doctor.doctor_code}",
             }
         },
         "barcode": {
@@ -1335,6 +1335,7 @@ def pay_doctor_balance(
         paid_total_cents += tx.commission_cents or 0
 
     doctor.commission_balance_cents = 0
+    doctor.updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(doctor)
@@ -1395,6 +1396,7 @@ def credit_doctor_sale(
     doctor.total_sales_cents += sale_cents
     doctor.commission_balance_cents += commission_cents
     doctor.lifetime_commission_cents += commission_cents
+    doctor.updated_at = datetime.utcnow()
     db.add(transaction)
     db.commit()
     db.refresh(doctor)
