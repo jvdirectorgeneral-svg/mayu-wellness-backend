@@ -384,7 +384,12 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
 
     try:
         public_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/qr/{doctor.qr_token}"
-        commission_value = f"${round((doctor.commission_balance_cents or 0) / 100, 2):.2f}"
+        pending_commission_cents = sum(
+            (tx.commission_cents or 0)
+            for tx in (doctor.transactions or [])
+            if getattr(tx, "payout_status", "pending") != "paid"
+        )
+        commission_value = f"${round(pending_commission_cents / 100, 2):.2f}"
         sales_value = f"${round((doctor.total_sales_cents or 0) / 100, 2):.2f}"
         pass_json = {
             "formatVersion": 1,
@@ -632,7 +637,7 @@ def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.Doct
                         headers={
                             "apns-topic": pass_type_id,
                             "apns-push-type": "background",
-                            "apns-priority": "10",
+                            "apns-priority": "5",
                         },
                         json={},
                     )
@@ -771,8 +776,6 @@ def get_doctor_apple_wallet_updated_serials(
         if not item.doctor:
             continue
         last_updated = doctor_apple_last_updated(item.doctor)
-        if passesUpdatedSince and last_updated <= passesUpdatedSince:
-            continue
         updated_items.append((item, last_updated))
 
     if not updated_items:
@@ -802,6 +805,7 @@ def get_updated_doctor_apple_wallet_pass(
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "Last-Modified": doctor_apple_last_modified(doctor),
+            "ETag": f"doctor-{doctor.id}-{int((doctor.updated_at or doctor.created_at or datetime.utcnow()).timestamp())}-{doctor.commission_balance_cents or 0}",
         },
     )
 
