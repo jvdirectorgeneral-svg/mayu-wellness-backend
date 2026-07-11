@@ -484,6 +484,7 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
     doctor.total_sales_cents += sale_cents
     doctor.commission_balance_cents += gross_commission_cents
     doctor.lifetime_commission_cents += gross_commission_cents
+    doctor.updated_at = datetime.utcnow()
     db.add(transaction)
     db.flush()
 
