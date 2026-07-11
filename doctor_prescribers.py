@@ -390,7 +390,6 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
             if getattr(tx, "payout_status", "pending") != "paid"
         )
         commission_value = f"${round(pending_commission_cents / 100, 2):.2f}"
-        sales_value = f"${round((doctor.total_sales_cents or 0) / 100, 2):.2f}"
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
@@ -434,7 +433,6 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                     }
                 ],
                 "backFields": [
-                    {"key": "sales", "label": "Ventas acumuladas", "value": sales_value},
                     {"key": "email", "label": "Correo", "value": doctor.email},
                     {"key": "phone", "label": "Telefono", "value": doctor.phone},
                     {"key": "web", "label": "Tarjeta web", "value": public_url},
@@ -637,12 +635,19 @@ def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.Doct
                         headers={
                             "apns-topic": pass_type_id,
                             "apns-push-type": "background",
-                            "apns-priority": "5",
+                            "apns-priority": "10",
                         },
                         json={},
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
+                    elif response.status_code == 410:
+                        (
+                            db.query(models.DoctorAppleWalletRegistration)
+                            .filter(models.DoctorAppleWalletRegistration.id == registration.id)
+                            .delete(synchronize_session=False)
+                        )
+                        db.commit()
                     else:
                         errors.append(
                             {
@@ -901,7 +906,6 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
     bg_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/assets/doctor_prescriber_card_bg.png"
     logo_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/assets/doctor_prescriber_card_bg.png"
     commission_value = f"${round((doctor.commission_balance_cents or 0) / 100, 2)}"
-    sales_value = f"${round((doctor.total_sales_cents or 0) / 100, 2)}"
 
     return {
         "id": doctor_google_object_id(doctor, issuer_id),
@@ -948,7 +952,6 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         },
         "textModulesData": [
             {"id": "commission", "header": "Ganancias pendientes", "body": commission_value},
-            {"id": "sales", "header": "Ventas acumuladas", "body": sales_value},
             {"id": "rate", "header": "Comisión", "body": "30% médico prescriptor"},
             {"id": "code", "header": "Código", "body": doctor.doctor_code},
         ],
