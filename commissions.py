@@ -8,6 +8,7 @@ from sqlalchemy import func, case
 
 from database import SessionLocal
 from dependencies import get_current_user
+from member_cards import get_or_create_card, safe_update_member_wallets
 from models import (
     Commission,
     Ambassador,
@@ -65,6 +66,21 @@ def get_commission_rule_label(level: int | None) -> str:
     if level == 3:
         return "Nivel 3 - Oro: $7 mensual por socio activo pagado"
     return "Sin regla de comisión"
+
+
+def sync_ambassador_wallets(db: Session, ambassador_id: int):
+    ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first()
+    if not ambassador:
+        return {"google": {"updated": False, "detail": "Embajador no encontrado"}, "apple": {"sent": 0, "errors": []}}
+
+    try:
+        user, card = get_or_create_card(db, ambassador.user_id)
+        return safe_update_member_wallets(db, user, card)
+    except Exception as exc:
+        return {
+            "google": {"updated": False, "detail": str(exc)},
+            "apple": {"sent": 0, "errors": [{"detail": str(exc)}]},
+        }
 
 
 def get_plan_by_user_level(db: Session, user: User) -> Plan | None:
@@ -390,6 +406,10 @@ def generate_monthly_commissions(
         })
 
     db.commit()
+    wallet_sync = {}
+    affected_ambassadors = sorted({item["ambassador_id"] for item in created_items if item.get("ambassador_id")})
+    for ambassador_id in affected_ambassadors:
+        wallet_sync[str(ambassador_id)] = sync_ambassador_wallets(db, ambassador_id)
 
     return {
         "message": "Generación mensual de comisiones completada",
@@ -402,6 +422,7 @@ def generate_monthly_commissions(
         "skipped_missing_data": skipped_missing_data,
         "created_items": created_items,
         "skipped_items": skipped_items,
+        "wallet_sync": wallet_sync,
     }
 
 
@@ -648,10 +669,63 @@ def mark_commission_as_paid(
 
     db.commit()
     db.refresh(commission)
+    wallet_sync = sync_ambassador_wallets(db, commission.ambassador_id)
 
     return {
         "message": "Comisión marcada como pagada correctamente",
         "commission_id": commission.id,
         "status": commission.status,
         "paid_at": commission.paid_at,
+        "wallet_sync": wallet_sync,
+    }
+
+
+@router.post("/ambassador/{ambassador_id}/pay-pending")
+def pay_pending_commissions_by_ambassador(
+    ambassador_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_supervisor_or_superadmin(current_user)
+
+    ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first()
+    if not ambassador:
+        raise HTTPException(status_code=404, detail="Embajador no encontrado")
+
+    pending_commissions = (
+        db.query(Commission)
+        .filter(Commission.ambassador_id == ambassador_id, Commission.status == "pending")
+        .order_by(Commission.year.asc(), Commission.month.asc(), Commission.id.asc())
+        .all()
+    )
+
+    if not pending_commissions:
+        wallet_sync = sync_ambassador_wallets(db, ambassador_id)
+        return {
+            "paid": True,
+            "message": "El embajador no tiene saldo pendiente",
+            "paid_records": 0,
+            "paid_amount": 0,
+            "wallet_sync": wallet_sync,
+        }
+
+    paid_total = 0.0
+    paid_now = datetime.utcnow()
+    for commission in pending_commissions:
+        commission.status = "paid"
+        commission.paid_at = paid_now
+        commission.notes = (
+            f"{commission.notes or ''} | Pago administrativo masivo el {paid_now.isoformat()}"
+        ).strip(" |")
+        paid_total += float(commission.commission_amount or 0)
+
+    db.commit()
+    wallet_sync = sync_ambassador_wallets(db, ambassador_id)
+
+    return {
+        "paid": True,
+        "message": "Saldo del embajador pagado y pendiente reiniciado",
+        "paid_records": len(pending_commissions),
+        "paid_amount": round(paid_total, 2),
+        "wallet_sync": wallet_sync,
     }
