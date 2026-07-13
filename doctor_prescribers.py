@@ -774,7 +774,19 @@ def get_doctor_apple_wallet_updated_serials(
     if registrations:
         token = extract_wallet_auth_token(request)
         if token not in {item.authentication_token for item in registrations}:
-            raise HTTPException(status_code=401, detail="No autorizado")
+            print(
+                json.dumps(
+                    {
+                        "event": "mayu_doctor_apple_wallet_update_auth_mismatch",
+                        "device": device_library_identifier,
+                        "pass_type": pass_type_identifier,
+                        "registrations": len(registrations),
+                        "auth_present": bool(token),
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
 
     updated_items = []
     for item in registrations:
@@ -784,11 +796,40 @@ def get_doctor_apple_wallet_updated_serials(
         updated_items.append((item, last_updated))
 
     if not updated_items:
+        print(
+            json.dumps(
+                {
+                    "event": "mayu_doctor_apple_wallet_no_updates",
+                    "device": device_library_identifier,
+                    "pass_type": pass_type_identifier,
+                    "passesUpdatedSince": passesUpdatedSince,
+                    "registrations": len(registrations),
+                },
+                default=str,
+            ),
+            flush=True,
+        )
         return Response(status_code=204)
 
-    return {
+    response_payload = {
         "lastUpdated": max(last_updated for _, last_updated in updated_items),
         "serialNumbers": [item.serial_number for item, _ in updated_items],
+    }
+    print(
+        json.dumps(
+            {
+                "event": "mayu_doctor_apple_wallet_updates",
+                "device": device_library_identifier,
+                "pass_type": pass_type_identifier,
+                "passesUpdatedSince": passesUpdatedSince,
+                "response": response_payload,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
+    return {
+        **response_payload,
     }
 
 
@@ -801,6 +842,20 @@ def get_updated_doctor_apple_wallet_pass(
 ):
     doctor = get_doctor_by_apple_serial(db, serial_number)
     verify_doctor_wallet_request(request, doctor)
+    print(
+        json.dumps(
+            {
+                "event": "mayu_doctor_apple_wallet_pass_requested",
+                "serial_number": serial_number,
+                "pass_type": pass_type_identifier,
+                "doctor_id": doctor.id,
+                "commission_balance_cents": doctor.commission_balance_cents,
+                "updated_at": doctor.updated_at,
+            },
+            default=str,
+        ),
+        flush=True,
+    )
     output_path = build_doctor_apple_wallet_file(doctor)
     return FileResponse(
         path=output_path,
@@ -817,6 +872,11 @@ def get_updated_doctor_apple_wallet_pass(
 
 @router.post("/wallet/apple/v1/log")
 def doctor_apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log doctor recibido", "payload": payload}
+
+
+@router.post("/wallet/apple/v1/v1/log")
+def doctor_apple_wallet_legacy_double_v1_log(payload: dict):
     return {"message": "Apple Wallet log doctor recibido", "payload": payload}
 
 
