@@ -56,6 +56,21 @@ def get_ambassador_by_user(db: Session, user_id: int):
     return db.query(models.Ambassador).filter(models.Ambassador.user_id == user_id).first()
 
 
+def ambassador_commission_amount_by_level(level):
+    try:
+        parsed = int(level or 0)
+    except Exception:
+        parsed = 0
+
+    if parsed == 1:
+        return 5.00
+    if parsed == 2:
+        return 6.00
+    if parsed == 3:
+        return 7.00
+    return 0.00
+
+
 def ambassador_commission_summary(db: Session | None, user):
     if not db or not user or user.role != "ambassador":
         return None
@@ -67,6 +82,10 @@ def ambassador_commission_summary(db: Session | None, user):
             "total_pending": 0.0,
             "total_paid": 0.0,
             "total_generated": 0.0,
+            "projected_monthly_commission": 0.0,
+            "active_referrals": 0,
+            "current_display_amount": 0.0,
+            "current_display_label": "Próxima comisión",
         }
 
     commissions = (
@@ -74,6 +93,35 @@ def ambassador_commission_summary(db: Session | None, user):
         .filter(models.Commission.ambassador_id == ambassador.id)
         .all()
     )
+
+    referrals = (
+        db.query(models.AmbassadorReferral)
+        .filter(models.AmbassadorReferral.ambassador_id == ambassador.id)
+        .all()
+    )
+
+    projected_monthly_commission = 0.0
+    active_referrals = 0
+    latest_referral_change = None
+
+    for referral in referrals:
+        referred_user = db.query(models.User).filter(models.User.id == referral.user_id).first()
+        if not referred_user:
+            continue
+
+        if referred_user.membership_active:
+            active_referrals += 1
+            projected_monthly_commission += ambassador_commission_amount_by_level(
+                referred_user.membership_level
+            )
+
+        current_referral_dt = getattr(referred_user, "updated_at", None) or getattr(
+            referred_user, "created_at", None
+        )
+        if current_referral_dt and (
+            latest_referral_change is None or current_referral_dt > latest_referral_change
+        ):
+            latest_referral_change = current_referral_dt
 
     total_pending = round(
         sum(float(c.commission_amount or 0) for c in commissions if c.status == "pending"),
@@ -93,12 +141,26 @@ def ambassador_commission_summary(db: Session | None, user):
         if current and (latest_commission_at is None or current > latest_commission_at):
             latest_commission_at = current
 
+    projected_monthly_commission = round(projected_monthly_commission, 2)
+    current_display_amount = total_pending if total_pending > 0 else projected_monthly_commission
+    current_display_label = "Ganancia pendiente" if total_pending > 0 else "Próxima comisión"
+
+    latest_activity_at = latest_commission_at
+    if latest_referral_change and (
+        latest_activity_at is None or latest_referral_change > latest_activity_at
+    ):
+        latest_activity_at = latest_referral_change
+
     return {
         "ambassador_id": ambassador.id,
         "total_pending": total_pending,
         "total_paid": total_paid,
         "total_generated": total_generated,
-        "latest_commission_at": latest_commission_at,
+        "projected_monthly_commission": projected_monthly_commission,
+        "active_referrals": active_referrals,
+        "current_display_amount": round(current_display_amount, 2),
+        "current_display_label": current_display_label,
+        "latest_commission_at": latest_activity_at,
     }
 
 
@@ -287,7 +349,8 @@ def get_card_visual_data(db: Session | None, user, card):
     }
 
 
-def card_response(user, card):
+def card_response(db: Session, user, card):
+    ambassador_summary = ambassador_commission_summary(db, user)
     return {
         "id": card.id,
         "user_id": card.user_id,
@@ -301,6 +364,10 @@ def card_response(user, card):
         "web_url": f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web",
         "apple_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}",
         "google_wallet_url": f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}",
+        "wallet_pending_label": ambassador_summary["current_display_label"] if ambassador_summary else None,
+        "wallet_pending_amount": ambassador_summary["current_display_amount"] if ambassador_summary else None,
+        "wallet_paid_amount": ambassador_summary["total_paid"] if ambassador_summary else None,
+        "wallet_projected_amount": ambassador_summary["projected_monthly_commission"] if ambassador_summary else None,
     }
 
 
@@ -334,13 +401,13 @@ def get_wallet_asset(filename: str):
 @router.post("/generate/{user_id}")
 def generate_member_card(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
-    return {"message": "Tarjeta generada correctamente", "card": card_response(user, card)}
+    return {"message": "Tarjeta generada correctamente", "card": card_response(db, user, card)}
 
 
 @router.get("/user/{user_id}")
 def get_member_card_by_user(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
-    return card_response(user, card)
+    return card_response(db, user, card)
 
 
 @router.get("/user/{user_id}/web", response_class=HTMLResponse)
@@ -494,10 +561,11 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     draw_text(draw, (60, 305), visual["display_name"], name_font)
     if ambassador_summary:
+        current_label = ambassador_summary["current_display_label"]
         draw_text(
             draw,
             (60, 355),
-            f"Por pagar: ${ambassador_summary['total_pending']:.2f}",
+            f"{current_label}: ${ambassador_summary['current_display_amount']:.2f}",
             info_font,
         )
         draw_text(
@@ -506,8 +574,13 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             f"Pagado: ${ambassador_summary['total_paid']:.2f}",
             info_font,
         )
-        draw_text(draw, (60, 440), f"Código: {visual['member_code']}", info_font)
-        draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
+        draw_text(
+            draw,
+            (60, 440),
+            f"Próxima comisión: ${ambassador_summary['projected_monthly_commission']:.2f}",
+            info_font,
+        )
+        draw_text(draw, (60, 480), f"Código: {visual['member_code']}", info_font)
     else:
         draw_text(draw, (60, 355), visual["level_text"], info_font)
         draw_text(draw, (60, 400), f"Código: {visual['member_code']}", info_font)
@@ -721,12 +794,21 @@ def build_member_apple_wallet_file(
         visual = get_card_visual_data(db, user, card)
         ambassador_summary = ambassador_commission_summary(db, user)
         pending_value = (
-            f"${ambassador_summary['total_pending']:.2f}" if ambassador_summary else None
+            f"${ambassador_summary['current_display_amount']:.2f}" if ambassador_summary else None
         )
         paid_value = (
             f"${ambassador_summary['total_paid']:.2f}" if ambassador_summary else None
         )
-        primary_label = "GANANCIA PENDIENTE" if ambassador_summary else "SOCIO MAYU"
+        projected_value = (
+            f"${ambassador_summary['projected_monthly_commission']:.2f}"
+            if ambassador_summary
+            else None
+        )
+        primary_label = (
+            ambassador_summary["current_display_label"].upper()
+            if ambassador_summary
+            else "SOCIO MAYU"
+        )
         primary_value = pending_value or user.name
         secondary_fields = [
             {
@@ -798,13 +880,18 @@ def build_member_apple_wallet_file(
                         [
                             {
                                 "key": "pending_back",
-                                "label": "Ganancia pendiente",
+                                "label": ambassador_summary["current_display_label"],
                                 "value": pending_value,
                             },
                             {
                                 "key": "paid_back",
                                 "label": "Pagado acumulado",
                                 "value": paid_value,
+                            },
+                            {
+                                "key": "projected_back",
+                                "label": "Próxima comisión",
+                                "value": projected_value,
                             },
                         ]
                         if ambassador_summary
@@ -954,13 +1041,18 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
         text_modules = [
             {
                 "id": "pending",
-                "header": "Ganancia pendiente",
-                "body": f"${ambassador_summary['total_pending']:.2f}",
+                "header": ambassador_summary["current_display_label"],
+                "body": f"${ambassador_summary['current_display_amount']:.2f}",
             },
             {
                 "id": "paid_total",
                 "header": "Pagado acumulado",
                 "body": f"${ambassador_summary['total_paid']:.2f}",
+            },
+            {
+                "id": "projected_next",
+                "header": "Próxima comisión",
+                "body": f"${ambassador_summary['projected_monthly_commission']:.2f}",
             },
             {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
             {"id": "code", "header": "Código", "body": card.member_code},
@@ -1345,8 +1437,9 @@ def get_updated_member_apple_wallet_pass(
         serial_number_override=serial_number,
     )
     summary = ambassador_commission_summary(db, user)
-    pending_value = int(round((summary["total_pending"] if summary else 0) * 100))
+    pending_value = int(round((summary["current_display_amount"] if summary else 0) * 100))
     paid_value = int(round((summary["total_paid"] if summary else 0) * 100))
+    projected_value = int(round((summary["projected_monthly_commission"] if summary else 0) * 100))
     return FileResponse(
         path=output_path,
         media_type="application/vnd.apple.pkpass",
@@ -1355,7 +1448,7 @@ def get_updated_member_apple_wallet_pass(
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "Last-Modified": member_apple_last_updated(db, user, card),
-            "ETag": f"member-{card.id}-{card.status}-{pending_value}-{paid_value}",
+            "ETag": f"member-{card.id}-{card.status}-{pending_value}-{paid_value}-{projected_value}",
         },
     )
 
