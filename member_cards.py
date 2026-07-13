@@ -1,5 +1,12 @@
+from datetime import datetime, timezone
+from email.utils import format_datetime
+
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi import Request as FastAPIRequest
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -25,10 +32,16 @@ from cryptography.hazmat.primitives import hashes
 from cryptography import x509
 
 router = APIRouter(prefix="/member-cards", tags=["Member Cards"])
+security = HTTPBearer()
 
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 CARD_VALIDITY_TEXT = "Indefinido"
 CLUB_NAME = "Mayu Wellness Club"
+MEMBER_WALLET_AUTH_PREFIX = "mayu-member-wallet"
+
+
+class AppleWalletRegistrationRequest(BaseModel):
+    pushToken: str
 
 
 def generate_member_code(user_id: int, level: int):
@@ -41,6 +54,52 @@ def generate_ambassador_code(ambassador_id: int):
 
 def get_ambassador_by_user(db: Session, user_id: int):
     return db.query(models.Ambassador).filter(models.Ambassador.user_id == user_id).first()
+
+
+def ambassador_commission_summary(db: Session | None, user):
+    if not db or not user or user.role != "ambassador":
+        return None
+
+    ambassador = get_ambassador_by_user(db, user.id)
+    if not ambassador:
+        return {
+            "ambassador_id": None,
+            "total_pending": 0.0,
+            "total_paid": 0.0,
+            "total_generated": 0.0,
+        }
+
+    commissions = (
+        db.query(models.Commission)
+        .filter(models.Commission.ambassador_id == ambassador.id)
+        .all()
+    )
+
+    total_pending = round(
+        sum(float(c.commission_amount or 0) for c in commissions if c.status == "pending"),
+        2,
+    )
+    total_paid = round(
+        sum(float(c.commission_amount or 0) for c in commissions if c.status == "paid"),
+        2,
+    )
+    total_generated = round(
+        sum(float(c.commission_amount or 0) for c in commissions),
+        2,
+    )
+    latest_commission_at = None
+    for item in commissions:
+        current = item.paid_at or item.generated_at
+        if current and (latest_commission_at is None or current > latest_commission_at):
+            latest_commission_at = current
+
+    return {
+        "ambassador_id": ambassador.id,
+        "total_pending": total_pending,
+        "total_paid": total_paid,
+        "total_generated": total_generated,
+        "latest_commission_at": latest_commission_at,
+    }
 
 
 def get_user_card_type(user):
@@ -126,6 +185,54 @@ def level_text(user, card):
     }
 
     return levels.get(card.level_snapshot, "Socio Mayu")
+
+
+def member_wallet_auth_token(card):
+    return f"{MEMBER_WALLET_AUTH_PREFIX}-{card.qr_token}"
+
+
+def member_apple_serial(card):
+    return f"member-card-{card.member_code}-{card.id}".lower()
+
+
+def get_member_card_by_apple_serial(db: Session, serial_number: str):
+    cards = db.query(models.MemberCard).all()
+
+    for card in cards:
+        expected_serial = member_apple_serial(card)
+        legacy_prefix = f"{card.member_code}-{card.id}-".lower()
+        serial_lower = serial_number.lower()
+        if serial_lower == expected_serial or serial_lower.startswith(legacy_prefix):
+            user = db.query(models.User).filter(models.User.id == card.user_id).first()
+            if user:
+                return user, card
+
+    raise HTTPException(status_code=404, detail="Tarjeta Mayu no encontrada para Apple Wallet")
+
+
+def extract_wallet_auth_token(request: FastAPIRequest):
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth_header:
+        return None
+    if auth_header.lower().startswith("applepass "):
+        return auth_header.split(" ", 1)[1].strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+    return auth_header.strip()
+
+
+def verify_member_wallet_request(request: FastAPIRequest, card):
+    token = extract_wallet_auth_token(request)
+    expected = member_wallet_auth_token(card)
+    if token != expected:
+        raise HTTPException(status_code=401, detail="Apple Wallet token inválido")
+
+
+def member_apple_last_updated(db: Session, user, card):
+    summary = ambassador_commission_summary(db, user)
+    latest = summary.get("latest_commission_at") if summary else None
+    base_dt = latest or user.created_at or datetime.utcnow()
+    return format_datetime(base_dt.replace(tzinfo=timezone.utc), usegmt=True)
 
 
 def get_card_visual_data(db: Session | None, user, card):
@@ -244,6 +351,16 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     apple_wallet_url = f"{BASE_PUBLIC_URL}/member-cards/apple-wallet/{user.id}"
     google_wallet_url = f"{BASE_PUBLIC_URL}/member-cards/google-wallet/{user.id}"
+    ambassador_summary = ambassador_commission_summary(db, user)
+    ambassador_block = ""
+
+    if ambassador_summary:
+        ambassador_block = f"""
+                    <div style="margin-top:18px; padding:16px; border-radius:18px; background:#0f766e;">
+                        <p><strong>Ganancia pendiente:</strong> ${ambassador_summary['total_pending']:.2f}</p>
+                        <p><strong>Pagado acumulado:</strong> ${ambassador_summary['total_paid']:.2f}</p>
+                    </div>
+        """
 
     html = f"""
     <html>
@@ -261,6 +378,7 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
                     <p><strong>Código:</strong> {card.member_code}</p>
                     <p><strong>Estado:</strong> {card.status}</p>
                     <p><strong>Vigencia:</strong> {CARD_VALIDITY_TEXT}</p>
+                    {ambassador_block}
 
                     <a href="{validate_url}" style="display:inline-block; margin-top:16px; padding:12px 20px; background:#14b8a6; color:white; text-decoration:none; border-radius:999px;">Validar tarjeta</a>
                     <br/>
@@ -332,6 +450,7 @@ def draw_text(draw, position, text, font):
 def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
     visual = get_card_visual_data(db, user, card)
+    ambassador_summary = ambassador_commission_summary(db, user)
 
     width, height = 950, 560
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -374,10 +493,26 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     draw_text(draw, ((width - club_width) // 2, 205), CLUB_NAME.upper(), club_font)
 
     draw_text(draw, (60, 305), visual["display_name"], name_font)
-    draw_text(draw, (60, 355), visual["level_text"], info_font)
-    draw_text(draw, (60, 400), f"Código: {visual['member_code']}", info_font)
-    draw_text(draw, (60, 440), f"Válido hasta: {CARD_VALIDITY_TEXT}", info_font)
-    draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
+    if ambassador_summary:
+        draw_text(
+            draw,
+            (60, 355),
+            f"Por pagar: ${ambassador_summary['total_pending']:.2f}",
+            info_font,
+        )
+        draw_text(
+            draw,
+            (60, 400),
+            f"Pagado: ${ambassador_summary['total_paid']:.2f}",
+            info_font,
+        )
+        draw_text(draw, (60, 440), f"Código: {visual['member_code']}", info_font)
+        draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
+    else:
+        draw_text(draw, (60, 355), visual["level_text"], info_font)
+        draw_text(draw, (60, 400), f"Código: {visual['member_code']}", info_font)
+        draw_text(draw, (60, 440), f"Válido hasta: {CARD_VALIDITY_TEXT}", info_font)
+        draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
 
     validation_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     qr = qrcode.make(validation_url).resize((170, 170))
@@ -554,10 +689,12 @@ def zip_pkpass(pass_dir: str, output_path: str):
                 z.write(file_path, filename)
 
 
-@router.get("/apple-wallet/{user_id}")
-def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
-    user, card = get_or_create_card(db, user_id)
-
+def build_member_apple_wallet_file(
+    db: Session,
+    user,
+    card,
+    serial_number_override: str | None = None,
+):
     pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
     team_id = os.getenv("APPLE_TEAM_ID")
     organization_name = os.getenv("APPLE_ORGANIZATION_NAME", CLUB_NAME)
@@ -574,7 +711,7 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     if not os.path.exists(certs_dir):
         certs_dir = os.path.join(os.getcwd(), "certs")
 
-    temp_dir = tempfile.mkdtemp(prefix=f"mayu_pkpass_{user_id}_")
+    temp_dir = tempfile.mkdtemp(prefix=f"mayu_pkpass_{user.id}_")
     pass_dir = os.path.join(temp_dir, "pass")
     os.makedirs(pass_dir, exist_ok=True)
 
@@ -582,15 +719,51 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
         card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
         visual = get_card_visual_data(db, user, card)
+        ambassador_summary = ambassador_commission_summary(db, user)
+        pending_value = (
+            f"${ambassador_summary['total_pending']:.2f}" if ambassador_summary else None
+        )
+        paid_value = (
+            f"${ambassador_summary['total_paid']:.2f}" if ambassador_summary else None
+        )
+        primary_label = "GANANCIA PENDIENTE" if ambassador_summary else "SOCIO MAYU"
+        primary_value = pending_value or user.name
+        secondary_fields = [
+            {
+                "key": "level",
+                "label": "MEMBRESÍA",
+                "value": level_text(user, card),
+            },
+            {
+                "key": "status",
+                "label": "ESTADO",
+                "value": "Activo" if card.status == "active" else "Inactivo",
+            },
+        ]
+        if ambassador_summary:
+            secondary_fields = [
+                {
+                    "key": "name",
+                    "label": "EMBAJADOR",
+                    "value": user.name,
+                },
+                {
+                    "key": "paid_total",
+                    "label": "PAGADO",
+                    "value": paid_value,
+                },
+            ]
 
         pass_json = {
             "formatVersion": 1,
             "passTypeIdentifier": pass_type_id,
-            "serialNumber": f"{card.member_code}-{card.id}-{card.level_snapshot}-{card.status}-{uuid.uuid4()}",
+            "serialNumber": serial_number_override or member_apple_serial(card),
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": CLUB_NAME,
             "logoText": CLUB_NAME.upper(),
+            "webServiceURL": f"{BASE_PUBLIC_URL}/member-cards/wallet/apple",
+            "authenticationToken": member_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
             "backgroundColor": "rgb(15,23,42)",
             "labelColor": "rgb(255,236,170)",
@@ -599,23 +772,12 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
             "storeCard": {
                 "primaryFields": [
                     {
-                        "key": "name",
-                        "label": "SOCIO MAYU",
-                        "value": user.name,
+                        "key": "primary",
+                        "label": primary_label,
+                        "value": primary_value,
                     }
                 ],
-                "secondaryFields": [
-                    {
-                        "key": "level",
-                        "label": "MEMBRESÍA",
-                        "value": level_text(user, card),
-                    },
-                    {
-                        "key": "status",
-                        "label": "ESTADO",
-                        "value": "Activo" if card.status == "active" else "Inactivo",
-                    },
-                ],
+                "secondaryFields": secondary_fields,
                 "auxiliaryFields": [
                     {
                         "key": "code",
@@ -632,6 +794,22 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
                     {"key": "valid_back", "label": "Vigencia", "value": CARD_VALIDITY_TEXT},
                     {"key": "email", "label": "Email", "value": user.email},
                     {"key": "phone", "label": "Celular", "value": user.phone or "-"},
+                    *(
+                        [
+                            {
+                                "key": "pending_back",
+                                "label": "Ganancia pendiente",
+                                "value": pending_value,
+                            },
+                            {
+                                "key": "paid_back",
+                                "label": "Pagado acumulado",
+                                "value": paid_value,
+                            },
+                        ]
+                        if ambassador_summary
+                        else []
+                    ),
                     {"key": "web", "label": "Tarjeta web", "value": card_web_url},
                 ],
             },
@@ -650,19 +828,25 @@ def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
         build_manifest(pass_dir)
         sign_manifest(pass_dir, certs_dir)
 
-        output_path = os.path.join(temp_dir, f"mayu_wallet_{user_id}.pkpass")
+        output_path = os.path.join(temp_dir, f"mayu_wallet_{user.id}.pkpass")
         zip_pkpass(pass_dir, output_path)
-
-        return FileResponse(
-            path=output_path,
-            media_type="application/vnd.apple.pkpass",
-            filename=f"mayu_wallet_{user_id}.pkpass",
-        )
+        return output_path
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generando Apple Wallet: {str(e)}")
+
+
+@router.get("/apple-wallet/{user_id}")
+def generate_apple_wallet_pass(user_id: int, db: Session = Depends(get_db)):
+    user, card = get_or_create_card(db, user_id)
+    output_path = build_member_apple_wallet_file(db, user, card)
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"mayu_wallet_{user_id}.pkpass",
+    )
 
 
 def get_google_wallet_service_account():
@@ -734,27 +918,8 @@ def ensure_member_google_wallet_class(service_account_info: dict, class_id: str)
         )
 
 
-def build_google_wallet_save_url(user, card):
-    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
-    class_suffix = member_google_class_suffix()
-
-    if not issuer_id:
-        raise HTTPException(status_code=500, detail="Falta GOOGLE_WALLET_ISSUER_ID en Render")
-
-    service_account = get_google_wallet_service_account()
-
-    client_email = service_account.get("client_email")
-    private_key = service_account.get("private_key")
-
-    if not client_email or not private_key:
-        raise HTTPException(status_code=500, detail="JSON de Google Wallet incompleto")
-
-    private_key = clean_google_private_key(private_key)
-
+def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
     visual = get_card_visual_data(None, user, card)
-
-    class_id = f"{issuer_id}.{class_suffix}"
-    ensure_member_google_wallet_class(service_account, class_id)
     object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}".replace("-", "_").lower()
     object_id = f"{issuer_id}.{object_suffix}"
 
@@ -763,7 +928,45 @@ def build_google_wallet_save_url(user, card):
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
     card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
 
-    generic_object = {
+    ambassador_summary = ambassador_commission_summary(None, user)
+    if user.role == "ambassador":
+        # Requery summary when wallet object is built from a request with DB-backed user.
+        try:
+            from database import SessionLocal
+
+            temp_db = SessionLocal()
+            try:
+                fresh_user = temp_db.query(models.User).filter(models.User.id == user.id).first() or user
+                ambassador_summary = ambassador_commission_summary(temp_db, fresh_user)
+            finally:
+                temp_db.close()
+        except Exception:
+            ambassador_summary = ambassador_summary or None
+
+    text_modules = [
+        {"id": "membership", "header": "Membresía", "body": level_text(user, card)},
+        {"id": "status", "header": "Estado", "body": "Activo" if card.status == "active" else "Inactivo"},
+        {"id": "code", "header": "Código", "body": card.member_code},
+        {"id": "valid", "header": "Vigencia", "body": CARD_VALIDITY_TEXT},
+    ]
+
+    if ambassador_summary:
+        text_modules = [
+            {
+                "id": "pending",
+                "header": "Ganancia pendiente",
+                "body": f"${ambassador_summary['total_pending']:.2f}",
+            },
+            {
+                "id": "paid_total",
+                "header": "Pagado acumulado",
+                "body": f"${ambassador_summary['total_paid']:.2f}",
+            },
+            {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
+            {"id": "code", "header": "Código", "body": card.member_code},
+        ]
+
+    return {
         "id": object_id,
         "classId": class_id,
         "state": "ACTIVE" if card.status == "active" else "INACTIVE",
@@ -793,12 +996,7 @@ def build_google_wallet_save_url(user, card):
             "value": validate_url,
             "alternateText": card.member_code,
         },
-        "textModulesData": [
-            {"id": "membership", "header": "Membresía", "body": level_text(user, card)},
-            {"id": "status", "header": "Estado", "body": "Activo" if card.status == "active" else "Inactivo"},
-            {"id": "code", "header": "Código", "body": card.member_code},
-            {"id": "valid", "header": "Vigencia", "body": CARD_VALIDITY_TEXT},
-        ],
+        "textModulesData": text_modules,
         "linksModuleData": {
             "uris": [
                 {"id": "validate", "uri": validate_url, "description": "Validar tarjeta"},
@@ -806,6 +1004,27 @@ def build_google_wallet_save_url(user, card):
             ]
         },
     }
+
+
+def build_google_wallet_save_url(user, card):
+    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    class_suffix = member_google_class_suffix()
+
+    if not issuer_id:
+        raise HTTPException(status_code=500, detail="Falta GOOGLE_WALLET_ISSUER_ID en Render")
+
+    service_account = get_google_wallet_service_account()
+
+    client_email = service_account.get("client_email")
+    private_key = service_account.get("private_key")
+
+    if not client_email or not private_key:
+        raise HTTPException(status_code=500, detail="JSON de Google Wallet incompleto")
+
+    private_key = clean_google_private_key(private_key)
+    class_id = f"{issuer_id}.{class_suffix}"
+    ensure_member_google_wallet_class(service_account, class_id)
+    generic_object = build_google_wallet_object_body(user, card, issuer_id, class_id)
 
     claims = {
         "iss": client_email,
@@ -825,3 +1044,327 @@ def generate_google_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
     save_url = build_google_wallet_save_url(user, card)
     return RedirectResponse(url=save_url)
+
+
+def safe_update_member_google_wallet_object(user, card):
+    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    if not issuer_id:
+        return {"updated": False, "detail": "Falta GOOGLE_WALLET_ISSUER_ID"}
+
+    try:
+        service_account_info = get_google_wallet_service_account()
+        class_id = f"{issuer_id}.{member_google_class_suffix()}"
+        ensure_member_google_wallet_class(service_account_info, class_id)
+        object_body = build_google_wallet_object_body(user, card, issuer_id, class_id)
+        object_id = object_body["id"]
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+        )
+        credentials.refresh(GoogleAuthRequest())
+        response = requests.patch(
+            f"https://walletobjects.googleapis.com/walletobjects/v1/genericObject/{object_id}",
+            headers={
+                "Authorization": f"Bearer {credentials.token}",
+                "Content-Type": "application/json",
+            },
+            json=object_body,
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return {
+                "updated": False,
+                "detail": "El usuario aún no ha guardado la tarjeta Google Wallet",
+            }
+        if response.status_code >= 300:
+            return {
+                "updated": False,
+                "status_code": response.status_code,
+                "detail": response.text[:500],
+            }
+        return {"updated": True, "object_id": object_id}
+    except Exception as exc:
+        return {"updated": False, "detail": str(exc)}
+
+
+def build_member_apple_wallet_push_cert_files(temp_dir: str):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    certs_dir = os.path.join(base_dir, "certs")
+    if not os.path.exists(certs_dir):
+        certs_dir = os.path.join(os.getcwd(), "certs")
+
+    p12_path = os.path.join(certs_dir, "mayu_wallet.p12")
+    password = os.getenv("APPLE_WALLET_P12_PASSWORD") or os.getenv(
+        "APPLE_WALLET_CERT_PASSWORD"
+    )
+
+    if not os.path.exists(p12_path):
+        raise Exception("No existe certs/mayu_wallet.p12")
+    if not password:
+        raise Exception("Falta APPLE_WALLET_P12_PASSWORD")
+
+    with open(p12_path, "rb") as f:
+        private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+            f.read(),
+            password.encode(),
+        )
+
+    if not private_key or not certificate:
+        raise Exception("Certificado Apple Wallet inválido")
+
+    from cryptography.hazmat.primitives.serialization import NoEncryption, PrivateFormat
+
+    cert_path = os.path.join(temp_dir, "apple_wallet_push_cert.pem")
+    key_path = os.path.join(temp_dir, "apple_wallet_push_key.pem")
+
+    with open(cert_path, "wb") as f:
+        f.write(certificate.public_bytes(Encoding.PEM))
+        for item in additional_certificates or []:
+            f.write(item.public_bytes(Encoding.PEM))
+
+    with open(key_path, "wb") as f:
+        f.write(
+            private_key.private_bytes(
+                Encoding.PEM,
+                PrivateFormat.PKCS8,
+                NoEncryption(),
+            )
+        )
+
+    return cert_path, key_path
+
+
+def safe_send_member_apple_wallet_update_pushes(db: Session, card):
+    pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
+    if not pass_type_id:
+        return {"sent": 0, "errors": [{"detail": "Falta APPLE_PASS_TYPE_ID"}]}
+
+    registrations = (
+        db.query(models.MemberAppleWalletRegistration)
+        .filter(models.MemberAppleWalletRegistration.card_id == card.id)
+        .all()
+    )
+    if not registrations:
+        return {"sent": 0, "errors": [], "detail": "Sin dispositivos Apple Wallet registrados"}
+
+    try:
+        import httpx
+
+        temp_dir = tempfile.mkdtemp(prefix=f"mayu_member_apns_{card.id}_")
+        cert_path, key_path = build_member_apple_wallet_push_cert_files(temp_dir)
+        apns_host = os.getenv("APPLE_APNS_HOST", "https://api.push.apple.com")
+        sent = 0
+        errors = []
+
+        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=20) as client:
+            for registration in registrations:
+                try:
+                    response = client.post(
+                        f"{apns_host}/3/device/{registration.push_token}",
+                        headers={
+                            "apns-topic": pass_type_id,
+                            "apns-push-type": "background",
+                            "apns-priority": "10",
+                        },
+                        json={},
+                    )
+                    if response.status_code in {200, 201}:
+                        sent += 1
+                    elif response.status_code == 410:
+                        (
+                            db.query(models.MemberAppleWalletRegistration)
+                            .filter(models.MemberAppleWalletRegistration.id == registration.id)
+                            .delete(synchronize_session=False)
+                        )
+                        db.commit()
+                    else:
+                        errors.append(
+                            {
+                                "registration_id": registration.id,
+                                "status_code": response.status_code,
+                                "detail": response.text[:300],
+                            }
+                        )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "registration_id": registration.id,
+                            "detail": str(exc),
+                        }
+                    )
+
+        return {
+            "sent": sent,
+            "registered_devices": len(registrations),
+            "errors": errors,
+        }
+    except Exception as exc:
+        return {"sent": 0, "errors": [{"detail": str(exc)}], "registered_devices": len(registrations)}
+
+
+def safe_update_member_wallets(db: Session, user, card):
+    return {
+        "google": safe_update_member_google_wallet_object(user, card),
+        "apple": safe_send_member_apple_wallet_update_pushes(db, card),
+    }
+
+
+@router.post(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def register_member_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    payload: AppleWalletRegistrationRequest,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    user, card = get_member_card_by_apple_serial(db, serial_number)
+    verify_member_wallet_request(request, card)
+
+    if not payload.pushToken or not payload.pushToken.strip():
+        raise HTTPException(status_code=400, detail="pushToken requerido")
+
+    existing = (
+        db.query(models.MemberAppleWalletRegistration)
+        .filter(
+            models.MemberAppleWalletRegistration.card_id == card.id,
+            models.MemberAppleWalletRegistration.device_library_identifier == device_library_identifier,
+            models.MemberAppleWalletRegistration.serial_number == serial_number,
+        )
+        .first()
+    )
+
+    created = False
+    if existing:
+        existing.pass_type_identifier = pass_type_identifier
+        existing.push_token = payload.pushToken.strip()
+        existing.authentication_token = member_wallet_auth_token(card)
+        existing.updated_at = datetime.utcnow()
+    else:
+        created = True
+        existing = models.MemberAppleWalletRegistration(
+            card_id=card.id,
+            device_library_identifier=device_library_identifier,
+            pass_type_identifier=pass_type_identifier,
+            serial_number=serial_number,
+            push_token=payload.pushToken.strip(),
+            authentication_token=member_wallet_auth_token(card),
+        )
+        db.add(existing)
+
+    db.commit()
+    return Response(status_code=201 if created else 200)
+
+
+@router.delete(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}/{serial_number}"
+)
+def unregister_member_apple_wallet_device(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    user, card = get_member_card_by_apple_serial(db, serial_number)
+    verify_member_wallet_request(request, card)
+    (
+        db.query(models.MemberAppleWalletRegistration)
+        .filter(
+            models.MemberAppleWalletRegistration.card_id == card.id,
+            models.MemberAppleWalletRegistration.device_library_identifier == device_library_identifier,
+            models.MemberAppleWalletRegistration.pass_type_identifier == pass_type_identifier,
+            models.MemberAppleWalletRegistration.serial_number == serial_number,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return Response(status_code=200)
+
+
+@router.get(
+    "/wallet/apple/v1/devices/{device_library_identifier}/registrations/{pass_type_identifier}"
+)
+def get_member_apple_wallet_updated_serials(
+    device_library_identifier: str,
+    pass_type_identifier: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+    passesUpdatedSince: str | None = None,
+):
+    registrations = (
+        db.query(models.MemberAppleWalletRegistration)
+        .filter(
+            models.MemberAppleWalletRegistration.device_library_identifier == device_library_identifier,
+            models.MemberAppleWalletRegistration.pass_type_identifier == pass_type_identifier,
+        )
+        .all()
+    )
+
+    if registrations:
+        token = extract_wallet_auth_token(request)
+        if token not in {item.authentication_token for item in registrations}:
+            return Response(status_code=401)
+
+    updated_items = []
+    for item in registrations:
+        if not item.card:
+            continue
+        user = item.card.user
+        if not user:
+            continue
+        last_updated = member_apple_last_updated(db, user, item.card)
+        if passesUpdatedSince and last_updated <= passesUpdatedSince:
+            continue
+        updated_items.append((item, last_updated))
+
+    if not updated_items:
+        return Response(status_code=204)
+
+    return {
+        "lastUpdated": max(last_updated for _, last_updated in updated_items),
+        "serialNumbers": [item.serial_number for item, _ in updated_items],
+    }
+
+
+@router.get("/wallet/apple/v1/passes/{pass_type_identifier}/{serial_number}")
+def get_updated_member_apple_wallet_pass(
+    pass_type_identifier: str,
+    serial_number: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    user, card = get_member_card_by_apple_serial(db, serial_number)
+    verify_member_wallet_request(request, card)
+    output_path = build_member_apple_wallet_file(
+        db,
+        user,
+        card,
+        serial_number_override=serial_number,
+    )
+    summary = ambassador_commission_summary(db, user)
+    pending_value = int(round((summary["total_pending"] if summary else 0) * 100))
+    paid_value = int(round((summary["total_paid"] if summary else 0) * 100))
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.apple.pkpass",
+        filename=f"mayu_wallet_{user.id}.pkpass",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Last-Modified": member_apple_last_updated(db, user, card),
+            "ETag": f"member-{card.id}-{card.status}-{pending_value}-{paid_value}",
+        },
+    )
+
+
+@router.post("/wallet/apple/v1/log")
+def member_apple_wallet_log(payload: dict):
+    return {"message": "Apple Wallet log member recibido", "payload": payload}
+
+
+@router.post("/wallet/apple/v1/v1/log")
+def member_apple_wallet_legacy_double_v1_log(payload: dict):
+    return {"message": "Apple Wallet log member recibido", "payload": payload}
