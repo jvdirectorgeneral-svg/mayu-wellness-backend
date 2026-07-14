@@ -1096,7 +1096,13 @@ def build_google_wallet_save_url(user, card):
     private_key = clean_google_private_key(private_key)
     class_id = f"{issuer_id}.{class_suffix}"
     ensure_member_google_wallet_class(service_account, class_id)
-    generic_object = build_google_wallet_object_body(user, card, issuer_id, class_id)
+    generic_object = upsert_member_google_wallet_object(
+        service_account,
+        user,
+        card,
+        issuer_id,
+        class_id,
+    )
 
     claims = {
         "iss": client_email,
@@ -1118,6 +1124,61 @@ def generate_google_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(url=save_url)
 
 
+def upsert_member_google_wallet_object(
+    service_account_info: dict,
+    user,
+    card,
+    issuer_id: str,
+    class_id: str,
+):
+    object_body = build_google_wallet_object_body(user, card, issuer_id, class_id)
+    object_id = object_body["id"]
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+    )
+    credentials.refresh(GoogleAuthRequest())
+    headers = {
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    }
+    object_url = f"https://walletobjects.googleapis.com/walletobjects/v1/genericObject/{object_id}"
+    existing = requests.get(object_url, headers=headers, timeout=20)
+
+    if existing.status_code == 404:
+        created = requests.post(
+            "https://walletobjects.googleapis.com/walletobjects/v1/genericObject",
+            headers=headers,
+            json=object_body,
+            timeout=20,
+        )
+        if created.status_code not in {200, 201}:
+            raise HTTPException(
+                status_code=500,
+                detail=f"No se pudo crear objeto Google Wallet socios: {created.text[:500]}",
+            )
+        return object_body
+
+    if existing.status_code >= 300:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo verificar objeto Google Wallet socios: {existing.text[:500]}",
+        )
+
+    replaced = requests.put(
+        object_url,
+        headers=headers,
+        json=object_body,
+        timeout=20,
+    )
+    if replaced.status_code >= 300:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo reemplazar objeto Google Wallet socios: {replaced.text[:500]}",
+        )
+    return object_body
+
+
 def safe_update_member_google_wallet_object(user, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     if not issuer_id:
@@ -1127,34 +1188,16 @@ def safe_update_member_google_wallet_object(user, card):
         service_account_info = get_google_wallet_service_account()
         class_id = f"{issuer_id}.{member_google_class_suffix()}"
         ensure_member_google_wallet_class(service_account_info, class_id)
-        object_body = build_google_wallet_object_body(user, card, issuer_id, class_id)
-        object_id = object_body["id"]
-        credentials = service_account.Credentials.from_service_account_info(
+        object_body = upsert_member_google_wallet_object(
             service_account_info,
-            scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+            user,
+            card,
+            issuer_id,
+            class_id,
         )
-        credentials.refresh(GoogleAuthRequest())
-        response = requests.patch(
-            f"https://walletobjects.googleapis.com/walletobjects/v1/genericObject/{object_id}",
-            headers={
-                "Authorization": f"Bearer {credentials.token}",
-                "Content-Type": "application/json",
-            },
-            json=object_body,
-            timeout=20,
-        )
-        if response.status_code == 404:
-            return {
-                "updated": False,
-                "detail": "El usuario aún no ha guardado la tarjeta Google Wallet",
-            }
-        if response.status_code >= 300:
-            return {
-                "updated": False,
-                "status_code": response.status_code,
-                "detail": response.text[:500],
-            }
-        return {"updated": True, "object_id": object_id}
+        return {"updated": True, "object_id": object_body["id"]}
+    except HTTPException as exc:
+        return {"updated": False, "detail": str(exc.detail)}
     except Exception as exc:
         return {"updated": False, "detail": str(exc)}
 
