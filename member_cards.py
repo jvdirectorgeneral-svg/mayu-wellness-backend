@@ -85,7 +85,7 @@ def ambassador_commission_summary(db: Session | None, user):
             "projected_monthly_commission": 0.0,
             "active_referrals": 0,
             "current_display_amount": 0.0,
-            "current_display_label": "Próxima comisión",
+            "current_display_label": "Ganancia pendiente",
         }
 
     commissions = (
@@ -142,8 +142,8 @@ def ambassador_commission_summary(db: Session | None, user):
             latest_commission_at = current
 
     projected_monthly_commission = round(projected_monthly_commission, 2)
-    current_display_amount = total_pending if total_pending > 0 else projected_monthly_commission
-    current_display_label = "Ganancia pendiente" if total_pending > 0 else "Próxima comisión"
+    current_display_amount = total_pending
+    current_display_label = "Ganancia pendiente"
 
     latest_activity_at = latest_commission_at
     if latest_referral_change and (
@@ -424,7 +424,7 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
     if ambassador_summary:
         ambassador_block = f"""
                     <div style="margin-top:18px; padding:16px; border-radius:18px; background:#0f766e;">
-                        <p><strong>Ganancia pendiente:</strong> ${ambassador_summary['total_pending']:.2f}</p>
+                        <p><strong>{ambassador_summary['current_display_label']}:</strong> ${ambassador_summary['current_display_amount']:.2f}</p>
                         <p><strong>Pagado acumulado:</strong> ${ambassador_summary['total_paid']:.2f}</p>
                     </div>
         """
@@ -574,13 +574,8 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
             f"Pagado: ${ambassador_summary['total_paid']:.2f}",
             info_font,
         )
-        draw_text(
-            draw,
-            (60, 440),
-            f"Próxima comisión: ${ambassador_summary['projected_monthly_commission']:.2f}",
-            info_font,
-        )
-        draw_text(draw, (60, 480), f"Código: {visual['member_code']}", info_font)
+        draw_text(draw, (60, 440), f"Código: {visual['member_code']}", info_font)
+        draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
     else:
         draw_text(draw, (60, 355), visual["level_text"], info_font)
         draw_text(draw, (60, 400), f"Código: {visual['member_code']}", info_font)
@@ -799,11 +794,6 @@ def build_member_apple_wallet_file(
         paid_value = (
             f"${ambassador_summary['total_paid']:.2f}" if ambassador_summary else None
         )
-        projected_value = (
-            f"${ambassador_summary['projected_monthly_commission']:.2f}"
-            if ambassador_summary
-            else None
-        )
         primary_label = (
             ambassador_summary["current_display_label"].upper()
             if ambassador_summary
@@ -887,11 +877,6 @@ def build_member_apple_wallet_file(
                                 "key": "paid_back",
                                 "label": "Pagado acumulado",
                                 "value": paid_value,
-                            },
-                            {
-                                "key": "projected_back",
-                                "label": "Próxima comisión",
-                                "value": projected_value,
                             },
                         ]
                         if ambassador_summary
@@ -1048,11 +1033,6 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
                 "id": "paid_total",
                 "header": "Pagado acumulado",
                 "body": f"${ambassador_summary['total_paid']:.2f}",
-            },
-            {
-                "id": "projected_next",
-                "header": "Próxima comisión",
-                "body": f"${ambassador_summary['projected_monthly_commission']:.2f}",
             },
             {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
             {"id": "code", "header": "Código", "body": card.member_code},
