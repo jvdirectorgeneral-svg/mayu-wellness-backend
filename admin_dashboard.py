@@ -8,6 +8,7 @@ from typing import Optional
 from database import SessionLocal
 from dependencies import get_current_user
 from auth import hash_password
+from member_cards import ambassador_commission_summary
 from models import (
     User,
     Ambassador,
@@ -146,8 +147,9 @@ def user_to_dict(u: User):
     }
 
 
-def ambassador_to_dict(a: Ambassador):
+def ambassador_to_dict(db: Session, a: Ambassador):
     user = a.user
+    summary = ambassador_commission_summary(db, user) if user else None
     return {
         "id": a.id,
         "user_id": a.user_id,
@@ -166,6 +168,12 @@ def ambassador_to_dict(a: Ambassador):
         "bank_account_holder": getattr(a, "bank_account_holder", None),
         "bank_identification": getattr(a, "bank_identification", None),
         "payment_notes": getattr(a, "payment_notes", None),
+        "commission_balance": summary["current_display_amount"] if summary else 0.0,
+        "commission_balance_label": summary["current_display_label"] if summary else "Ganancia pendiente",
+        "projected_monthly_commission": summary["secondary_projected_amount"] if summary else 0.0,
+        "projected_monthly_commission_raw": summary["projected_monthly_commission"] if summary else 0.0,
+        "total_paid_commissions": summary["total_paid"] if summary else 0.0,
+        "total_generated_commissions": summary["total_generated"] if summary else 0.0,
     }
 
 
@@ -616,7 +624,7 @@ def admin_update_member(user_id: int, payload: AdminUpdateMemberRequest, db: Ses
 def get_ambassadors(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
     ambassadors = db.query(Ambassador).order_by(Ambassador.id.desc()).all()
-    return {"items": [ambassador_to_dict(a) for a in ambassadors]}
+    return {"items": [ambassador_to_dict(db, a) for a in ambassadors]}
 
 
 @router.put("/ambassadors/{ambassador_id}")
@@ -678,7 +686,7 @@ def update_ambassador(ambassador_id: int, payload: AdminUpdateAmbassadorRequest,
     db.refresh(ambassador)
     db.refresh(user)
 
-    return {"message": "Embajador actualizado correctamente", "ambassador": ambassador_to_dict(ambassador)}
+    return {"message": "Embajador actualizado correctamente", "ambassador": ambassador_to_dict(db, ambassador)}
 
 
 @router.put("/users/{user_id}/phone")
