@@ -136,6 +136,13 @@ def ambassador_commission_summary(db: Session | None, user):
         sum(float(c.commission_amount or 0) for c in commissions),
         2,
     )
+    current_month = datetime.utcnow().month
+    current_year = datetime.utcnow().year
+    current_period_commissions = [
+        c for c in commissions if c.month == current_month and c.year == current_year
+    ]
+    has_current_period_records = bool(current_period_commissions)
+    has_current_period_paid = any(c.status == "paid" for c in current_period_commissions)
     latest_commission_at = None
     for item in commissions:
         current = item.paid_at or item.generated_at
@@ -147,11 +154,19 @@ def ambassador_commission_summary(db: Session | None, user):
     current_display_amount = total_pending
     secondary_projected_amount = projected_monthly_commission
 
-    if current_display_amount <= 0 and projected_monthly_commission > 0:
-        # When there is not yet a persisted pending commission row, we still
-        # surface the next payable amount as the current pending gain so admin
-        # and wallets stay aligned.
+    if (
+        current_display_amount <= 0
+        and projected_monthly_commission > 0
+        and not has_current_period_records
+    ):
+        # If the current month does not yet have persisted commission rows,
+        # surface the month projection as the pending payable amount so admin
+        # can see and settle it without waiting for an explicit row creation.
         current_display_amount = projected_monthly_commission
+        secondary_projected_amount = 0.0
+    elif current_display_amount <= 0 and has_current_period_paid:
+        # Once the current month has already been paid, keep wallets/admin at
+        # zero instead of re-surfacing the same month as a new projected debt.
         secondary_projected_amount = 0.0
 
     latest_activity_at = latest_commission_at
@@ -1557,7 +1572,19 @@ def get_member_apple_wallet_updated_serials(
     if registrations:
         token = extract_wallet_auth_token(request)
         if token not in {item.authentication_token for item in registrations}:
-            return Response(status_code=401)
+            print(
+                json.dumps(
+                    {
+                        "event": "mayu_member_apple_wallet_update_auth_mismatch",
+                        "device": device_library_identifier,
+                        "pass_type": pass_type_identifier,
+                        "registrations": len(registrations),
+                        "auth_present": bool(token),
+                    },
+                    default=str,
+                ),
+                flush=True,
+            )
 
     updated_items = []
     for item in registrations:
