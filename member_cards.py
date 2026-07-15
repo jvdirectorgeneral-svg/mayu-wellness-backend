@@ -426,6 +426,7 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
         ambassador_block = f"""
                     <div style="margin-top:18px; padding:16px; border-radius:18px; background:#0f766e;">
                         <p><strong>{ambassador_summary['current_display_label']}:</strong> ${ambassador_summary['current_display_amount']:.2f}</p>
+                        <p><strong>Próxima comisión:</strong> ${ambassador_summary['projected_monthly_commission']:.2f}</p>
                         <p><strong>Pagado acumulado:</strong> ${ambassador_summary['total_paid']:.2f}</p>
                     </div>
         """
@@ -572,11 +573,16 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         draw_text(
             draw,
             (60, 400),
-            f"Pagado: ${ambassador_summary['total_paid']:.2f}",
+            f"Proxima comision: ${ambassador_summary['projected_monthly_commission']:.2f}",
             info_font,
         )
-        draw_text(draw, (60, 440), f"Código: {visual['member_code']}", info_font)
-        draw_text(draw, (60, 480), f"Estado: {card.status}", info_font)
+        draw_text(
+            draw,
+            (60, 440),
+            f"Pagado acumulado: ${ambassador_summary['total_paid']:.2f}",
+            info_font,
+        )
+        draw_text(draw, (60, 480), f"Codigo: {visual['member_code']}", info_font)
     else:
         draw_text(draw, (60, 355), visual["level_text"], info_font)
         draw_text(draw, (60, 400), f"Código: {visual['member_code']}", info_font)
@@ -792,6 +798,11 @@ def build_member_apple_wallet_file(
         pending_value = (
             f"${ambassador_summary['current_display_amount']:.2f}" if ambassador_summary else None
         )
+        projected_value = (
+            f"${ambassador_summary['projected_monthly_commission']:.2f}"
+            if ambassador_summary
+            else None
+        )
         paid_value = (
             f"${ambassador_summary['total_paid']:.2f}" if ambassador_summary else None
         )
@@ -857,11 +868,23 @@ def build_member_apple_wallet_file(
                         "label": "CÓDIGO",
                         "value": card.member_code,
                     },
-                    {
-                        "key": "valid",
-                        "label": "VIGENCIA",
-                        "value": CARD_VALIDITY_TEXT,
-                    },
+                    *(
+                        [
+                            {
+                                "key": "projected_total",
+                                "label": "PRÓXIMA COMISIÓN",
+                                "value": projected_value,
+                            }
+                        ]
+                        if ambassador_summary
+                        else [
+                            {
+                                "key": "valid",
+                                "label": "VIGENCIA",
+                                "value": CARD_VALIDITY_TEXT,
+                            }
+                        ]
+                    ),
                 ],
                 "backFields": [
                     {"key": "valid_back", "label": "Vigencia", "value": CARD_VALIDITY_TEXT},
@@ -878,6 +901,11 @@ def build_member_apple_wallet_file(
                                 "key": "paid_back",
                                 "label": "Pagado acumulado",
                                 "value": paid_value,
+                            },
+                            {
+                                "key": "projected_back",
+                                "label": "Próxima comisión",
+                                "value": projected_value,
                             },
                         ]
                         if ambassador_summary
@@ -1029,6 +1057,11 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
                 "id": "pending",
                 "header": ambassador_summary["current_display_label"],
                 "body": f"${ambassador_summary['current_display_amount']:.2f}",
+            },
+            {
+                "id": "projected_total",
+                "header": "Próxima comisión",
+                "body": f"${ambassador_summary['projected_monthly_commission']:.2f}",
             },
             {
                 "id": "paid_total",
