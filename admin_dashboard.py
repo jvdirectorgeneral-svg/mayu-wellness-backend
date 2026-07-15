@@ -9,6 +9,7 @@ from database import SessionLocal
 from dependencies import get_current_user
 from auth import hash_password
 from member_cards import ambassador_commission_summary
+from commissions import sync_ambassador_wallets
 from models import (
     User,
     Ambassador,
@@ -624,7 +625,19 @@ def admin_update_member(user_id: int, payload: AdminUpdateMemberRequest, db: Ses
 def get_ambassadors(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
     ambassadors = db.query(Ambassador).order_by(Ambassador.id.desc()).all()
-    return {"items": [ambassador_to_dict(db, a) for a in ambassadors]}
+
+    items = []
+    for ambassador in ambassadors:
+        ambassador_id = ambassador.id
+        try:
+            sync_ambassador_wallets(db, ambassador_id)
+            db.expire_all()
+            ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first() or ambassador
+        except Exception:
+            pass
+        items.append(ambassador_to_dict(db, ambassador))
+
+    return {"items": items}
 
 
 @router.put("/ambassadors/{ambassador_id}")
