@@ -1433,6 +1433,18 @@ def safe_send_member_apple_wallet_update_pushes(db: Session, card):
 
 
 def safe_update_member_wallets(db: Session, user, card):
+    # Re-read fresh state so ambassador commissions already committed in DB
+    # are the ones pushed to Google Wallet and Apple Wallet.
+    try:
+        fresh_user = db.query(models.User).filter(models.User.id == user.id).first()
+        fresh_card = db.query(models.MemberCard).filter(models.MemberCard.id == card.id).first()
+        if fresh_user:
+            user = fresh_user
+        if fresh_card:
+            card = fresh_card
+    except Exception:
+        pass
+
     return {
         "google": safe_update_member_google_wallet_object(user, card),
         "apple": safe_send_member_apple_wallet_update_pushes(db, card),
@@ -1546,8 +1558,6 @@ def get_member_apple_wallet_updated_serials(
         if not user:
             continue
         last_updated = member_apple_last_updated(db, user, item.card)
-        if passesUpdatedSince and last_updated <= passesUpdatedSince:
-            continue
         updated_items.append((item, last_updated))
 
     if not updated_items:
