@@ -202,6 +202,84 @@ def is_user_eligible(
     return get_eligibility_status(db, user, plan, month, year) == "eligible"
 
 
+def ensure_current_month_pending_commissions_for_ambassador(
+    db: Session,
+    ambassador: Ambassador,
+    month: int | None = None,
+    year: int | None = None,
+):
+    now = datetime.utcnow()
+    month = month or now.month
+    year = year or now.year
+
+    created_items = []
+
+    referrals = (
+        db.query(AmbassadorReferral)
+        .filter(
+            AmbassadorReferral.ambassador_id == ambassador.id,
+            AmbassadorReferral.status == "active",
+        )
+        .all()
+    )
+
+    for referral in referrals:
+        referred_user = db.query(User).filter(User.id == referral.user_id).first()
+        if not referred_user:
+            continue
+
+        plan = get_plan_by_user_level(db, referred_user)
+        if not is_user_eligible(db, referred_user, plan, month, year):
+            continue
+
+        existing_commission = (
+            db.query(Commission)
+            .filter(
+                Commission.ambassador_id == ambassador.id,
+                Commission.referred_user_id == referred_user.id,
+                Commission.month == month,
+                Commission.year == year,
+            )
+            .first()
+        )
+        if existing_commission:
+            continue
+
+        commission_amount = get_commission_amount_by_level(referred_user.membership_level)
+        if commission_amount <= 0 or not plan:
+            continue
+
+        commission = Commission(
+            ambassador_id=ambassador.id,
+            referred_user_id=referred_user.id,
+            plan_id=plan.id,
+            month=month,
+            year=year,
+            base_amount=float(plan.price),
+            commission_percent=0,
+            commission_amount=commission_amount,
+            member_status=get_member_status(referred_user),
+            payment_status=get_payment_status(db, referred_user, month, year),
+            eligibility_status=get_eligibility_status(
+                db,
+                referred_user,
+                plan,
+                month,
+                year,
+            ),
+            status="pending",
+            generated_at=datetime.utcnow(),
+            notes=(
+                f"Comisión mensual generada automáticamente para {month}/{year} "
+                f"antes de pago administrativo."
+            ),
+        )
+        db.add(commission)
+        created_items.append(commission)
+
+    return created_items
+
+
 def commission_to_dict(db: Session, c: Commission):
     ambassador = db.query(Ambassador).filter(Ambassador.id == c.ambassador_id).first()
     ambassador_user = (
@@ -713,6 +791,23 @@ def pay_pending_commissions_by_ambassador(
         .order_by(Commission.year.asc(), Commission.month.asc(), Commission.id.asc())
         .all()
     )
+
+    if not pending_commissions:
+        created_now = ensure_current_month_pending_commissions_for_ambassador(
+            db,
+            ambassador,
+        )
+        if created_now:
+            db.commit()
+            pending_commissions = (
+                db.query(Commission)
+                .filter(
+                    Commission.ambassador_id == ambassador_id,
+                    Commission.status == "pending",
+                )
+                .order_by(Commission.year.asc(), Commission.month.asc(), Commission.id.asc())
+                .all()
+            )
 
     if not pending_commissions:
         wallet_sync = sync_ambassador_wallets(db, ambassador_id)
