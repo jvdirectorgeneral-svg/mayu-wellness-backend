@@ -1,4 +1,5 @@
 from datetime import datetime
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -75,7 +76,17 @@ def sync_ambassador_wallets(db: Session, ambassador_id: int):
 
     try:
         user, card = get_or_create_card(db, ambassador.user_id)
-        return safe_update_member_wallets(db, user, card)
+        first_sync = safe_update_member_wallets(db, user, card)
+
+        # Second wallet sync after a short delay helps Apple/Google pick up
+        # the already-committed ambassador state more consistently.
+        time.sleep(2)
+        second_sync = safe_update_member_wallets(db, user, card)
+
+        return {
+            "initial": first_sync,
+            "delayed_retry": second_sync,
+        }
     except Exception as exc:
         return {
             "google": {"updated": False, "detail": str(exc)},
