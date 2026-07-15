@@ -143,8 +143,16 @@ def ambassador_commission_summary(db: Session | None, user):
             latest_commission_at = current
 
     projected_monthly_commission = round(projected_monthly_commission, 2)
-    current_display_amount = total_pending
     current_display_label = "Ganancia pendiente"
+    current_display_amount = total_pending
+    secondary_projected_amount = projected_monthly_commission
+
+    if current_display_amount <= 0 and projected_monthly_commission > 0:
+        # When there is not yet a persisted pending commission row, we still
+        # surface the next payable amount as the current pending gain so admin
+        # and wallets stay aligned.
+        current_display_amount = projected_monthly_commission
+        secondary_projected_amount = 0.0
 
     latest_activity_at = latest_commission_at
     if latest_referral_change and (
@@ -158,6 +166,7 @@ def ambassador_commission_summary(db: Session | None, user):
         "total_paid": total_paid,
         "total_generated": total_generated,
         "projected_monthly_commission": projected_monthly_commission,
+        "secondary_projected_amount": round(secondary_projected_amount, 2),
         "active_referrals": active_referrals,
         "current_display_amount": round(current_display_amount, 2),
         "current_display_label": current_display_label,
@@ -368,7 +377,7 @@ def card_response(db: Session, user, card):
         "wallet_pending_label": ambassador_summary["current_display_label"] if ambassador_summary else None,
         "wallet_pending_amount": ambassador_summary["current_display_amount"] if ambassador_summary else None,
         "wallet_paid_amount": ambassador_summary["total_paid"] if ambassador_summary else None,
-        "wallet_projected_amount": ambassador_summary["projected_monthly_commission"] if ambassador_summary else None,
+        "wallet_projected_amount": ambassador_summary["secondary_projected_amount"] if ambassador_summary else None,
     }
 
 
@@ -426,7 +435,7 @@ def get_member_card_web(user_id: int, db: Session = Depends(get_db)):
         ambassador_block = f"""
                     <div style="margin-top:18px; padding:16px; border-radius:18px; background:#0f766e;">
                         <p><strong>{ambassador_summary['current_display_label']}:</strong> ${ambassador_summary['current_display_amount']:.2f}</p>
-                        <p><strong>Próxima comisión:</strong> ${ambassador_summary['projected_monthly_commission']:.2f}</p>
+                        <p><strong>Próxima comisión:</strong> ${ambassador_summary['secondary_projected_amount']:.2f}</p>
                         <p><strong>Pagado acumulado:</strong> ${ambassador_summary['total_paid']:.2f}</p>
                     </div>
         """
@@ -573,7 +582,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         draw_text(
             draw,
             (60, 400),
-            f"Proxima comision: ${ambassador_summary['projected_monthly_commission']:.2f}",
+            f"Proxima comision: ${ambassador_summary['secondary_projected_amount']:.2f}",
             info_font,
         )
         draw_text(
@@ -799,7 +808,7 @@ def build_member_apple_wallet_file(
             f"${ambassador_summary['current_display_amount']:.2f}" if ambassador_summary else None
         )
         projected_value = (
-            f"${ambassador_summary['projected_monthly_commission']:.2f}"
+            f"${ambassador_summary['secondary_projected_amount']:.2f}"
             if ambassador_summary
             else None
         )
@@ -1061,7 +1070,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
             {
                 "id": "projected_total",
                 "header": "Próxima comisión",
-                "body": f"${ambassador_summary['projected_monthly_commission']:.2f}",
+                "body": f"${ambassador_summary['secondary_projected_amount']:.2f}",
             },
             {
                 "id": "paid_total",
@@ -1587,7 +1596,7 @@ def get_updated_member_apple_wallet_pass(
     summary = ambassador_commission_summary(db, user)
     pending_value = int(round((summary["current_display_amount"] if summary else 0) * 100))
     paid_value = int(round((summary["total_paid"] if summary else 0) * 100))
-    projected_value = int(round((summary["projected_monthly_commission"] if summary else 0) * 100))
+    projected_value = int(round((summary["secondary_projected_amount"] if summary else 0) * 100))
     return FileResponse(
         path=output_path,
         media_type="application/vnd.apple.pkpass",
