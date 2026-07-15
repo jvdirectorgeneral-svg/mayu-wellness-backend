@@ -18,6 +18,7 @@ import json
 import hashlib
 import zipfile
 import tempfile
+import time
 import jwt
 import requests
 from google.oauth2 import service_account
@@ -1078,6 +1079,39 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
     }
 
 
+def member_google_wallet_text_signature(wallet_object: dict):
+    items = []
+    for module in wallet_object.get("textModulesData", []) or []:
+        items.append(
+            {
+                "id": module.get("id"),
+                "header": module.get("header"),
+                "body": module.get("body"),
+            }
+        )
+    return items
+
+
+def member_google_wallet_visual_signature(wallet_object: dict):
+    hero_uri = (
+        ((wallet_object.get("heroImage") or {}).get("sourceUri") or {}).get("uri")
+    )
+    image_uri = None
+    image_modules = wallet_object.get("imageModulesData", []) or []
+    if image_modules:
+        image_uri = (
+            (((image_modules[0] or {}).get("mainImage") or {}).get("sourceUri") or {}).get("uri")
+        )
+
+    return {
+        "header": ((wallet_object.get("header") or {}).get("defaultValue") or {}).get("value"),
+        "subheader": ((wallet_object.get("subheader") or {}).get("defaultValue") or {}).get("value"),
+        "hero_uri": hero_uri,
+        "image_uri": image_uri,
+        "text_modules": member_google_wallet_text_signature(wallet_object),
+    }
+
+
 def build_google_wallet_save_url(user, card):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     class_suffix = member_google_class_suffix()
@@ -1176,7 +1210,55 @@ def upsert_member_google_wallet_object(
             status_code=500,
             detail=f"No se pudo reemplazar objeto Google Wallet socios: {replaced.text[:500]}",
         )
-    return object_body
+
+    expected_signature = member_google_wallet_visual_signature(object_body)
+
+    for attempt in range(2):
+        if attempt > 0:
+            patched = requests.patch(
+                object_url,
+                headers=headers,
+                json={
+                    "state": object_body["state"],
+                    "hexBackgroundColor": object_body["hexBackgroundColor"],
+                    "logo": object_body["logo"],
+                    "heroImage": object_body["heroImage"],
+                    "imageModulesData": object_body["imageModulesData"],
+                    "cardTitle": object_body["cardTitle"],
+                    "header": object_body["header"],
+                    "subheader": object_body["subheader"],
+                    "barcode": object_body["barcode"],
+                    "textModulesData": object_body["textModulesData"],
+                    "linksModuleData": object_body["linksModuleData"],
+                },
+                timeout=20,
+            )
+            if patched.status_code >= 300:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"No se pudo reforzar actualización Google Wallet socios: {patched.text[:500]}",
+                )
+
+        time.sleep(1)
+        verified = requests.get(object_url, headers=headers, timeout=20)
+        if verified.status_code >= 300:
+            raise HTTPException(
+                status_code=500,
+                detail=f"No se pudo verificar objeto final Google Wallet socios: {verified.text[:500]}",
+            )
+
+        verified_body = verified.json()
+        current_signature = member_google_wallet_visual_signature(verified_body)
+        if current_signature == expected_signature:
+            return verified_body
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "Google Wallet mantuvo datos anteriores del socio. "
+            f"Esperado={json.dumps(expected_signature, ensure_ascii=False)}"
+        )[:500],
+    )
 
 
 def safe_update_member_google_wallet_object(user, card):
