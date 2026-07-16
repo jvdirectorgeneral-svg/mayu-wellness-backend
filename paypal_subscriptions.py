@@ -245,9 +245,8 @@ def get_or_create_member_card_core(db: Session, user: models.User):
         .first()
     )
 
-    member_code = f"MAYU-{user.membership_level}-{user.id:06d}"
-
     if card:
+        member_code = f"MAYU-{user.membership_level}-{card.id:06d}"
         card.member_code = member_code
         card.level_snapshot = user.membership_level
         card.status = "active" if user.membership_active else "inactive"
@@ -260,7 +259,7 @@ def get_or_create_member_card_core(db: Session, user: models.User):
 
     card = models.MemberCard(
         user_id=user.id,
-        member_code=member_code,
+        member_code="",
         qr_token=str(uuid.uuid4()),
         level_snapshot=user.membership_level,
         status="active",
@@ -268,6 +267,8 @@ def get_or_create_member_card_core(db: Session, user: models.User):
     )
 
     db.add(card)
+    db.flush()
+    card.member_code = f"MAYU-{user.membership_level}-{card.id:06d}"
     db.commit()
     db.refresh(card)
     return card
@@ -868,7 +869,13 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
 
     token = get_token()
     start_time = payload.start_time or first_day_next_month_utc()
-    app_url = get_mayu_app_public_url().rstrip("/")
+    backend_url = BASE_PUBLIC_URL.rstrip("/")
+    return_query = urllib.parse.urlencode(
+        {
+            "user_id": user.id,
+            "plan_level": payload.plan_level,
+        }
+    )
 
     body = {
         "plan_id": plan_id,
@@ -889,8 +896,14 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
                 "payer_selected": "PAYPAL",
                 "payee_preferred": "IMMEDIATE_PAYMENT_REQUIRED",
             },
-            "return_url": f"{app_url}/paypal-success?payment=approved",
-            "cancel_url": f"{app_url}/paypal-success?payment=cancelled",
+            "return_url": (
+                f"{backend_url}/payments/paypal/subscriptions/return"
+                f"?{return_query}"
+            ),
+            "cancel_url": (
+                f"{backend_url}/payments/paypal/subscriptions/cancel"
+                f"?{return_query}"
+            ),
         },
     }
 
@@ -1006,20 +1019,42 @@ def activate_level_1_subscription(payload: ActivateLevel1Request, db: Session = 
     }
 
 @router.get("/return", response_class=HTMLResponse)
-def subscription_return(request: Request):
+def subscription_return(request: Request, db: Session = Depends(get_db)):
+    user_id = request.query_params.get("user_id") or ""
+    plan_level = request.query_params.get("plan_level") or ""
     subscription_id = (
         request.query_params.get("subscription_id")
         or request.query_params.get("ba_token")
         or request.query_params.get("token")
         or ""
     )
+
+    if user_id.isdigit() and not subscription_id:
+        latest_payment = (
+            db.query(models.MembershipPayment)
+            .filter(
+                models.MembershipPayment.user_id == int(user_id),
+                models.MembershipPayment.payment_type == "subscription",
+            )
+            .order_by(models.MembershipPayment.id.desc())
+            .first()
+        )
+        if latest_payment:
+            subscription_id = latest_payment.paypal_order_id or ""
+
     app_url = get_mayu_app_public_url().rstrip("/")
     query = {
         "payment": "approved",
     }
     if subscription_id:
-        query["paypal_order_id"] = subscription_id
-    app_return_url = f"{app_url}/paypal-success?{urllib.parse.urlencode(query)}"
+        query["subscription_id"] = subscription_id
+    if user_id:
+        query["user_id"] = user_id
+    if plan_level:
+        query["plan_level"] = plan_level
+    app_return_url = (
+        f"{app_url}/membership/paypal-success?{urllib.parse.urlencode(query)}"
+    )
 
     return HTMLResponse(
         content=f"""
@@ -1030,7 +1065,7 @@ def subscription_return(request: Request):
             </head>
             <body style="font-family: Arial; background:#0f172a; color:white; text-align:center; padding:40px;">
                 <h1>Pago aprobado en PayPal</h1>
-                <p>Vuelve a Mayu Wellness Club para tocar <strong>Ya aprobé en PayPal: activar tarjeta</strong>.</p>
+                <p>Estamos regresando a Mayu Wellness Club para confirmar tu membresía.</p>
                 <p style="margin-top:28px;">
                     <a href="{app_return_url}" style="background:#14b8a6;color:white;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
                         Volver a Mayu
@@ -1048,9 +1083,18 @@ def subscription_return(request: Request):
 
 
 @router.get("/cancel", response_class=HTMLResponse)
-def subscription_cancel():
+def subscription_cancel(request: Request):
+    user_id = request.query_params.get("user_id") or ""
+    plan_level = request.query_params.get("plan_level") or ""
     app_url = get_mayu_app_public_url().rstrip("/")
-    app_return_url = f"{app_url}/paypal-success?payment=cancelled"
+    query = {"payment": "cancelled"}
+    if user_id:
+        query["user_id"] = user_id
+    if plan_level:
+        query["plan_level"] = plan_level
+    app_return_url = (
+        f"{app_url}/membership/paypal-success?{urllib.parse.urlencode(query)}"
+    )
 
     return HTMLResponse(
         content=f"""
