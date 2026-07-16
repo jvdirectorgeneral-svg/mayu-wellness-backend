@@ -723,17 +723,14 @@ def debug_paypal_plans():
             response = paypal_request("GET", f"/v1/billing/plans/{plan_id}", token)
             paypal_monthly = extract_regular_monthly_amount(response)
             paypal_setup_fee = extract_setup_fee_amount(response)
-            paypal_first_payment = round((paypal_monthly or 0) + paypal_setup_fee, 2)
 
             plans[level] = {
                 "configured": True,
                 "plan_id": mask_paypal_id(plan_id),
                 "paypal_status": response.get("status"),
                 "paypal_monthly": paypal_monthly,
-                "paypal_setup_fee": paypal_setup_fee,
-                "paypal_first_payment": paypal_first_payment,
+                "paypal_initial_charge": paypal_setup_fee,
                 "expected_monthly": expected_monthly,
-                "expected_setup_fee": expected_setup_fee,
                 "expected_first_payment": expected_first_payment,
                 "expected_signup_fee": get_signup_fee_with_iva(),
                 "matches_expected": (
