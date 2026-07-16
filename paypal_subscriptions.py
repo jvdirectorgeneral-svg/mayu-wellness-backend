@@ -3,6 +3,7 @@ import json
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,6 +22,10 @@ router = APIRouter(
 )
 
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
+
+
+def get_mayu_app_public_url():
+    return os.getenv("MAYU_APP_PUBLIC_URL", "http://127.0.0.1:5186").strip()
 
 
 def get_db():
@@ -863,6 +868,7 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
 
     token = get_token()
     start_time = payload.start_time or first_day_next_month_utc()
+    app_url = get_mayu_app_public_url().rstrip("/")
 
     body = {
         "plan_id": plan_id,
@@ -883,8 +889,8 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
                 "payer_selected": "PAYPAL",
                 "payee_preferred": "IMMEDIATE_PAYMENT_REQUIRED",
             },
-            "return_url": f"{BASE_PUBLIC_URL}/payments/paypal/subscriptions/return",
-            "cancel_url": f"{BASE_PUBLIC_URL}/payments/paypal/subscriptions/cancel",
+            "return_url": f"{app_url}/paypal-success?payment=approved",
+            "cancel_url": f"{app_url}/paypal-success?payment=cancelled",
         },
     }
 
@@ -1000,17 +1006,41 @@ def activate_level_1_subscription(payload: ActivateLevel1Request, db: Session = 
     }
 
 @router.get("/return", response_class=HTMLResponse)
-def subscription_return():
+def subscription_return(request: Request):
+    subscription_id = (
+        request.query_params.get("subscription_id")
+        or request.query_params.get("ba_token")
+        or request.query_params.get("token")
+        or ""
+    )
+    app_url = get_mayu_app_public_url().rstrip("/")
+    query = {
+        "payment": "approved",
+    }
+    if subscription_id:
+        query["paypal_order_id"] = subscription_id
+    app_return_url = f"{app_url}/paypal-success?{urllib.parse.urlencode(query)}"
+
     return HTMLResponse(
-        content="""
+        content=f"""
         <html>
             <head>
                 <title>Suscripción activada</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
             </head>
             <body style="font-family: Arial; background:#0f172a; color:white; text-align:center; padding:40px;">
-                <h1>Mensualidad automática activada</h1>
-                <p>Puedes volver a Mayu Wellness Club y continuar.</p>
+                <h1>Pago aprobado en PayPal</h1>
+                <p>Vuelve a Mayu Wellness Club para tocar <strong>Ya aprobé en PayPal: activar tarjeta</strong>.</p>
+                <p style="margin-top:28px;">
+                    <a href="{app_return_url}" style="background:#14b8a6;color:white;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
+                        Volver a Mayu
+                    </a>
+                </p>
+                <script>
+                    setTimeout(function() {{
+                        window.location.href = "{app_return_url}";
+                    }}, 1800);
+                </script>
             </body>
         </html>
         """
@@ -1019,8 +1049,11 @@ def subscription_return():
 
 @router.get("/cancel", response_class=HTMLResponse)
 def subscription_cancel():
+    app_url = get_mayu_app_public_url().rstrip("/")
+    app_return_url = f"{app_url}/paypal-success?payment=cancelled"
+
     return HTMLResponse(
-        content="""
+        content=f"""
         <html>
             <head>
                 <title>Suscripción cancelada</title>
@@ -1029,6 +1062,11 @@ def subscription_cancel():
             <body style="font-family: Arial; background:#111; color:white; text-align:center; padding:40px;">
                 <h1>Proceso cancelado</h1>
                 <p>No se activó la mensualidad automática.</p>
+                <p style="margin-top:28px;">
+                    <a href="{app_return_url}" style="background:#64748b;color:white;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
+                        Volver a Mayu
+                    </a>
+                </p>
             </body>
         </html>
         """
