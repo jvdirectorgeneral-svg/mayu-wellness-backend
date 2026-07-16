@@ -62,6 +62,15 @@ def get_plan_id_by_level(level: int):
     return os.getenv(env_map.get(level, "") or "")
 
 
+def mask_paypal_id(value: Optional[str]):
+    if not value:
+        return None
+    clean_value = value.strip()
+    if len(clean_value) <= 6:
+        return "••••"
+    return f"{clean_value[:4]}••••{clean_value[-4:]}"
+
+
 IVA_RATE = 0.12
 SIGNUP_FEE_BASE = 5.00
 
@@ -656,6 +665,87 @@ def debug_subscriptions():
             level: get_first_payment_amount_by_level(level)
             for level in MONTHLY_PRICES
         },
+    }
+
+
+def extract_regular_monthly_amount(plan: dict):
+    for cycle in plan.get("billing_cycles") or []:
+        if cycle.get("tenure_type") != "REGULAR":
+            continue
+        fixed_price = (
+            (cycle.get("pricing_scheme") or {})
+            .get("fixed_price")
+            or {}
+        )
+        value = fixed_price.get("value")
+        if value is not None:
+            return float(value)
+    return None
+
+
+def extract_setup_fee_amount(plan: dict):
+    fixed_price = ((plan.get("payment_preferences") or {}).get("setup_fee") or {})
+    value = fixed_price.get("value")
+    return float(value) if value is not None else 0.0
+
+
+@router.get("/debug-plans")
+def debug_paypal_plans():
+    token = get_token()
+    plans = {}
+
+    for level in sorted(MONTHLY_PRICES.keys()):
+        plan_id = get_plan_id_by_level(level)
+        expected_monthly = MONTHLY_PRICES[level]
+        expected_setup_fee = get_signup_fee_with_iva()
+        expected_first_payment = get_first_payment_amount_by_level(level)
+
+        if not plan_id:
+            plans[level] = {
+                "configured": False,
+                "status": "missing_plan_id",
+                "expected_monthly": expected_monthly,
+                "expected_setup_fee": expected_setup_fee,
+                "expected_first_payment": expected_first_payment,
+            }
+            continue
+
+        try:
+            response = paypal_request("GET", f"/v1/billing/plans/{plan_id}", token)
+            paypal_monthly = extract_regular_monthly_amount(response)
+            paypal_setup_fee = extract_setup_fee_amount(response)
+            paypal_first_payment = round((paypal_monthly or 0) + paypal_setup_fee, 2)
+
+            plans[level] = {
+                "configured": True,
+                "plan_id": mask_paypal_id(plan_id),
+                "paypal_status": response.get("status"),
+                "paypal_monthly": paypal_monthly,
+                "paypal_setup_fee": paypal_setup_fee,
+                "paypal_first_payment": paypal_first_payment,
+                "expected_monthly": expected_monthly,
+                "expected_setup_fee": expected_setup_fee,
+                "expected_first_payment": expected_first_payment,
+                "matches_expected": (
+                    paypal_monthly == expected_monthly
+                    and paypal_setup_fee == expected_setup_fee
+                ),
+            }
+        except HTTPException as exc:
+            plans[level] = {
+                "configured": True,
+                "plan_id": mask_paypal_id(plan_id),
+                "status": "paypal_check_failed",
+                "detail": exc.detail,
+                "expected_monthly": expected_monthly,
+                "expected_setup_fee": expected_setup_fee,
+                "expected_first_payment": expected_first_payment,
+            }
+
+    return {
+        "paypal_mode": get_paypal_mode(),
+        "iva_rate": IVA_RATE,
+        "plans": plans,
     }
 
 
