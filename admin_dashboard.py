@@ -277,12 +277,27 @@ def order_items_data(order: Order):
 
 
 def payment_to_dict(payment: MembershipPayment):
+    payment_type = getattr(payment, "payment_type", None)
+    initial_types = {"signup", "membership_initial", "subscription"}
+    renewal_types = {"subscription_renewal"}
+    if payment_type in renewal_types:
+        membership_cycle_type = "renewal"
+        membership_cycle_label = "Renovación mensual"
+    elif payment_type in initial_types:
+        membership_cycle_type = "initial"
+        membership_cycle_label = "Afiliación nueva"
+    else:
+        membership_cycle_type = "other"
+        membership_cycle_label = "Otro pago"
+
     return {
         "id": payment.id,
         "user_id": payment.user_id,
         "user_name": payment.user.name if payment.user else None,
         "order_id": payment.order_id,
-        "payment_type": getattr(payment, "payment_type", None),
+        "payment_type": payment_type,
+        "membership_cycle_type": membership_cycle_type,
+        "membership_cycle_label": membership_cycle_label,
         "provider": getattr(payment, "provider", None),
         "paypal_order_id": payment.paypal_order_id,
         "paypal_capture_id": payment.paypal_capture_id,
@@ -541,11 +556,23 @@ def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depend
 
     pending_commissions_count = db.query(Commission).filter(Commission.status == "pending").count()
     paid_commissions_count = db.query(Commission).filter(Commission.status == "paid").count()
+    initial_membership_payments = (
+        db.query(MembershipPayment)
+        .filter(MembershipPayment.payment_type.in_(["signup", "membership_initial", "subscription"]))
+        .count()
+    )
+    renewal_membership_payments = (
+        db.query(MembershipPayment)
+        .filter(MembershipPayment.payment_type == "subscription_renewal")
+        .count()
+    )
 
     return {
         "total_socios": total_socios,
         "active_socios": active_socios,
         "inactive_socios": inactive_socios,
+        "initial_membership_payments": initial_membership_payments,
+        "renewal_membership_payments": renewal_membership_payments,
         "total_ambassadors": total_ambassadors,
         "active_ambassadors": active_ambassadors,
         "pending_review_orders": pending_review_orders,
