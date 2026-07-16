@@ -697,8 +697,8 @@ def debug_paypal_plans():
     for level in sorted(MONTHLY_PRICES.keys()):
         plan_id = get_plan_id_by_level(level)
         expected_monthly = MONTHLY_PRICES[level]
-        expected_setup_fee = get_signup_fee_with_iva()
         expected_first_payment = get_first_payment_amount_by_level(level)
+        expected_setup_fee = expected_first_payment
 
         if not plan_id:
             plans[level] = {
@@ -707,6 +707,7 @@ def debug_paypal_plans():
                 "expected_monthly": expected_monthly,
                 "expected_setup_fee": expected_setup_fee,
                 "expected_first_payment": expected_first_payment,
+                "expected_signup_fee": get_signup_fee_with_iva(),
             }
             continue
 
@@ -726,6 +727,7 @@ def debug_paypal_plans():
                 "expected_monthly": expected_monthly,
                 "expected_setup_fee": expected_setup_fee,
                 "expected_first_payment": expected_first_payment,
+                "expected_signup_fee": get_signup_fee_with_iva(),
                 "matches_expected": (
                     paypal_monthly == expected_monthly
                     and paypal_setup_fee == expected_setup_fee
@@ -740,6 +742,7 @@ def debug_paypal_plans():
                 "expected_monthly": expected_monthly,
                 "expected_setup_fee": expected_setup_fee,
                 "expected_first_payment": expected_first_payment,
+                "expected_signup_fee": get_signup_fee_with_iva(),
             }
 
     return {
@@ -810,7 +813,7 @@ def create_plan(payload: CreatePlanRequest):
         "payment_preferences": {
             "auto_bill_outstanding": True,
             "setup_fee": {
-                "value": f"{signup_fee:.2f}",
+                "value": f"{first_payment_amount:.2f}",
                 "currency_code": payload.currency,
             },
             "setup_fee_failure_action": "CONTINUE",
@@ -828,8 +831,8 @@ def create_plan(payload: CreatePlanRequest):
         "iva_rate": IVA_RATE,
         "signup_fee": signup_fee,
         "first_payment_amount": first_payment_amount,
-        "setup_fee": signup_fee,
-        "note": "PayPal cobra la inscripción con IVA como setup_fee y la mensualidad recurrente también incluye IVA.",
+        "setup_fee": first_payment_amount,
+        "note": "PayPal cobra inscripción + primera mensualidad con IVA como setup_fee. La mensualidad recurrente empieza después y también incluye IVA.",
         "plan_id": response.get("id"),
         "response": response,
     }
