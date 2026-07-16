@@ -6,6 +6,8 @@ from fastapi import Request as FastAPIRequest
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from database import get_db
@@ -51,6 +53,17 @@ def generate_member_code(card_id: int, level: int):
 
 def generate_ambassador_code(ambassador_id: int):
     return f"EMB-{ambassador_id:06d}"
+
+
+def sync_member_cards_id_sequence(db: Session):
+    db.execute(text("""
+        SELECT setval(
+            pg_get_serial_sequence('member_cards', 'id'),
+            COALESCE((SELECT MAX(id) FROM member_cards), 0) + 1,
+            false
+        )
+    """))
+    db.flush()
 
 
 def get_ambassador_by_user(db: Session, user_id: int):
@@ -248,22 +261,32 @@ def get_or_create_card(db: Session, user_id: int):
         db.refresh(card)
         return user, card
 
-    card = models.MemberCard(
-        user_id=user.id,
-        member_code="PENDING",
-        qr_token=str(uuid.uuid4()),
-        level_snapshot=level_snapshot,
-        status=card_status,
-        expires_at=CARD_VALIDITY_TEXT,
-    )
+    def create_card_once():
+        card = models.MemberCard(
+            user_id=user.id,
+            member_code="PENDING",
+            qr_token=str(uuid.uuid4()),
+            level_snapshot=level_snapshot,
+            status=card_status,
+            expires_at=CARD_VALIDITY_TEXT,
+        )
 
-    db.add(card)
-    db.commit()
-    db.refresh(card)
+        db.add(card)
+        db.commit()
+        db.refresh(card)
 
-    card.member_code = get_card_code(db, user, card)
-    db.commit()
-    db.refresh(card)
+        card.member_code = get_card_code(db, user, card)
+        db.commit()
+        db.refresh(card)
+        return card
+
+    sync_member_cards_id_sequence(db)
+    try:
+        card = create_card_once()
+    except IntegrityError:
+        db.rollback()
+        sync_member_cards_id_sequence(db)
+        card = create_card_once()
 
     return user, card
 
