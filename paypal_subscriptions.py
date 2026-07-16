@@ -54,6 +54,14 @@ def get_base_url():
 
 
 def get_plan_id_by_level(level: int):
+    sandbox_plan_ids = {
+        1: "P-21C59754B6148072NNJMPWRQ",
+        2: "P-1T277384JR2166440NJMPWRI",
+        3: "P-6FL801269K374750WNJMPWRY",
+    }
+    if get_paypal_mode() == "sandbox":
+        return sandbox_plan_ids.get(level)
+
     env_map = {
         1: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_1",
         2: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_2",
