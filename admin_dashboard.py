@@ -9,10 +9,14 @@ from database import SessionLocal
 from dependencies import get_current_user
 from auth import hash_password
 from member_cards import ambassador_commission_summary
-from commissions import sync_ambassador_wallets
+from commissions import (
+    ensure_current_month_pending_commissions_for_ambassador,
+    sync_ambassador_wallets,
+)
 from models import (
     User,
     Ambassador,
+    AmbassadorReferral,
     Commission,
     MembershipPayment,
     Order,
@@ -863,14 +867,49 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
     if selection:
         selection.editable = False
 
+    commission_sync = None
+    created_commissions_count = 0
+    referral = (
+        db.query(AmbassadorReferral)
+        .filter(
+            AmbassadorReferral.user_id == user.id,
+            AmbassadorReferral.status == "active",
+        )
+        .first()
+    )
+
+    if referral:
+        ambassador = (
+            db.query(Ambassador)
+            .filter(Ambassador.id == referral.ambassador_id)
+            .first()
+        )
+        if ambassador and ambassador.is_active and ambassador.status == "active":
+            created_commissions = ensure_current_month_pending_commissions_for_ambassador(
+                db,
+                ambassador,
+                month=order.month,
+                year=order.year,
+            )
+            created_commissions_count = len(created_commissions)
+
     db.commit()
     db.refresh(payment)
     db.refresh(order)
+
+    if referral:
+        commission_sync = sync_ambassador_wallets(db, referral.ambassador_id)
 
     return {
         "message": "Pago verificado, suscripción activa y orden liberada a logística",
         "payment": payment_to_dict(payment),
         "order": order_to_dict(db, order),
+        "ambassador_commission": {
+            "referral_found": referral is not None,
+            "ambassador_id": referral.ambassador_id if referral else None,
+            "created_count": created_commissions_count,
+            "wallet_sync": commission_sync,
+        },
     }
 
 
