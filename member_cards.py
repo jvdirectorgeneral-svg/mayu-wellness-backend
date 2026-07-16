@@ -45,8 +45,8 @@ class AppleWalletRegistrationRequest(BaseModel):
     pushToken: str
 
 
-def generate_member_code(user_id: int, level: int):
-    return f"MAYU-{level}-{user_id:06d}"
+def generate_member_code(card_id: int, level: int):
+    return f"MAYU-{level}-{card_id:06d}"
 
 
 def generate_ambassador_code(ambassador_id: int):
@@ -203,7 +203,7 @@ def get_card_status(user):
     return "active" if user.membership_active else "inactive"
 
 
-def get_card_code(db: Session, user):
+def get_card_code(db: Session, user, card=None):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id)
         if ambassador:
@@ -215,7 +215,10 @@ def get_card_code(db: Session, user):
             return correct_code
         return f"EMB-{user.id:06d}"
 
-    return generate_member_code(user.id, user.membership_level)
+    if card and card.id:
+        return generate_member_code(card.id, user.membership_level)
+
+    return None
 
 
 def get_or_create_card(db: Session, user_id: int):
@@ -231,12 +234,12 @@ def get_or_create_card(db: Session, user_id: int):
         raise HTTPException(status_code=400, detail="El socio no tiene membresía asignada")
 
     level_snapshot = get_card_level_snapshot(user)
-    member_code = get_card_code(db, user)
     card_status = get_card_status(user)
 
     card = db.query(models.MemberCard).filter(models.MemberCard.user_id == user.id).first()
 
     if card:
+        member_code = get_card_code(db, user, card)
         card.member_code = member_code
         card.level_snapshot = level_snapshot
         card.status = card_status
@@ -247,7 +250,7 @@ def get_or_create_card(db: Session, user_id: int):
 
     card = models.MemberCard(
         user_id=user.id,
-        member_code=member_code,
+        member_code="PENDING",
         qr_token=str(uuid.uuid4()),
         level_snapshot=level_snapshot,
         status=card_status,
@@ -255,6 +258,10 @@ def get_or_create_card(db: Session, user_id: int):
     )
 
     db.add(card)
+    db.commit()
+    db.refresh(card)
+
+    card.member_code = get_card_code(db, user, card)
     db.commit()
     db.refresh(card)
 
@@ -325,12 +332,13 @@ def member_apple_last_updated(db: Session, user, card):
 def get_card_visual_data(db: Session | None, user, card):
     if user.role == "ambassador":
         ambassador = get_ambassador_by_user(db, user.id) if db else None
-        ambassador_id = ambassador.id if ambassador else user.id
+        if not ambassador:
+            raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
 
         return {
             "display_name": user.name,
             "level_text": "Embajador Mayu",
-            "member_code": generate_ambassador_code(ambassador_id),
+            "member_code": generate_ambassador_code(ambassador.id),
             "bg_file": "embajador_pic.png",
             "wallet_file": "wallet_embajador.png",
             "fallback_color": (0, 120, 110),
