@@ -596,7 +596,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         draw_text(
             draw,
             (60, 400),
-            f"Pago acumulado: ${ambassador_summary['total_paid']:.2f}",
+            f"Pago realizado: ${ambassador_summary['total_paid']:.2f}",
             info_font,
         )
         draw_text(
@@ -851,7 +851,7 @@ def build_member_apple_wallet_file(
                 },
                 {
                     "key": "paid_total",
-                    "label": "PAGADO",
+                    "label": "PAGO REALIZADO",
                     "value": paid_value,
                 },
             ]
@@ -917,7 +917,7 @@ def build_member_apple_wallet_file(
                             },
                             {
                                 "key": "paid_back",
-                                "label": "Pago acumulado",
+                                "label": "Pago realizado",
                                 "value": paid_value,
                             },
                             {
@@ -1078,7 +1078,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
             },
             {
                 "id": "paid_total",
-                "header": "Pago acumulado",
+                "header": "Pago realizado",
                 "body": f"${ambassador_summary['total_paid']:.2f}",
             },
             {"id": "payout_rule", "header": "Pago", "body": "Día 10, corte 1 al 30"},
