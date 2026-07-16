@@ -172,7 +172,8 @@ def ambassador_to_dict(db: Session, a: Ambassador):
         2,
     )
     payable_commission = 0.0
-    if now.day >= 10:
+    payout_window_open = 8 <= now.day <= 10
+    if payout_window_open:
         payable_commission = round(
             sum(
                 float(c.commission_amount or 0)
@@ -207,11 +208,13 @@ def ambassador_to_dict(db: Session, a: Ambassador):
         "commission_balance_label": "Próxima comisión",
         "payable_commission_amount": payable_commission,
         "payable_commission_label": "Corte mensual pagable",
+        "payout_window_open": payout_window_open,
+        "payout_window_label": "Disponible del 8 al 10 de cada mes",
         "projected_monthly_commission": upcoming_commission,
         "projected_monthly_commission_raw": summary["projected_monthly_commission"] if summary else 0.0,
         "total_paid_commissions": summary["total_paid"] if summary else 0.0,
         "total_generated_commissions": summary["total_generated"] if summary else 0.0,
-        "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
+        "payout_rule": "Pago disponible del 8 al 10. Corte del 1 al 30 del mes anterior.",
     }
 
 

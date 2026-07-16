@@ -786,6 +786,7 @@ def pay_pending_commissions_by_ambassador(
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
     now = datetime.utcnow()
+    payout_window_open = 8 <= now.day <= 10
     pending_commissions = (
         db.query(Commission)
         .filter(
@@ -799,7 +800,7 @@ def pay_pending_commissions_by_ambassador(
     payable_commissions = [
         commission
         for commission in pending_commissions
-        if now.day >= 10 and (commission.year, commission.month) < (now.year, now.month)
+        if payout_window_open and (commission.year, commission.month) < (now.year, now.month)
     ]
 
     if not pending_commissions:
@@ -821,7 +822,7 @@ def pay_pending_commissions_by_ambassador(
             payable_commissions = [
                 commission
                 for commission in pending_commissions
-                if now.day >= 10 and (commission.year, commission.month) < (now.year, now.month)
+                if payout_window_open and (commission.year, commission.month) < (now.year, now.month)
             ]
 
     if not payable_commissions:
@@ -830,11 +831,12 @@ def pay_pending_commissions_by_ambassador(
             "paid": True,
             "message": (
                 "El embajador no tiene corte pagable. "
-                "La próxima comisión se paga el día 10 con corte del 1 al 30 del mes anterior."
+                "El pago se abre del día 8 al 10 con corte del 1 al 30 del mes anterior."
             ),
             "paid_records": 0,
             "paid_amount": 0,
-            "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
+            "payout_window_open": payout_window_open,
+            "payout_rule": "Pago disponible del 8 al 10. Corte del 1 al 30 del mes anterior.",
             "wallet_sync": wallet_sync,
         }
 
@@ -856,6 +858,7 @@ def pay_pending_commissions_by_ambassador(
         "message": "Corte mensual del embajador pagado correctamente",
         "paid_records": len(payable_commissions),
         "paid_amount": round(paid_total, 2),
-        "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
+        "payout_window_open": payout_window_open,
+        "payout_rule": "Pago disponible del 8 al 10. Corte del 1 al 30 del mes anterior.",
         "wallet_sync": wallet_sync,
     }
