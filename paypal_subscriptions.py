@@ -720,7 +720,7 @@ def create_plan(payload: CreatePlanRequest):
         "payment_preferences": {
             "auto_bill_outstanding": True,
             "setup_fee": {
-                "value": f"{first_payment_amount:.2f}",
+                "value": f"{signup_fee:.2f}",
                 "currency_code": payload.currency,
             },
             "setup_fee_failure_action": "CONTINUE",
@@ -738,8 +738,8 @@ def create_plan(payload: CreatePlanRequest):
         "iva_rate": IVA_RATE,
         "signup_fee": signup_fee,
         "first_payment_amount": first_payment_amount,
-        "setup_fee": first_payment_amount,
-        "note": "El setup_fee de PayPal cobra inscripción + primera mensualidad con IVA. La mensualidad recurrente también incluye IVA.",
+        "setup_fee": signup_fee,
+        "note": "PayPal cobra la inscripción con IVA como setup_fee y la mensualidad recurrente también incluye IVA.",
         "plan_id": response.get("id"),
         "response": response,
     }
