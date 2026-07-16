@@ -101,6 +101,33 @@ class ResetAnyUserPasswordRequest(BaseModel):
     new_password: str
 
 
+class PharmacyAccessCodesRequest(BaseModel):
+    pharmacy_points: Optional[str] = None
+    doctor_prescriber: Optional[str] = None
+    pharmacy_admin: Optional[str] = None
+    pharmacy_logistics: Optional[str] = None
+
+
+PHARMACY_ACCESS_CODES = {
+    "pharmacy_points": {
+        "label": "Puntos Farmacia",
+        "default": "0001",
+    },
+    "doctor_prescriber": {
+        "label": "Doctor Prescriptor",
+        "default": "0001",
+    },
+    "pharmacy_admin": {
+        "label": "Administrador Farmacia",
+        "default": "4444",
+    },
+    "pharmacy_logistics": {
+        "label": "Logística Farmacia",
+        "default": "8888",
+    },
+}
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -121,6 +148,92 @@ def require_superadmin(current_user: User):
             status_code=403,
             detail="Acceso solo para superadmin",
         )
+
+
+def require_pharmacy_access_code_reader(current_user: User):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="No autenticado")
+
+    if not getattr(current_user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario inactivo")
+
+    if current_user.role not in {"superadmin", "admin", "pharmacy_admin"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso solo para Control Maestro o Farmacia Mayu",
+        )
+
+
+def ensure_app_settings_table(db: Session):
+    db.execute(
+        text("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key VARCHAR PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+    )
+
+
+def get_app_setting(db: Session, key: str, default: str):
+    ensure_app_settings_table(db)
+
+    value = db.execute(
+        text("SELECT value FROM app_settings WHERE key = :key"),
+        {"key": key},
+    ).scalar()
+
+    return value if value is not None else default
+
+
+def set_app_setting(db: Session, key: str, value: str):
+    ensure_app_settings_table(db)
+
+    db.execute(
+        text("""
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (:key, :value, NOW())
+            ON CONFLICT (key)
+            DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        """),
+        {"key": key, "value": value},
+    )
+
+
+def pharmacy_access_codes_payload(db: Session):
+    return {
+        key: {
+            "label": config["label"],
+            "code": get_app_setting(
+                db,
+                f"pharmacy_access_code_{key}",
+                config["default"],
+            ),
+        }
+        for key, config in PHARMACY_ACCESS_CODES.items()
+    }
+
+
+def clean_access_code(value: Optional[str], label: str):
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+
+    if not cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El código de {label} es obligatorio",
+        )
+
+    if len(cleaned) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El código de {label} es demasiado largo",
+        )
+
+    return cleaned
 
 
 def user_to_dict(db: Session, user: User):
@@ -225,6 +338,71 @@ def update_superadmin_password(
     return {
         "message": "Contraseña superadmin actualizada correctamente",
         "user_id": user.id,
+    }
+
+
+@router.get("/pharmacy-access-codes")
+def get_pharmacy_access_codes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    return {
+        "items": pharmacy_access_codes_payload(db),
+    }
+
+
+@router.get("/pharmacy-access-codes/farmacia")
+def get_pharmacy_access_codes_for_farmacia(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_pharmacy_access_code_reader(current_user)
+
+    return {
+        "items": pharmacy_access_codes_payload(db),
+    }
+
+
+@router.put("/pharmacy-access-codes")
+def update_pharmacy_access_codes(
+    payload: PharmacyAccessCodesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_superadmin(current_user)
+
+    updates = {
+        "pharmacy_points": clean_access_code(
+            payload.pharmacy_points,
+            PHARMACY_ACCESS_CODES["pharmacy_points"]["label"],
+        ),
+        "doctor_prescriber": clean_access_code(
+            payload.doctor_prescriber,
+            PHARMACY_ACCESS_CODES["doctor_prescriber"]["label"],
+        ),
+        "pharmacy_admin": clean_access_code(
+            payload.pharmacy_admin,
+            PHARMACY_ACCESS_CODES["pharmacy_admin"]["label"],
+        ),
+        "pharmacy_logistics": clean_access_code(
+            payload.pharmacy_logistics,
+            PHARMACY_ACCESS_CODES["pharmacy_logistics"]["label"],
+        ),
+    }
+
+    for key, value in updates.items():
+        if value is None:
+            continue
+
+        set_app_setting(db, f"pharmacy_access_code_{key}", value)
+
+    db.commit()
+
+    return {
+        "message": "Códigos de acceso Farmacia Mayu actualizados",
+        "items": pharmacy_access_codes_payload(db),
     }
 
 
