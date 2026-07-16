@@ -732,6 +732,267 @@ Equipo Mayu Wellness Club
     )
 
 
+def member_level_info(level: int | None):
+    plans = {
+        1: {
+            "name": "Nivel 1 - Cobre",
+            "price": 40.00,
+            "benefits": [
+                "Selección mensual de productos Mayu Wellness Club.",
+                "Tarjeta digital Mayu con acceso a tu membresía.",
+                "Contenido educativo para crear hábitos de salud diarios.",
+                "Despacho mensual según el calendario operativo del club.",
+            ],
+        },
+        2: {
+            "name": "Nivel 2 - Plata",
+            "price": 50.00,
+            "benefits": [
+                "Selección mensual ampliada de productos Mayu Wellness Club.",
+                "Tarjeta digital Mayu con beneficios activos.",
+                "Contenido educativo y acompañamiento para sostener hábitos saludables.",
+                "Despacho mensual según el calendario operativo del club.",
+            ],
+        },
+        3: {
+            "name": "Nivel 3 - Oro",
+            "price": 60.00,
+            "benefits": [
+                "Selección mensual premium de productos Mayu Wellness Club.",
+                "Tarjeta digital Mayu con beneficios activos.",
+                "Contenido educativo y bienestar continuo para tu rutina diaria.",
+                "Despacho mensual según el calendario operativo del club.",
+            ],
+        },
+    }
+
+    return plans.get(level) or {
+        "name": "Mayu Wellness Club",
+        "price": 0.00,
+        "benefits": [
+            "Membresía activa Mayu Wellness Club.",
+            "Acceso a beneficios digitales y comunicación del club.",
+        ],
+    }
+
+
+def build_welcome_email_message(user: User):
+    level_info = member_level_info(user.membership_level)
+    benefits = "\n".join(f"- {benefit}" for benefit in level_info["benefits"])
+
+    return f"""
+Hola {user.name},
+
+Bienvenido a Mayu Wellness Club.
+
+Tu membresía quedó activa en {level_info["name"]}.
+Valor mensual del plan: ${level_info["price"]:.2f}.
+
+La salud es nuestros hábitos de todos los días. Por eso, tu club está pensado para acompañarte mes a mes con productos, educación y una rutina más consciente.
+
+Beneficios de tu plan:
+{benefits}
+
+Cada mes podrás revisar o cambiar tu selección de productos según las reglas del club. Cuando tu pago mensual esté confirmado, se genera tu orden y el equipo Mayu la prepara para despacho.
+
+Gracias por ser parte de Mayu Wellness Club.
+
+Equipo Mayu Wellness Club
+"""
+
+
+def send_welcome_email(to_email: str, user: User):
+    level_info = member_level_info(user.membership_level)
+    send_marketing_email(
+        to_email=to_email,
+        subject=f"Bienvenido a Mayu Wellness Club - {level_info['name']}",
+        message=build_welcome_email_message(user),
+        image_url=None,
+    )
+
+
+def send_welcome_member_notifications(db: Session, user: User, trigger: str = "membership_active"):
+    if not user or user.role != "member" or not user.membership_active:
+        return {
+            "sent": False,
+            "reason": "Usuario no elegible para bienvenida",
+        }
+
+    level_info = member_level_info(user.membership_level)
+    campaign_title = f"Bienvenida Mayu user:{user.id} level:{user.membership_level}"
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.title == campaign_title)
+        .first()
+    )
+
+    if campaign:
+        existing_recipient = (
+            db.query(MarketingCampaignRecipient)
+            .filter(
+                MarketingCampaignRecipient.campaign_id == campaign.id,
+                MarketingCampaignRecipient.user_id == user.id,
+            )
+            .first()
+        )
+        if existing_recipient:
+            return {
+                "sent": False,
+                "reason": "Bienvenida ya enviada",
+                "campaign_id": campaign.id,
+                "recipient_id": existing_recipient.id,
+            }
+
+    if not campaign:
+        campaign = MarketingCampaign(
+            title=campaign_title,
+            subject=f"Bienvenido a Mayu Wellness Club - {level_info['name']}",
+            message=build_welcome_email_message(user),
+            image_url=None,
+            channel="email",
+            target_group="active_members",
+            status="sent",
+            created_by=None,
+            created_at=datetime.utcnow(),
+            sent_at=datetime.utcnow(),
+        )
+        db.add(campaign)
+        db.flush()
+
+    recipient = MarketingCampaignRecipient(
+        campaign_id=campaign.id,
+        user_id=user.id,
+        name_snapshot=user.name,
+        email_snapshot=user.email,
+        phone_snapshot=user.phone,
+        role_snapshot=user.role,
+        delivery_status="pending",
+        sent_at=None,
+        error_message=None,
+    )
+    db.add(recipient)
+    db.flush()
+
+    errors = []
+    email_sent = False
+    push_sent = False
+
+    try:
+        send_welcome_email(user.email, user)
+        email_sent = True
+        add_marketing_event(
+            db=db,
+            campaign_id=campaign.id,
+            recipient_id=recipient.id,
+            user_id=user.id,
+            event_type="welcome_email_sent",
+            channel="email",
+            metadata=trigger,
+        )
+    except Exception as exc:
+        errors.append(f"email: {str(exc)}")
+        add_marketing_event(
+            db=db,
+            campaign_id=campaign.id,
+            recipient_id=recipient.id,
+            user_id=user.id,
+            event_type="welcome_email_error",
+            channel="email",
+            metadata=str(exc),
+        )
+
+    try:
+        send_push_to_latest_user_token(
+            db=db,
+            user_id=user.id,
+            title="Bienvenido a Mayu Wellness Club",
+            message=(
+                f"Tu {level_info['name']} está activo. "
+                "La salud es nuestros hábitos de todos los días."
+            ),
+            image_url=None,
+        )
+        push_sent = True
+        add_marketing_event(
+            db=db,
+            campaign_id=campaign.id,
+            recipient_id=recipient.id,
+            user_id=user.id,
+            event_type="welcome_push_sent",
+            channel="push",
+            metadata=trigger,
+        )
+    except Exception as exc:
+        errors.append(f"push: {str(exc)}")
+        add_marketing_event(
+            db=db,
+            campaign_id=campaign.id,
+            recipient_id=recipient.id,
+            user_id=user.id,
+            event_type="welcome_push_error",
+            channel="push",
+            metadata=str(exc),
+        )
+
+    if errors and (email_sent or push_sent):
+        recipient.delivery_status = "partial_error"
+    elif errors:
+        recipient.delivery_status = "error"
+    else:
+        recipient.delivery_status = "sent"
+
+    recipient.error_message = " | ".join(errors) if errors else None
+    recipient.sent_at = datetime.utcnow()
+    campaign.status = "sent"
+    campaign.sent_at = datetime.utcnow()
+
+    return {
+        "sent": email_sent or push_sent,
+        "email_sent": email_sent,
+        "push_sent": push_sent,
+        "errors": errors,
+        "campaign_id": campaign.id,
+        "recipient_id": recipient.id,
+    }
+
+
+def process_welcome_notifications(db: Session):
+    users = (
+        db.query(User)
+        .filter(
+            User.role == "member",
+            User.is_active == True,
+            User.membership_active == True,
+            User.membership_level.in_([1, 2, 3]),
+        )
+        .order_by(User.id.asc())
+        .all()
+    )
+
+    processed = []
+    sent_count = 0
+    skipped_count = 0
+
+    for user in users:
+        result = send_welcome_member_notifications(
+            db=db,
+            user=user,
+            trigger="welcome_cron",
+        )
+        processed.append({"user_id": user.id, **result})
+        if result.get("sent"):
+            sent_count += 1
+        else:
+            skipped_count += 1
+
+    return {
+        "eligible_users": len(users),
+        "sent": sent_count,
+        "skipped": skipped_count,
+        "items": processed,
+    }
+
+
 def process_birthday_notifications(db: Session):
     today = datetime.utcnow().date()
 
@@ -923,6 +1184,35 @@ def run_birthday_cron(
 
     return {
         "message": "Cumpleaños procesados correctamente",
+        **result,
+    }
+
+
+@router.post("/welcome/cron/run")
+def run_welcome_cron(
+    secret: str,
+    db: Session = Depends(get_db),
+):
+    cron_secret = os.getenv("MARKETING_CRON_SECRET")
+
+    if not cron_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta MARKETING_CRON_SECRET en Render",
+        )
+
+    if secret != cron_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="No autorizado",
+        )
+
+    result = process_welcome_notifications(db)
+
+    db.commit()
+
+    return {
+        "message": "Bienvenidas procesadas correctamente",
         **result,
     }
 

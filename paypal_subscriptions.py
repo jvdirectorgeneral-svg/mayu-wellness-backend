@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 import models
+from marketing import send_welcome_member_notifications
 
 router = APIRouter(
     prefix="/payments/paypal/subscriptions",
@@ -585,6 +586,19 @@ def activate_user_subscription_core(
         safe_set(subscription_payment, "monthly_selection_id", selection.id)
         db.commit()
 
+    try:
+        welcome_sync = send_welcome_member_notifications(
+            db=db,
+            user=user,
+            trigger="paypal_subscription_activation",
+        )
+        db.commit()
+    except Exception as exc:
+        welcome_sync = {
+            "sent": False,
+            "error": str(exc),
+        }
+
     return {
         "status": "activated",
         "user_id": user.id,
@@ -596,6 +610,7 @@ def activate_user_subscription_core(
         "selection_id": selection.id,
         "selection_month": selection.month,
         "selection_year": selection.year,
+        "welcome_notifications": welcome_sync,
     }
 
 
