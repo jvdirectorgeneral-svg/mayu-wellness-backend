@@ -86,7 +86,7 @@ def ambassador_commission_summary(db: Session | None, user):
             "projected_monthly_commission": 0.0,
             "active_referrals": 0,
             "current_display_amount": 0.0,
-            "current_display_label": "Ganancia pendiente",
+            "current_display_label": "Próxima comisión",
         }
 
     commissions = (
@@ -150,7 +150,7 @@ def ambassador_commission_summary(db: Session | None, user):
             latest_commission_at = current
 
     projected_monthly_commission = round(projected_monthly_commission, 2)
-    current_display_label = "Ganancia pendiente"
+    current_display_label = "Próxima comisión"
     current_display_amount = total_pending
     secondary_projected_amount = projected_monthly_commission
 
@@ -587,23 +587,22 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
 
     draw_text(draw, (60, 305), visual["display_name"], name_font)
     if ambassador_summary:
-        current_label = ambassador_summary["current_display_label"]
         draw_text(
             draw,
             (60, 355),
-            f"{current_label}: ${ambassador_summary['current_display_amount']:.2f}",
+            f"Proxima comision: ${ambassador_summary['current_display_amount']:.2f}",
             info_font,
         )
         draw_text(
             draw,
             (60, 400),
-            f"Proxima comision: ${ambassador_summary['secondary_projected_amount']:.2f}",
+            f"Pago acumulado: ${ambassador_summary['total_paid']:.2f}",
             info_font,
         )
         draw_text(
             draw,
             (60, 440),
-            f"Pagado acumulado: ${ambassador_summary['total_paid']:.2f}",
+            "Pago mensual dia 10",
             info_font,
         )
         draw_text(draw, (60, 480), f"Codigo: {visual['member_code']}", info_font)
@@ -822,11 +821,6 @@ def build_member_apple_wallet_file(
         pending_value = (
             f"${ambassador_summary['current_display_amount']:.2f}" if ambassador_summary else None
         )
-        projected_value = (
-            f"${ambassador_summary['secondary_projected_amount']:.2f}"
-            if ambassador_summary
-            else None
-        )
         paid_value = (
             f"${ambassador_summary['total_paid']:.2f}" if ambassador_summary else None
         )
@@ -897,7 +891,7 @@ def build_member_apple_wallet_file(
                             {
                                 "key": "projected_total",
                                 "label": "PRÓXIMA COMISIÓN",
-                                "value": projected_value,
+                                "value": pending_value,
                             }
                         ]
                         if ambassador_summary
@@ -918,18 +912,18 @@ def build_member_apple_wallet_file(
                         [
                             {
                                 "key": "pending_back",
-                                "label": ambassador_summary["current_display_label"],
+                                "label": "Próxima comisión",
                                 "value": pending_value,
                             },
                             {
                                 "key": "paid_back",
-                                "label": "Pagado acumulado",
+                                "label": "Pago acumulado",
                                 "value": paid_value,
                             },
                             {
-                                "key": "projected_back",
-                                "label": "Próxima comisión",
-                                "value": projected_value,
+                                "key": "payout_rule",
+                                "label": "Regla de pago",
+                                "value": "Pago mensual el día 10. Corte del 1 al 30.",
                             },
                         ]
                         if ambassador_summary
@@ -1079,19 +1073,15 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
         text_modules = [
             {
                 "id": "pending",
-                "header": ambassador_summary["current_display_label"],
+                "header": "Próxima comisión",
                 "body": f"${ambassador_summary['current_display_amount']:.2f}",
             },
             {
-                "id": "projected_total",
-                "header": "Próxima comisión",
-                "body": f"${ambassador_summary['secondary_projected_amount']:.2f}",
-            },
-            {
                 "id": "paid_total",
-                "header": "Pagado acumulado",
+                "header": "Pago acumulado",
                 "body": f"${ambassador_summary['total_paid']:.2f}",
             },
+            {"id": "payout_rule", "header": "Pago", "body": "Día 10, corte 1 al 30"},
             {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
             {"id": "code", "header": "Código", "body": card.member_code},
         ]

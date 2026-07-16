@@ -785,12 +785,22 @@ def pay_pending_commissions_by_ambassador(
     if not ambassador:
         raise HTTPException(status_code=404, detail="Embajador no encontrado")
 
+    now = datetime.utcnow()
     pending_commissions = (
         db.query(Commission)
-        .filter(Commission.ambassador_id == ambassador_id, Commission.status == "pending")
+        .filter(
+            Commission.ambassador_id == ambassador_id,
+            Commission.status == "pending",
+            Commission.year <= now.year,
+        )
         .order_by(Commission.year.asc(), Commission.month.asc(), Commission.id.asc())
         .all()
     )
+    payable_commissions = [
+        commission
+        for commission in pending_commissions
+        if now.day >= 10 and (commission.year, commission.month) < (now.year, now.month)
+    ]
 
     if not pending_commissions:
         created_now = ensure_current_month_pending_commissions_for_ambassador(
@@ -808,20 +818,29 @@ def pay_pending_commissions_by_ambassador(
                 .order_by(Commission.year.asc(), Commission.month.asc(), Commission.id.asc())
                 .all()
             )
+            payable_commissions = [
+                commission
+                for commission in pending_commissions
+                if now.day >= 10 and (commission.year, commission.month) < (now.year, now.month)
+            ]
 
-    if not pending_commissions:
+    if not payable_commissions:
         wallet_sync = sync_ambassador_wallets(db, ambassador_id)
         return {
             "paid": True,
-            "message": "El embajador no tiene saldo pendiente",
+            "message": (
+                "El embajador no tiene corte pagable. "
+                "La próxima comisión se paga el día 10 con corte del 1 al 30 del mes anterior."
+            ),
             "paid_records": 0,
             "paid_amount": 0,
+            "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
             "wallet_sync": wallet_sync,
         }
 
     paid_total = 0.0
     paid_now = datetime.utcnow()
-    for commission in pending_commissions:
+    for commission in payable_commissions:
         commission.status = "paid"
         commission.paid_at = paid_now
         commission.notes = (
@@ -834,8 +853,9 @@ def pay_pending_commissions_by_ambassador(
 
     return {
         "paid": True,
-        "message": "Saldo del embajador pagado y pendiente reiniciado",
-        "paid_records": len(pending_commissions),
+        "message": "Corte mensual del embajador pagado correctamente",
+        "paid_records": len(payable_commissions),
         "paid_amount": round(paid_total, 2),
+        "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
         "wallet_sync": wallet_sync,
     }

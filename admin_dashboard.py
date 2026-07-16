@@ -155,6 +155,36 @@ def user_to_dict(u: User):
 def ambassador_to_dict(db: Session, a: Ambassador):
     user = a.user
     summary = ambassador_commission_summary(db, user) if user else None
+    now = datetime.utcnow()
+    current_month = now.month
+    current_year = now.year
+    pending_commissions = (
+        db.query(Commission)
+        .filter(Commission.ambassador_id == a.id, Commission.status == "pending")
+        .all()
+    )
+    current_cycle_commission = round(
+        sum(
+            float(c.commission_amount or 0)
+            for c in pending_commissions
+            if c.month == current_month and c.year == current_year
+        ),
+        2,
+    )
+    payable_commission = 0.0
+    if now.day >= 10:
+        payable_commission = round(
+            sum(
+                float(c.commission_amount or 0)
+                for c in pending_commissions
+                if (c.year, c.month) < (current_year, current_month)
+            ),
+            2,
+        )
+    upcoming_commission = current_cycle_commission
+    if upcoming_commission <= 0 and summary:
+        upcoming_commission = summary["projected_monthly_commission"]
+
     return {
         "id": a.id,
         "user_id": a.user_id,
@@ -173,12 +203,15 @@ def ambassador_to_dict(db: Session, a: Ambassador):
         "bank_account_holder": getattr(a, "bank_account_holder", None),
         "bank_identification": getattr(a, "bank_identification", None),
         "payment_notes": getattr(a, "payment_notes", None),
-        "commission_balance": summary["current_display_amount"] if summary else 0.0,
-        "commission_balance_label": summary["current_display_label"] if summary else "Ganancia pendiente",
-        "projected_monthly_commission": summary["secondary_projected_amount"] if summary else 0.0,
+        "commission_balance": upcoming_commission,
+        "commission_balance_label": "Próxima comisión",
+        "payable_commission_amount": payable_commission,
+        "payable_commission_label": "Corte mensual pagable",
+        "projected_monthly_commission": upcoming_commission,
         "projected_monthly_commission_raw": summary["projected_monthly_commission"] if summary else 0.0,
         "total_paid_commissions": summary["total_paid"] if summary else 0.0,
         "total_generated_commissions": summary["total_generated"] if summary else 0.0,
+        "payout_rule": "Pago mensual el día 10. Corte del 1 al 30 del mes anterior.",
     }
 
 
