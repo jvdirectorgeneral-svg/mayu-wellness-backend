@@ -736,7 +736,7 @@ def member_level_info(level: int | None):
     plans = {
         1: {
             "name": "Nivel 1 - Cobre",
-            "price": 40.00,
+            "price": 44.80,
             "benefits": [
                 "Selección mensual de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con acceso a tu membresía.",
@@ -746,7 +746,7 @@ def member_level_info(level: int | None):
         },
         2: {
             "name": "Nivel 2 - Plata",
-            "price": 50.00,
+            "price": 56.00,
             "benefits": [
                 "Selección mensual ampliada de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con beneficios activos.",
@@ -756,7 +756,7 @@ def member_level_info(level: int | None):
         },
         3: {
             "name": "Nivel 3 - Oro",
-            "price": 60.00,
+            "price": 67.20,
             "benefits": [
                 "Selección mensual premium de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con beneficios activos.",
@@ -786,7 +786,7 @@ Hola {user.name},
 Bienvenido a Mayu Wellness Club.
 
 Tu membresía quedó activa en {level_info["name"]}.
-Valor mensual del plan: ${level_info["price"]:.2f}.
+Valor mensual del plan: ${level_info["price"]:.2f} IVA incluido.
 
 La salud es nuestros hábitos de todos los días. Por eso, tu club está pensado para acompañarte mes a mes con productos, educación y una rutina más consciente.
 

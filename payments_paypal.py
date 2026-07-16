@@ -122,12 +122,31 @@ def get_monthly_amount_by_level(level: int) -> float:
     return prices[level]
 
 
+def get_iva_rate() -> float:
+    return 0.12
+
+
 def get_signup_fee() -> float:
     return 5.00
 
 
+def with_iva(amount: float) -> float:
+    return round(float(amount) * (1 + get_iva_rate()), 2)
+
+
+def get_monthly_amount_with_iva_by_level(level: int) -> float:
+    return with_iva(get_monthly_amount_by_level(level))
+
+
+def get_signup_fee_with_iva() -> float:
+    return with_iva(get_signup_fee())
+
+
 def get_first_payment_amount_by_level(level: int) -> float:
-    return get_monthly_amount_by_level(level) + get_signup_fee()
+    return round(
+        get_monthly_amount_with_iva_by_level(level) + get_signup_fee_with_iva(),
+        2,
+    )
 
 
 def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
@@ -136,13 +155,13 @@ def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
 
     rounded = round(float(amount), 2)
 
-    if rounded in [45.00, 40.00]:
+    if rounded in [50.40, 45.00, 40.00]:
         return 1
 
-    if rounded in [55.00, 50.00]:
+    if rounded in [61.60, 55.00, 50.00]:
         return 2
 
-    if rounded in [65.00, 60.00]:
+    if rounded in [72.80, 65.00, 60.00]:
         return 3
 
     return None
@@ -459,8 +478,10 @@ def create_order(
     plan_level = resolve_plan_level(payload, user)
 
     first_payment_amount = get_first_payment_amount_by_level(plan_level)
-    monthly_amount = get_monthly_amount_by_level(plan_level)
-    signup_fee = get_signup_fee()
+    base_monthly_amount = get_monthly_amount_by_level(plan_level)
+    monthly_amount = get_monthly_amount_with_iva_by_level(plan_level)
+    signup_fee = get_signup_fee_with_iva()
+    subtotal_without_iva = base_monthly_amount + get_signup_fee()
 
     user.membership_level = plan_level
 
@@ -476,7 +497,8 @@ def create_order(
                 },
                 "description": (
                     f"Mayu Wellness Club - Primer pago Nivel {plan_level} "
-                    f"incluye mensualidad ${monthly_amount:.2f} + inscripción inicial ${signup_fee:.2f}"
+                    f"incluye mensualidad ${monthly_amount:.2f} con IVA "
+                    f"+ inscripción inicial ${signup_fee:.2f} con IVA"
                 ),
             }
         ],
@@ -516,8 +538,11 @@ def create_order(
         "paypal_order_id": response["id"],
         "amount": first_payment_amount,
         "plan_level": plan_level,
+        "base_monthly_amount": base_monthly_amount,
         "monthly_amount": monthly_amount,
         "signup_fee": signup_fee,
+        "iva_rate": get_iva_rate(),
+        "subtotal_without_iva": subtotal_without_iva,
         "links": response.get("links", []),
     }
 

@@ -62,10 +62,18 @@ def get_plan_id_by_level(level: int):
     return os.getenv(env_map.get(level, "") or "")
 
 
-MONTHLY_PRICES = {
+IVA_RATE = 0.12
+SIGNUP_FEE_BASE = 5.00
+
+BASE_MONTHLY_PRICES = {
     1: 40.00,
     2: 50.00,
     3: 60.00,
+}
+
+MONTHLY_PRICES = {
+    level: round(price * (1 + IVA_RATE), 2)
+    for level, price in BASE_MONTHLY_PRICES.items()
 }
 
 PLAN_NAMES = {
@@ -196,6 +204,16 @@ def get_current_cycle():
 
 def get_plan_by_level(db: Session, level: int):
     return db.query(models.Plan).filter(models.Plan.level == level).first()
+
+
+def get_signup_fee_with_iva() -> float:
+    return round(SIGNUP_FEE_BASE * (1 + IVA_RATE), 2)
+
+
+def get_first_payment_amount_by_level(level: int) -> float:
+    if level not in MONTHLY_PRICES:
+        raise HTTPException(status_code=400, detail="Nivel inválido")
+    return round(MONTHLY_PRICES[level] + get_signup_fee_with_iva(), 2)
 
 
 def get_or_create_member_card_core(db: Session, user: models.User):
@@ -536,8 +554,11 @@ def activate_user_subscription_core(
 
     if existing_payment:
         existing_payment.status = "subscription_active"
-        existing_payment.amount = MONTHLY_PRICES[plan_level]
+        existing_payment.amount = get_first_payment_amount_by_level(plan_level)
         safe_set(existing_payment, "payment_reference", subscription_id)
+        safe_set(existing_payment, "signup_amount", get_signup_fee_with_iva())
+        safe_set(existing_payment, "monthly_amount", MONTHLY_PRICES[plan_level])
+        safe_set(existing_payment, "plan_level", plan_level)
         if paypal_payload is not None:
             safe_set(existing_payment, "raw_payload", json.dumps(paypal_payload))
     else:
@@ -545,7 +566,7 @@ def activate_user_subscription_core(
             user_id=user.id,
             order_id=None,
             paypal_order_id=subscription_id,
-            amount=MONTHLY_PRICES[plan_level],
+            amount=get_first_payment_amount_by_level(plan_level),
             currency="USD",
             status="subscription_active",
         )
@@ -554,6 +575,9 @@ def activate_user_subscription_core(
         safe_set(payment, "payment_type", "subscription")
         safe_set(payment, "payment_reference", subscription_id)
         safe_set(payment, "admin_verified", False)
+        safe_set(payment, "signup_amount", get_signup_fee_with_iva())
+        safe_set(payment, "monthly_amount", MONTHLY_PRICES[plan_level])
+        safe_set(payment, "plan_level", plan_level)
 
         if paypal_payload is not None:
             safe_set(payment, "raw_payload", json.dumps(paypal_payload))
@@ -624,7 +648,14 @@ def debug_subscriptions():
         "plan_level_1": bool(get_plan_id_by_level(1)),
         "plan_level_2": bool(get_plan_id_by_level(2)),
         "plan_level_3": bool(get_plan_id_by_level(3)),
+        "base_monthly_prices": BASE_MONTHLY_PRICES,
         "monthly_prices": MONTHLY_PRICES,
+        "iva_rate": IVA_RATE,
+        "signup_fee": get_signup_fee_with_iva(),
+        "first_payment_amounts": {
+            level: get_first_payment_amount_by_level(level)
+            for level in MONTHLY_PRICES
+        },
     }
 
 
@@ -655,13 +686,19 @@ def create_plan(payload: CreatePlanRequest):
 
     token = get_token()
 
+    base_price = BASE_MONTHLY_PRICES[payload.plan_level]
     price = MONTHLY_PRICES[payload.plan_level]
+    signup_fee = get_signup_fee_with_iva()
+    first_payment_amount = get_first_payment_amount_by_level(payload.plan_level)
     plan_name = PLAN_NAMES[payload.plan_level]
 
     body = {
         "product_id": payload.product_id,
         "name": plan_name,
-        "description": f"Mensualidad recurrente {plan_name}",
+        "description": (
+            f"Mensualidad recurrente {plan_name}. "
+            "Valores incluyen IVA Ecuador 12%."
+        ),
         "status": "ACTIVE",
         "billing_cycles": [
             {
@@ -683,7 +720,7 @@ def create_plan(payload: CreatePlanRequest):
         "payment_preferences": {
             "auto_bill_outstanding": True,
             "setup_fee": {
-                "value": "5.00",
+                "value": f"{first_payment_amount:.2f}",
                 "currency_code": payload.currency,
             },
             "setup_fee_failure_action": "CONTINUE",
@@ -696,8 +733,13 @@ def create_plan(payload: CreatePlanRequest):
     return {
         "message": "Plan PayPal creado correctamente",
         "plan_level": payload.plan_level,
+        "base_monthly_price": base_price,
         "monthly_price": price,
-        "setup_fee": 5.00,
+        "iva_rate": IVA_RATE,
+        "signup_fee": signup_fee,
+        "first_payment_amount": first_payment_amount,
+        "setup_fee": first_payment_amount,
+        "note": "El setup_fee de PayPal cobra inscripción + primera mensualidad con IVA. La mensualidad recurrente también incluye IVA.",
         "plan_id": response.get("id"),
         "response": response,
     }
@@ -754,6 +796,9 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
     approve_url = extract_approve_url(response.get("links", []))
     paypal_status = response.get("status", "APPROVAL_PENDING")
     monthly_amount = MONTHLY_PRICES[payload.plan_level]
+    base_monthly_amount = BASE_MONTHLY_PRICES[payload.plan_level]
+    signup_fee = get_signup_fee_with_iva()
+    first_payment_amount = get_first_payment_amount_by_level(payload.plan_level)
 
     if not subscription_id:
         raise HTTPException(status_code=500, detail="PayPal no devolvió subscription_id")
@@ -769,7 +814,7 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
             user_id=user.id,
             order_id=None,
             paypal_order_id=subscription_id,
-            amount=monthly_amount,
+            amount=first_payment_amount,
             currency="USD",
             status="subscription_created",
         )
@@ -779,6 +824,9 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
         safe_set(payment, "payment_reference", subscription_id)
         safe_set(payment, "raw_payload", json.dumps(response))
         safe_set(payment, "admin_verified", False)
+        safe_set(payment, "signup_amount", signup_fee)
+        safe_set(payment, "monthly_amount", monthly_amount)
+        safe_set(payment, "plan_level", payload.plan_level)
 
         db.add(payment)
 
@@ -789,8 +837,12 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
         "message": "Suscripción PayPal creada",
         "user_id": user.id,
         "plan_level": payload.plan_level,
+        "base_monthly_amount": base_monthly_amount,
         "monthly_amount": monthly_amount,
-        "setup_fee": 5.00,
+        "iva_rate": IVA_RATE,
+        "signup_fee": signup_fee,
+        "first_payment_amount": first_payment_amount,
+        "setup_fee": first_payment_amount,
         "start_time": start_time,
         "paypal_subscription_id": subscription_id,
         "subscription_status": paypal_status,
