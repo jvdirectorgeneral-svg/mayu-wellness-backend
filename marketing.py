@@ -7,6 +7,7 @@ import cloudinary.uploader
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from models import (
     PushNotificationToken,
     MarketplaceOrder,
     EducationOrder,
+    Ambassador,
 )
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
@@ -710,6 +712,21 @@ def process_scheduled_campaigns(db: Session):
 
 
 def build_birthday_email_message(user: User):
+    if user.role == "ambassador":
+        return f"""
+Hola {user.name},
+
+Hoy queremos desearte un muy feliz cumpleaños.
+
+Gracias por ser parte de Mayu Wellness Club como Embajador Mayu.
+Tu labor ayuda a compartir bienestar, salud y mejores hábitos con más personas.
+
+Que este nuevo ciclo venga lleno de energía, propósito y crecimiento.
+
+Con cariño,
+Equipo Mayu Wellness Club
+"""
+
     level_info = member_level_info(user.membership_level)
 
     return f"""
@@ -808,6 +825,15 @@ Equipo Mayu Wellness Club
 
 
 def send_welcome_email(to_email: str, user: User):
+    if user.role == "ambassador":
+        send_marketing_email(
+            to_email=to_email,
+            subject="Bienvenido como Embajador Mayu Wellness Club",
+            message=build_welcome_ambassador_email_message(user),
+            image_url=None,
+        )
+        return
+
     level_info = member_level_info(user.membership_level)
     send_marketing_email(
         to_email=to_email,
@@ -815,6 +841,229 @@ def send_welcome_email(to_email: str, user: User):
         message=build_welcome_email_message(user),
         image_url=None,
     )
+
+
+def build_welcome_ambassador_email_message(user: User):
+    return f"""
+Hola {user.name},
+
+Bienvenido como Embajador Mayu Wellness Club.
+
+Tu cuenta de embajador quedó activa. Desde ahora puedes compartir tu código, referir socios y construir tu comunidad Mayu con una lógica clara:
+
+- Cada socio activo referido suma comisión mensual.
+- El pago se realiza el día 10.
+- El corte va del 1 al 30 del mes anterior.
+- Tu tarjeta digital y wallet muestran tu código, próxima comisión y pago realizado.
+
+La salud es nuestros hábitos de todos los días. Como embajador, ayudas a llevar ese mensaje a más personas.
+
+Gracias por formar parte de Mayu Wellness Club.
+
+Equipo Mayu Wellness Club
+"""
+
+
+def get_ambassador_code_for_user(db: Session, user: User):
+    profile = (
+        db.query(Ambassador)
+        .filter(Ambassador.user_id == user.id)
+        .first()
+    )
+
+    return getattr(profile, "ambassador_code", None) or f"EMB-{user.id:06d}"
+
+
+def send_welcome_ambassador_notifications(db: Session, user: User, trigger: str = "ambassador_registered"):
+    if not user or user.role != "ambassador" or not getattr(user, "is_active", True):
+        return {
+            "sent": False,
+            "reason": "Usuario no elegible para bienvenida de embajador",
+        }
+
+    ambassador_code = get_ambassador_code_for_user(db, user)
+    campaign_title = f"Bienvenida Embajador Mayu user:{user.id} code:{ambassador_code}"
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.title == campaign_title)
+        .first()
+    )
+    existing_recipient = None
+
+    if campaign:
+        existing_recipient = (
+            db.query(MarketingCampaignRecipient)
+            .filter(
+                MarketingCampaignRecipient.campaign_id == campaign.id,
+                MarketingCampaignRecipient.user_id == user.id,
+            )
+            .first()
+        )
+        if existing_recipient:
+            email_already_sent = (
+                db.query(MarketingEvent)
+                .filter(
+                    MarketingEvent.campaign_id == campaign.id,
+                    MarketingEvent.user_id == user.id,
+                    MarketingEvent.event_type == "welcome_email_sent",
+                )
+                .first()
+                is not None
+            )
+            push_already_sent = (
+                db.query(MarketingEvent)
+                .filter(
+                    MarketingEvent.campaign_id == campaign.id,
+                    MarketingEvent.user_id == user.id,
+                    MarketingEvent.event_type == "welcome_push_sent",
+                )
+                .first()
+                is not None
+            )
+
+            if email_already_sent and push_already_sent:
+                return {
+                    "sent": False,
+                    "reason": "Bienvenida embajador ya enviada",
+                    "campaign_id": campaign.id,
+                    "recipient_id": existing_recipient.id,
+                    "email_sent": True,
+                    "push_sent": True,
+                }
+
+    if not campaign:
+        campaign = MarketingCampaign(
+            title=campaign_title,
+            subject="Bienvenido como Embajador Mayu Wellness Club",
+            message=build_welcome_ambassador_email_message(user),
+            image_url=None,
+            channel="email",
+            target_group="ambassadors",
+            status="sent",
+            created_by=None,
+            created_at=datetime.utcnow(),
+            sent_at=datetime.utcnow(),
+        )
+        db.add(campaign)
+        db.flush()
+
+    recipient = existing_recipient if campaign and existing_recipient else None
+    if not recipient:
+        recipient = MarketingCampaignRecipient(
+            campaign_id=campaign.id,
+            user_id=user.id,
+            name_snapshot=user.name,
+            email_snapshot=user.email,
+            phone_snapshot=user.phone,
+            role_snapshot=user.role,
+            delivery_status="pending",
+            sent_at=None,
+            error_message=None,
+        )
+        db.add(recipient)
+        db.flush()
+
+    email_already_sent = (
+        db.query(MarketingEvent)
+        .filter(
+            MarketingEvent.campaign_id == campaign.id,
+            MarketingEvent.user_id == user.id,
+            MarketingEvent.event_type == "welcome_email_sent",
+        )
+        .first()
+        is not None
+    )
+    push_already_sent = (
+        db.query(MarketingEvent)
+        .filter(
+            MarketingEvent.campaign_id == campaign.id,
+            MarketingEvent.user_id == user.id,
+            MarketingEvent.event_type == "welcome_push_sent",
+        )
+        .first()
+        is not None
+    )
+
+    errors = []
+    email_sent = email_already_sent
+    push_sent = push_already_sent
+
+    if not email_already_sent:
+        try:
+            send_welcome_email(user.email, user)
+            email_sent = True
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_email_sent",
+                channel="email",
+                metadata=trigger,
+            )
+        except Exception as exc:
+            errors.append(f"email: {str(exc)}")
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_email_error",
+                channel="email",
+                metadata=str(exc),
+            )
+
+    if not push_already_sent:
+        try:
+            send_push_to_latest_user_token(
+                db=db,
+                user_id=user.id,
+                title="Bienvenido Embajador Mayu",
+                message=f"Tu código {ambassador_code} está activo. Comparte bienestar y construye tu comunidad Mayu.",
+                image_url=None,
+            )
+            push_sent = True
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_push_sent",
+                channel="push",
+                metadata=trigger,
+            )
+        except Exception as exc:
+            errors.append(f"push: {str(exc)}")
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_push_error",
+                channel="push",
+                metadata=str(exc),
+            )
+
+    if errors and (email_sent or push_sent):
+        recipient.delivery_status = "partial_error"
+    elif errors:
+        recipient.delivery_status = "error"
+    else:
+        recipient.delivery_status = "sent"
+
+    recipient.error_message = " | ".join(errors) if errors else None
+    recipient.sent_at = datetime.utcnow()
+    campaign.status = "sent"
+    campaign.sent_at = datetime.utcnow()
+
+    return {
+        "sent": email_sent or push_sent,
+        "email_sent": email_sent,
+        "push_sent": push_sent,
+        "errors": errors,
+        "campaign_id": campaign.id,
+        "recipient_id": recipient.id,
+    }
 
 
 def send_welcome_member_notifications(db: Session, user: User, trigger: str = "membership_active"):
@@ -1016,10 +1265,15 @@ def process_welcome_notifications(db: Session):
     users = (
         db.query(User)
         .filter(
-            User.role == "member",
             User.is_active == True,
-            User.membership_active == True,
-            User.membership_level.in_([1, 2, 3]),
+            or_(
+                (
+                    (User.role == "member")
+                    & (User.membership_active == True)
+                    & (User.membership_level.in_([1, 2, 3]))
+                ),
+                User.role == "ambassador",
+            ),
         )
         .order_by(User.id.asc())
         .all()
@@ -1030,11 +1284,18 @@ def process_welcome_notifications(db: Session):
     skipped_count = 0
 
     for user in users:
-        result = send_welcome_member_notifications(
-            db=db,
-            user=user,
-            trigger="welcome_cron",
-        )
+        if user.role == "ambassador":
+            result = send_welcome_ambassador_notifications(
+                db=db,
+                user=user,
+                trigger="welcome_cron",
+            )
+        else:
+            result = send_welcome_member_notifications(
+                db=db,
+                user=user,
+                trigger="welcome_cron",
+            )
         processed.append({"user_id": user.id, **result})
         if result.get("sent"):
             sent_count += 1
@@ -1055,10 +1316,15 @@ def process_birthday_notifications(db: Session):
     users = (
         db.query(User)
         .filter(
-            User.role == "member",
             User.is_active == True,
-            User.membership_active == True,
             User.birth_date.isnot(None),
+            or_(
+                (
+                    (User.role == "member")
+                    & (User.membership_active == True)
+                ),
+                User.role == "ambassador",
+            ),
         )
         .all()
     )
@@ -1081,7 +1347,7 @@ def process_birthday_notifications(db: Session):
         campaign = MarketingCampaign(
             title=campaign_title,
             subject="🎉 Feliz cumpleaños de parte de Mayu Wellness Club",
-            message="Mensaje automático de cumpleaños para socios Mayu Wellness Club.",
+            message="Mensaje automático de cumpleaños para socios y embajadores Mayu Wellness Club.",
             image_url=None,
             channel="email",
             target_group="members",
@@ -1399,13 +1665,23 @@ def save_push_token(
             "message": "Token push actualizado",
             "token_id": existing.id,
         }
-        if current_user.role == "member" and current_user.membership_active:
+        if (
+            (current_user.role == "member" and current_user.membership_active)
+            or current_user.role == "ambassador"
+        ):
             try:
-                response["welcome_notifications"] = send_welcome_member_notifications(
-                    db=db,
-                    user=current_user,
-                    trigger="push_token_registered",
-                )
+                if current_user.role == "ambassador":
+                    response["welcome_notifications"] = send_welcome_ambassador_notifications(
+                        db=db,
+                        user=current_user,
+                        trigger="push_token_registered",
+                    )
+                else:
+                    response["welcome_notifications"] = send_welcome_member_notifications(
+                        db=db,
+                        user=current_user,
+                        trigger="push_token_registered",
+                    )
                 db.commit()
             except Exception as exc:
                 response["welcome_notifications"] = {
@@ -1430,13 +1706,23 @@ def save_push_token(
         "message": "Token push guardado",
         "token_id": push_token.id,
     }
-    if current_user.role == "member" and current_user.membership_active:
+    if (
+        (current_user.role == "member" and current_user.membership_active)
+        or current_user.role == "ambassador"
+    ):
         try:
-            response["welcome_notifications"] = send_welcome_member_notifications(
-                db=db,
-                user=current_user,
-                trigger="push_token_registered",
-            )
+            if current_user.role == "ambassador":
+                response["welcome_notifications"] = send_welcome_ambassador_notifications(
+                    db=db,
+                    user=current_user,
+                    trigger="push_token_registered",
+                )
+            else:
+                response["welcome_notifications"] = send_welcome_member_notifications(
+                    db=db,
+                    user=current_user,
+                    trigger="push_token_registered",
+                )
             db.commit()
         except Exception as exc:
             response["welcome_notifications"] = {
