@@ -44,6 +44,7 @@ class AmbassadorRegister(BaseModel):
     email: EmailStr
     password: str
     phone: str
+    birth_date: Optional[datetime] = None
 
     national_id: str
     address: str
