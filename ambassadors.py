@@ -17,6 +17,25 @@ router = APIRouter(prefix="/ambassadors", tags=["Ambassadors"])
 BASE_PUBLIC_URL = "https://mayu-wellness-backend-v1.onrender.com"
 
 
+def send_ambassador_welcome_safely(db: Session, user: models.User):
+    try:
+        from marketing import send_welcome_ambassador_notifications
+
+        result = send_welcome_ambassador_notifications(
+            db=db,
+            user=user,
+            trigger="ambassador_register",
+        )
+        db.commit()
+        return result
+    except Exception as exc:
+        db.rollback()
+        return {
+            "sent": False,
+            "error": str(exc),
+        }
+
+
 def generate_ambassador_code(ambassador_id: int):
     return f"EMB-{ambassador_id:06d}"
 
@@ -283,6 +302,7 @@ def register_ambassador(data: AmbassadorRegister, db: Session = Depends(get_db))
         reference="Registro embajador",
         delivery_notes="Registro embajador",
         phone_secondary=data.phone,
+        birth_date=data.birth_date,
         status="registered",
         membership_level=None,
         membership_active=False,
@@ -316,6 +336,8 @@ def register_ambassador(data: AmbassadorRegister, db: Session = Depends(get_db))
     db.commit()
     db.refresh(ambassador)
 
+    welcome_notifications = send_ambassador_welcome_safely(db, user)
+
     return {
         "message": "Embajador registrado correctamente",
         "user": {
@@ -343,6 +365,7 @@ def register_ambassador(data: AmbassadorRegister, db: Session = Depends(get_db))
             "is_active": ambassador.is_active,
         },
         "card": ambassador_card_payload(user, ambassador),
+        "welcome_notifications": welcome_notifications,
     }
 
 
