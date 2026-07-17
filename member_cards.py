@@ -70,6 +70,27 @@ def get_ambassador_by_user(db: Session, user_id: int):
     return db.query(models.Ambassador).filter(models.Ambassador.user_id == user_id).first()
 
 
+def get_ambassador_for_card(db: Session | None, user, card=None):
+    if not db or not user:
+        return None
+
+    ambassador = get_ambassador_by_user(db, user.id)
+    if ambassador:
+        return ambassador
+
+    card_code = (getattr(card, "member_code", "") or "").strip()
+    if card_code.startswith("EMB-"):
+        ambassador = (
+            db.query(models.Ambassador)
+            .filter(models.Ambassador.ambassador_code == card_code)
+            .first()
+        )
+        if ambassador:
+            return ambassador
+
+    return None
+
+
 def get_member_card_number(db: Session, card):
     if not card or not card.id:
         return 0
@@ -233,7 +254,7 @@ def get_card_status(user):
 
 def get_card_code(db: Session, user, card=None):
     if user.role == "ambassador":
-        ambassador = get_ambassador_by_user(db, user.id)
+        ambassador = get_ambassador_for_card(db, user, card)
         if ambassador:
             correct_code = generate_ambassador_code(ambassador.id)
             if ambassador.ambassador_code != correct_code:
@@ -241,6 +262,9 @@ def get_card_code(db: Session, user, card=None):
                 db.commit()
                 db.refresh(ambassador)
             return correct_code
+        existing_code = (getattr(card, "member_code", "") or "").strip()
+        if existing_code.startswith("EMB-"):
+            return existing_code
         return f"EMB-{user.id:06d}"
 
     if card and card.id:
@@ -387,14 +411,17 @@ def get_card_visual_data(db: Session | None, user, card):
     display_code = sync_card_display_code(db, user, card)
 
     if user.role == "ambassador":
-        ambassador = get_ambassador_by_user(db, user.id) if db else None
-        if not ambassador:
-            raise HTTPException(status_code=404, detail="Perfil de embajador no encontrado")
+        ambassador = get_ambassador_for_card(db, user, card)
+        display_code = (
+            generate_ambassador_code(ambassador.id)
+            if ambassador
+            else ((getattr(card, "member_code", "") or "").strip() or f"EMB-{user.id:06d}")
+        )
 
         return {
             "display_name": user.name,
             "level_text": "Embajador Mayu",
-            "member_code": generate_ambassador_code(ambassador.id),
+            "member_code": display_code,
             "bg_file": "embajador_pic.png",
             "wallet_file": "wallet_embajador.png",
             "fallback_color": (0, 120, 110),
@@ -1111,7 +1138,7 @@ def ensure_member_google_wallet_class(service_account_info: dict, class_id: str)
         )
 
 
-def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
+def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, db: Session | None = None):
     try:
         from database import SessionLocal
 
@@ -1126,7 +1153,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str):
     except Exception:
         pass
 
-    visual = get_card_visual_data(None, user, card)
+    visual = get_card_visual_data(db, user, card)
     object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}".replace("-", "_").lower()
     object_id = f"{issuer_id}.{object_suffix}"
 
@@ -1247,7 +1274,7 @@ def member_google_wallet_visual_signature(wallet_object: dict):
     }
 
 
-def build_google_wallet_save_url(user, card):
+def build_google_wallet_save_url(user, card, db: Session | None = None):
     issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
     class_suffix = member_google_class_suffix()
 
@@ -1271,6 +1298,7 @@ def build_google_wallet_save_url(user, card):
         card,
         issuer_id,
         class_id,
+        db,
     )
 
     claims = {
@@ -1289,7 +1317,7 @@ def build_google_wallet_save_url(user, card):
 @router.get("/google-wallet/{user_id}")
 def generate_google_wallet_pass(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
-    save_url = build_google_wallet_save_url(user, card)
+    save_url = build_google_wallet_save_url(user, card, db)
     return RedirectResponse(url=save_url)
 
 
@@ -1299,8 +1327,9 @@ def upsert_member_google_wallet_object(
     card,
     issuer_id: str,
     class_id: str,
+    db: Session | None = None,
 ):
-    object_body = build_google_wallet_object_body(user, card, issuer_id, class_id)
+    object_body = build_google_wallet_object_body(user, card, issuer_id, class_id, db)
     object_id = object_body["id"]
     credentials = service_account.Credentials.from_service_account_info(
         service_account_info,
