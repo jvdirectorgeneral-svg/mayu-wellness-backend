@@ -13,7 +13,7 @@ from commissions import (
     ensure_current_month_pending_commissions_for_ambassador,
     sync_ambassador_wallets,
 )
-from marketing import send_welcome_member_notifications
+from marketing import send_push_to_latest_user_token, send_welcome_member_notifications
 from models import (
     User,
     Ambassador,
@@ -51,6 +51,11 @@ class AdminUpdateMemberRequest(BaseModel):
     membership_level: Optional[int] = None
     membership_active: Optional[bool] = None
     is_active: Optional[bool] = None
+
+
+class AdminSendMemberPushRequest(BaseModel):
+    title: Optional[str] = None
+    message: Optional[str] = None
 
 
 class AdminUpdateAmbassadorRequest(BaseModel):
@@ -792,6 +797,49 @@ def admin_update_user_phone(user_id: int, payload: AdminUpdatePhoneRequest, db: 
     return {"message": "Teléfono actualizado correctamente", "user": user_to_dict(user)}
 
 
+@router.post("/users/{user_id}/push")
+def admin_send_user_push(
+    user_id: int,
+    payload: AdminSendMemberPushRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_admin_or_superadmin(current_user)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    if user.role != "member":
+        raise HTTPException(status_code=400, detail="Solo se puede enviar push a socios Mayu Wellness Club")
+
+    title = (payload.title or "Mayu Wellness Club").strip()
+    message = (
+        payload.message
+        or "Tu membresía Mayu está activa. La salud es nuestros hábitos de todos los días."
+    ).strip()
+
+    try:
+        result = send_push_to_latest_user_token(
+            db=db,
+            user_id=user.id,
+            title=title,
+            message=message,
+            image_url=None,
+        )
+        db.commit()
+        return {
+            "message": "Push enviado al socio",
+            "user_id": user.id,
+            "user_name": user.name,
+            "sent": True,
+            "push": result,
+        }
+    except Exception as exc:
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/payments")
 def get_payments(
     db: Session = Depends(get_db),
@@ -847,6 +895,12 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
     payment = db.query(MembershipPayment).filter(MembershipPayment.id == payment_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
+
+    if payment.admin_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="Este pago ya fue verificado. No se puede reprocesar.",
+        )
 
     user = db.query(User).filter(User.id == payment.user_id).first()
     if not user:
