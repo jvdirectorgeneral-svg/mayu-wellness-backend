@@ -825,6 +825,7 @@ def send_welcome_member_notifications(db: Session, user: User, trigger: str = "m
         .filter(MarketingCampaign.title == campaign_title)
         .first()
     )
+    existing_recipient = None
 
     if campaign:
         existing_recipient = (
@@ -836,12 +837,36 @@ def send_welcome_member_notifications(db: Session, user: User, trigger: str = "m
             .first()
         )
         if existing_recipient:
-            return {
-                "sent": False,
-                "reason": "Bienvenida ya enviada",
-                "campaign_id": campaign.id,
-                "recipient_id": existing_recipient.id,
-            }
+            email_already_sent = (
+                db.query(MarketingEvent)
+                .filter(
+                    MarketingEvent.campaign_id == campaign.id,
+                    MarketingEvent.user_id == user.id,
+                    MarketingEvent.event_type == "welcome_email_sent",
+                )
+                .first()
+                is not None
+            )
+            push_already_sent = (
+                db.query(MarketingEvent)
+                .filter(
+                    MarketingEvent.campaign_id == campaign.id,
+                    MarketingEvent.user_id == user.id,
+                    MarketingEvent.event_type == "welcome_push_sent",
+                )
+                .first()
+                is not None
+            )
+
+            if email_already_sent and push_already_sent:
+                return {
+                    "sent": False,
+                    "reason": "Bienvenida ya enviada",
+                    "campaign_id": campaign.id,
+                    "recipient_id": existing_recipient.id,
+                    "email_sent": True,
+                    "push_sent": True,
+                }
 
     if not campaign:
         campaign = MarketingCampaign(
@@ -859,80 +884,105 @@ def send_welcome_member_notifications(db: Session, user: User, trigger: str = "m
         db.add(campaign)
         db.flush()
 
-    recipient = MarketingCampaignRecipient(
-        campaign_id=campaign.id,
-        user_id=user.id,
-        name_snapshot=user.name,
-        email_snapshot=user.email,
-        phone_snapshot=user.phone,
-        role_snapshot=user.role,
-        delivery_status="pending",
-        sent_at=None,
-        error_message=None,
+    recipient = existing_recipient if campaign and existing_recipient else None
+    if not recipient:
+        recipient = MarketingCampaignRecipient(
+            campaign_id=campaign.id,
+            user_id=user.id,
+            name_snapshot=user.name,
+            email_snapshot=user.email,
+            phone_snapshot=user.phone,
+            role_snapshot=user.role,
+            delivery_status="pending",
+            sent_at=None,
+            error_message=None,
+        )
+        db.add(recipient)
+        db.flush()
+
+    email_already_sent = (
+        db.query(MarketingEvent)
+        .filter(
+            MarketingEvent.campaign_id == campaign.id,
+            MarketingEvent.user_id == user.id,
+            MarketingEvent.event_type == "welcome_email_sent",
+        )
+        .first()
+        is not None
     )
-    db.add(recipient)
-    db.flush()
+    push_already_sent = (
+        db.query(MarketingEvent)
+        .filter(
+            MarketingEvent.campaign_id == campaign.id,
+            MarketingEvent.user_id == user.id,
+            MarketingEvent.event_type == "welcome_push_sent",
+        )
+        .first()
+        is not None
+    )
 
     errors = []
-    email_sent = False
-    push_sent = False
+    email_sent = email_already_sent
+    push_sent = push_already_sent
 
-    try:
-        send_welcome_email(user.email, user)
-        email_sent = True
-        add_marketing_event(
-            db=db,
-            campaign_id=campaign.id,
-            recipient_id=recipient.id,
-            user_id=user.id,
-            event_type="welcome_email_sent",
-            channel="email",
-            metadata=trigger,
-        )
-    except Exception as exc:
-        errors.append(f"email: {str(exc)}")
-        add_marketing_event(
-            db=db,
-            campaign_id=campaign.id,
-            recipient_id=recipient.id,
-            user_id=user.id,
-            event_type="welcome_email_error",
-            channel="email",
-            metadata=str(exc),
-        )
+    if not email_already_sent:
+        try:
+            send_welcome_email(user.email, user)
+            email_sent = True
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_email_sent",
+                channel="email",
+                metadata=trigger,
+            )
+        except Exception as exc:
+            errors.append(f"email: {str(exc)}")
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_email_error",
+                channel="email",
+                metadata=str(exc),
+            )
 
-    try:
-        send_push_to_latest_user_token(
-            db=db,
-            user_id=user.id,
-            title="Bienvenido a Mayu Wellness Club",
-            message=(
-                f"Tu {level_info['name']} está activo. "
-                "La salud es nuestros hábitos de todos los días."
-            ),
-            image_url=None,
-        )
-        push_sent = True
-        add_marketing_event(
-            db=db,
-            campaign_id=campaign.id,
-            recipient_id=recipient.id,
-            user_id=user.id,
-            event_type="welcome_push_sent",
-            channel="push",
-            metadata=trigger,
-        )
-    except Exception as exc:
-        errors.append(f"push: {str(exc)}")
-        add_marketing_event(
-            db=db,
-            campaign_id=campaign.id,
-            recipient_id=recipient.id,
-            user_id=user.id,
-            event_type="welcome_push_error",
-            channel="push",
-            metadata=str(exc),
-        )
+    if not push_already_sent:
+        try:
+            send_push_to_latest_user_token(
+                db=db,
+                user_id=user.id,
+                title="Bienvenido a Mayu Wellness Club",
+                message=(
+                    f"Tu {level_info['name']} está activo. "
+                    "La salud es nuestros hábitos de todos los días."
+                ),
+                image_url=None,
+            )
+            push_sent = True
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_push_sent",
+                channel="push",
+                metadata=trigger,
+            )
+        except Exception as exc:
+            errors.append(f"push: {str(exc)}")
+            add_marketing_event(
+                db=db,
+                campaign_id=campaign.id,
+                recipient_id=recipient.id,
+                user_id=user.id,
+                event_type="welcome_push_error",
+                channel="push",
+                metadata=str(exc),
+            )
 
     if errors and (email_sent or push_sent):
         recipient.delivery_status = "partial_error"
@@ -1301,10 +1351,25 @@ def save_push_token(
         db.commit()
         db.refresh(existing)
 
-        return {
+        response = {
             "message": "Token push actualizado",
             "token_id": existing.id,
         }
+        if current_user.role == "member" and current_user.membership_active:
+            try:
+                response["welcome_notifications"] = send_welcome_member_notifications(
+                    db=db,
+                    user=current_user,
+                    trigger="push_token_registered",
+                )
+                db.commit()
+            except Exception as exc:
+                response["welcome_notifications"] = {
+                    "sent": False,
+                    "error": str(exc),
+                }
+
+        return response
 
     push_token = PushNotificationToken(
         user_id=current_user.id,
@@ -1317,10 +1382,25 @@ def save_push_token(
     db.commit()
     db.refresh(push_token)
 
-    return {
+    response = {
         "message": "Token push guardado",
         "token_id": push_token.id,
     }
+    if current_user.role == "member" and current_user.membership_active:
+        try:
+            response["welcome_notifications"] = send_welcome_member_notifications(
+                db=db,
+                user=current_user,
+                trigger="push_token_registered",
+            )
+            db.commit()
+        except Exception as exc:
+            response["welcome_notifications"] = {
+                "sent": False,
+                "error": str(exc),
+            }
+
+    return response
 
 
 @router.post("/push-test-me")
