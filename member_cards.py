@@ -540,7 +540,7 @@ def get_wallet_asset(filename: str):
         except Exception:
             pass
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(base_dir, "assets", filename)
 
     if not os.path.exists(file_path):
