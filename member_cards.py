@@ -521,7 +521,26 @@ def get_wallet_asset(filename: str):
         except Exception:
             pass
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    if filename == "wallet_cobre.png":
+        try:
+            image = Image.open(
+                BytesIO(base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64))
+            ).convert("RGB")
+            buffer = BytesIO()
+            image.save(buffer, format="PNG")
+            return Response(
+                content=buffer.getvalue(),
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+        except Exception:
+            pass
+
+base_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(base_dir, "assets", filename)
 
     if not os.path.exists(file_path):
