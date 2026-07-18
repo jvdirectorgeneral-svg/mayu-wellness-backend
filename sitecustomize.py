@@ -4,14 +4,17 @@ import base64
 import builtins
 
 from PIL import Image
-from starlette.routing import request_response
+import fastapi.responses as fastapi_responses
+import starlette.responses as starlette_responses
 
 from embedded_card_assets import LEVEL_1_CARD_COBRE_JPEG_BASE64
 
 
-LEVEL_1_WALLET_VISUAL_VERSION = "nivel1_cobre_20260718"
+LEVEL_1_WALLET_VISUAL_VERSION = "nivel1_cobre_20260718b"
 _original_image_open = Image.open
 _original_import = builtins.__import__
+_original_fastapi_file_response = fastapi_responses.FileResponse
+_original_starlette_file_response = starlette_responses.FileResponse
 
 
 def _level_1_wallet_png_bytes():
@@ -34,15 +37,34 @@ def _level_1_wallet_response(response_cls):
     )
 
 
-def _mayu_image_open(fp, *args, **kwargs):
-    path = os.fspath(fp) if isinstance(fp, (str, bytes, os.PathLike)) else ""
-    normalized_path = path.replace("\\", "/")
+def _is_wallet_cobre_path(path):
+    try:
+        normalized_path = os.fspath(path).replace("\\", "/")
+    except Exception:
+        return False
+    return normalized_path.endswith("/assets/wallet_cobre.png")
 
-    if normalized_path.endswith("/assets/wallet_cobre.png"):
-        image_bytes = base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64)
-        return _original_image_open(BytesIO(image_bytes), *args, **kwargs)
+
+def _mayu_image_open(fp, *args, **kwargs):
+    if _is_wallet_cobre_path(fp):
+        return _original_image_open(
+            BytesIO(base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64)),
+            *args,
+            **kwargs,
+        )
 
     return _original_image_open(fp, *args, **kwargs)
+
+
+def _mayu_file_response(*args, **kwargs):
+    path = kwargs.get("path")
+    if path is None and args:
+        path = args[0]
+
+    if _is_wallet_cobre_path(path):
+        return _level_1_wallet_response(fastapi_responses.Response)
+
+    return _original_fastapi_file_response(*args, **kwargs)
 
 
 def _with_level_1_wallet_version(uri: str):
@@ -52,30 +74,12 @@ def _with_level_1_wallet_version(uri: str):
     return f"{uri}{separator}wallet_visual={LEVEL_1_WALLET_VISUAL_VERSION}"
 
 
-def _patch_asset_route(module, get_wallet_asset):
-    for route in getattr(module.router, "routes", []) or []:
-        if getattr(route, "path", "") == "/assets/{filename}":
-            route.endpoint = get_wallet_asset
-            if getattr(route, "dependant", None) is not None:
-                route.dependant.call = get_wallet_asset
-            try:
-                route.app = request_response(route.get_route_handler())
-            except Exception:
-                pass
-
-
 def _patch_member_cards(module):
     if getattr(module, "_mayu_level_1_wallet_visual_patch", False):
         return module
 
-    original_get_wallet_asset = module.get_wallet_asset
     original_member_apple_serial = module.member_apple_serial
     original_build_google_wallet_object_body = module.build_google_wallet_object_body
-
-    def get_wallet_asset(filename: str):
-        if filename == "wallet_cobre.png":
-            return _level_1_wallet_response(module.Response)
-        return original_get_wallet_asset(filename)
 
     def member_apple_serial(card):
         serial = original_member_apple_serial(card)
@@ -105,10 +109,8 @@ def _patch_member_cards(module):
 
         return body
 
-    module.get_wallet_asset = get_wallet_asset
     module.member_apple_serial = member_apple_serial
     module.build_google_wallet_object_body = build_google_wallet_object_body
-    _patch_asset_route(module, get_wallet_asset)
     module._mayu_level_1_wallet_visual_patch = True
     return module
 
@@ -121,4 +123,6 @@ def _mayu_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 
 Image.open = _mayu_image_open
+fastapi_responses.FileResponse = _mayu_file_response
+starlette_responses.FileResponse = _mayu_file_response
 builtins.__import__ = _mayu_import
