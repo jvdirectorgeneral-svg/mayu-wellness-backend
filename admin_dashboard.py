@@ -13,7 +13,11 @@ from commissions import (
     ensure_current_month_pending_commissions_for_ambassador,
     sync_ambassador_wallets,
 )
-from marketing import send_push_to_latest_user_token, send_welcome_member_notifications
+from marketing import (
+    notify_admin_member_payment_event,
+    send_push_to_latest_user_token,
+    send_welcome_member_notifications,
+)
 from models import (
     User,
     Ambassador,
@@ -1004,6 +1008,21 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
             "error": str(exc),
         }
 
+    try:
+        admin_email_sync = notify_admin_member_payment_event(
+            db=db,
+            user=user,
+            payment=payment,
+            order=order,
+            trigger="admin_payment_verify",
+        )
+        db.commit()
+    except Exception as exc:
+        admin_email_sync = {
+            "sent": False,
+            "error": str(exc),
+        }
+
     return {
         "message": "Pago verificado, suscripción activa y orden liberada a logística",
         "payment": payment_to_dict(payment),
@@ -1015,6 +1034,7 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
             "wallet_sync": commission_sync,
         },
         "welcome_notifications": welcome_sync,
+        "admin_email_notification": admin_email_sync,
     }
 
 
