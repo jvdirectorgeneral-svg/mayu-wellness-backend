@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 import models
-from marketing import send_welcome_member_notifications
+from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
 
 router = APIRouter(
     prefix="/payments/paypal/subscriptions",
@@ -691,6 +691,21 @@ def activate_user_subscription_core(
             "error": str(exc),
         }
 
+    try:
+        admin_email_sync = notify_admin_member_payment_event(
+            db=db,
+            user=user,
+            payment=subscription_payment,
+            order=None,
+            trigger="paypal_subscription_activation",
+        )
+        db.commit()
+    except Exception as exc:
+        admin_email_sync = {
+            "sent": False,
+            "error": str(exc),
+        }
+
     return {
         "status": "activated",
         "user_id": user.id,
@@ -703,6 +718,7 @@ def activate_user_subscription_core(
         "selection_month": selection.month,
         "selection_year": selection.year,
         "welcome_notifications": welcome_sync,
+        "admin_email_notification": admin_email_sync,
     }
 
 
@@ -1233,6 +1249,21 @@ async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
             )
             db.commit()
 
+            try:
+                admin_email_sync = notify_admin_member_payment_event(
+                    db=db,
+                    user=user,
+                    payment=monthly_payment,
+                    order=monthly_payment.order,
+                    trigger="paypal_subscription_renewal",
+                )
+                db.commit()
+            except Exception as exc:
+                admin_email_sync = {
+                    "sent": False,
+                    "error": str(exc),
+                }
+
             return {
                 "status": "ok",
                 "event": event_type,
@@ -1240,6 +1271,7 @@ async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
                 "payment_id": monthly_payment.id,
                 "payment_status": monthly_payment.status,
                 "admin_verified": monthly_payment.admin_verified,
+                "admin_email_notification": admin_email_sync,
             }
 
         if subscription_payment:
