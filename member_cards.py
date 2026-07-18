@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from email.utils import format_datetime
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import Request as FastAPIRequest
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import uuid
+import base64
 from PIL import Image, ImageDraw, ImageFont
 import qrcode
 import os
@@ -25,6 +27,7 @@ import jwt
 import requests
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as GoogleAuthRequest
+from embedded_card_assets import LEVEL_1_CARD_COBRE_JPEG_BASE64
 
 from cryptography.hazmat.primitives.serialization import pkcs12, Encoding
 from cryptography.hazmat.primitives.serialization.pkcs7 import (
@@ -505,6 +508,19 @@ def get_wallet_asset(filename: str):
     if filename not in allowed_files:
         raise HTTPException(status_code=404, detail="Asset no permitido")
 
+    if filename == "card_cobre.jpg":
+        try:
+            return Response(
+                content=base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64),
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                },
+            )
+        except Exception:
+            pass
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(base_dir, "assets", filename)
 
@@ -631,6 +647,20 @@ def draw_text(draw, position, text, font):
     draw.text(position, text, fill=(255, 255, 255), font=font)
 
 
+def open_member_card_background(bg_path: str, visual: dict, width: int, height: int):
+    if visual.get("bg_file") == "card_cobre.jpg":
+        try:
+            image_bytes = base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64)
+            return Image.open(BytesIO(image_bytes)).convert("RGB").resize((width, height))
+        except Exception:
+            pass
+
+    if os.path.exists(bg_path):
+        return Image.open(bg_path).convert("RGB").resize((width, height))
+
+    return Image.new("RGB", (width, height), visual["fallback_color"])
+
+
 @router.get("/user/{user_id}/image")
 def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
@@ -643,10 +673,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     bg_path = os.path.join(base_dir, "assets", visual["bg_file"])
     logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
 
-    if os.path.exists(bg_path):
-        image = Image.open(bg_path).convert("RGB").resize((width, height))
-    else:
-        image = Image.new("RGB", (width, height), visual["fallback_color"])
+    image = open_member_card_background(bg_path, visual, width, height)
 
     draw = ImageDraw.Draw(image)
 
