@@ -3,6 +3,7 @@ import json
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime
 from typing import Optional, List
 import secrets
@@ -10,7 +11,7 @@ import string
 
 import resend
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,10 @@ router = APIRouter(
     prefix="/payments/paypal/marketplace",
     tags=["PayPal Marketplace"],
 )
+
+
+def get_mayu_app_public_url():
+    return os.getenv("MAYU_APP_PUBLIC_URL", "http://127.0.0.1:5186").strip()
 
 
 def get_db():
@@ -1141,7 +1146,7 @@ def capture_marketplace_order(
         "pharmacy_fulfillment": pharmacy_fulfillment,
     }
 
-@router.get("/success")
+@router.get("/success", response_class=HTMLResponse)
 def paypal_marketplace_success(
     token: str,
     db: Session = Depends(get_db),
@@ -1158,14 +1163,39 @@ def paypal_marketplace_success(
         )
 
     if payment.payment_type == "marketplace_pharmacy":
-        return RedirectResponse(
-            url=(
-                "mayuapp://marketplace/paypal-success"
-                f"?paypal_order_id={payment.paypal_order_id}"
-                f"&payment_id={payment.id}"
-                "&payment=success"
-            ),
-            status_code=302,
+        app_url = get_mayu_app_public_url().rstrip("/")
+        query = {
+            "paypal_order_id": payment.paypal_order_id,
+            "payment_id": payment.id,
+            "payment": "success",
+        }
+        app_return_url = (
+            f"{app_url}/marketplace/paypal-success?{urllib.parse.urlencode(query)}"
+        )
+
+        return HTMLResponse(
+            content=f"""
+            <html>
+                <head>
+                    <title>Compra Farmacia confirmada</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: Arial; background:#0f172a; color:white; text-align:center; padding:40px;">
+                    <h1>Pago aprobado en PayPal</h1>
+                    <p>Estamos regresando a Mayu para cerrar tu compra de Farmacia.</p>
+                    <p style="margin-top:28px;">
+                        <a href="{app_return_url}" style="background:#14b8a6;color:white;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
+                            Volver a Mayu
+                        </a>
+                    </p>
+                    <script>
+                        setTimeout(function() {{
+                            window.location.href = "{app_return_url}";
+                        }}, 1800);
+                    </script>
+                </body>
+            </html>
+            """
         )
 
     return RedirectResponse(
