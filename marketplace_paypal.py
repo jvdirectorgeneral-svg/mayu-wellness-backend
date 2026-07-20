@@ -555,10 +555,21 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
     marketplace = original_payload.get("marketplace", {}) or {}
     buyer = original_payload.get("buyer", {}) or {}
 
-    item_id = marketplace.get("item_id")
-    quantity = int(marketplace.get("quantity") or 1)
+    items_payload = marketplace.get("items") or []
 
-    if not item_id:
+    if not items_payload:
+        item_id = marketplace.get("item_id")
+        quantity = int(marketplace.get("quantity") or 1)
+
+        if item_id:
+            items_payload = [
+                {
+                    "resource_id": item_id,
+                    "quantity": quantity,
+                }
+            ]
+
+    if not items_payload:
         return None
 
     existing_order = (
@@ -582,16 +593,6 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
             "already_created": True,
         }
 
-    resource = (
-        db.query(models.EducationResource)
-        .filter(models.EducationResource.id == int(item_id))
-        .filter(models.EducationResource.active == True)
-        .first()
-    )
-
-    if not resource:
-        raise HTTPException(status_code=404, detail="Contenido educativo no encontrado")
-
     buyer_name = (buyer.get("name") or "Comprador Mayu Educación").strip()
     buyer_phone = (buyer.get("phone") or "").strip()
     buyer_email = (buyer.get("email") or payment.payer_email or "").strip()
@@ -602,24 +603,46 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
             detail="No existe email del comprador para enviar el código educativo",
         )
 
-    unit_price = float(resource.price or 0)
-    total = round(unit_price * quantity, 2)
-    access_code = generate_access_code()
+    order_items_data = []
+    subtotal = 0.0
 
-    access = models.EducationAccessCode(
-        resource_id=resource.id,
-        code=access_code,
-        buyer_name=buyer_name,
-        buyer_email=buyer_email,
-        buyer_phone=buyer_phone,
-        max_uses=30,
-        uses_count=0,
-        status="active",
-        created_at=datetime.utcnow(),
-    )
+    for item in items_payload:
+        resource_id = int(
+            item.get("resource_id")
+            or item.get("product_id")
+            or item.get("item_id")
+            or 0
+        )
+        quantity = int(item.get("quantity") or 1)
 
-    db.add(access)
-    db.flush()
+        if resource_id <= 0:
+            raise HTTPException(status_code=400, detail="Contenido educativo inválido")
+
+        if quantity <= 0:
+            raise HTTPException(status_code=400, detail="Cantidad inválida")
+
+        resource = (
+            db.query(models.EducationResource)
+            .filter(models.EducationResource.id == resource_id)
+            .filter(models.EducationResource.active == True)
+            .first()
+        )
+
+        if not resource:
+            raise HTTPException(status_code=404, detail=f"Contenido educativo {resource_id} no encontrado")
+
+        unit_price = float(resource.price or 0)
+        line_total = round(unit_price * quantity, 2)
+        subtotal += line_total
+
+        order_items_data.append({
+            "resource": resource,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "line_total": line_total,
+        })
+
+    total = round(subtotal, 2)
 
     order = models.EducationOrder(
         order_code=generate_education_order_code(),
@@ -630,7 +653,7 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
         subtotal=total,
         total=total,
         currency=payment.currency,
-        payment_method="paypal",
+        payment_method=(getattr(payment, "provider", None) or "paypal"),
         payment_status="paid",
         status="paid",
         whatsapp_message=None,
@@ -646,52 +669,93 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
     db.add(order)
     db.flush()
 
-    order_item = models.EducationOrderItem(
-        order_id=order.id,
-        resource_id=resource.id,
-        resource_title_snapshot=resource.title,
-        resource_type_snapshot=resource.resource_type,
-        unit_price_snapshot=unit_price,
-        quantity=quantity,
-        total_snapshot=total,
-        access_code=access_code,
-    )
-
-    db.add(order_item)
-    db.flush()
-
     public_url = os.getenv(
         "MAYU_APP_PUBLIC_URL",
         "https://mayu-wellness-backend-v1.onrender.com",
     ).rstrip("/")
 
-    view_url = (
-        f"{public_url}"
-        f"/education/resources/{resource.id}/view?access_code={access_code}"
-    )
+    created_items = []
+    email_results = []
 
-    email_sent = False
-    email_error = None
+    for item_data in order_items_data:
+        resource = item_data["resource"]
+        quantity = item_data["quantity"]
+        unit_price = item_data["unit_price"]
+        line_total = item_data["line_total"]
+        access_code = generate_access_code()
 
-    try:
-        send_education_access_email(
-            to_email=buyer_email,
+        access = models.EducationAccessCode(
+            resource_id=resource.id,
+            code=access_code,
             buyer_name=buyer_name,
-            resource_title=resource.title,
-            access_code=access_code,
-            view_url=view_url,
+            buyer_email=buyer_email,
+            buyer_phone=buyer_phone,
+            max_uses=30,
+            uses_count=0,
+            status="active",
+            created_at=datetime.utcnow(),
         )
-        email_sent = True
-    except Exception as e:
-        email_error = str(e)
+
+        db.add(access)
+        db.flush()
+
+        order_item = models.EducationOrderItem(
+            order_id=order.id,
+            resource_id=resource.id,
+            resource_title_snapshot=resource.title,
+            resource_type_snapshot=resource.resource_type,
+            unit_price_snapshot=unit_price,
+            quantity=quantity,
+            total_snapshot=line_total,
+            access_code=access_code,
+        )
+
+        db.add(order_item)
+        db.flush()
+
+        view_url = (
+            f"{public_url}"
+            f"/education/resources/{resource.id}/view?access_code={access_code}"
+        )
+
+        email_sent = False
+        email_error = None
+
+        try:
+            send_education_access_email(
+                to_email=buyer_email,
+                buyer_name=buyer_name,
+                resource_title=resource.title,
+                access_code=access_code,
+                view_url=view_url,
+            )
+            email_sent = True
+        except Exception as e:
+            email_error = str(e)
+
+        created_items.append({
+            "resource_id": resource.id,
+            "resource_title": resource.title,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total": line_total,
+            "access_code": access_code,
+            "view_url": view_url,
+        })
+        email_results.append({
+            "resource_id": resource.id,
+            "email_sent": email_sent,
+            "email_error": email_error,
+        })
 
     return {
         "education_order_id": order.id,
         "education_order_code": order.order_code,
-        "access_code": access_code,
-        "view_url": view_url,
-        "email_sent": email_sent,
-        "email_error": email_error,
+        "items": created_items,
+        "access_code": created_items[0]["access_code"] if created_items else None,
+        "view_url": created_items[0]["view_url"] if created_items else None,
+        "email_sent": all(item["email_sent"] for item in email_results) if email_results else False,
+        "email_results": email_results,
         "already_created": False,
     }
 
@@ -848,8 +912,10 @@ def create_marketplace_paypal_cart_order(
     payload: MarketplacePayPalCreateCartOrderRequest,
     db: Session = Depends(get_db),
 ):
-    if payload.item_type.strip().lower() != "pharmacy":
-        raise HTTPException(status_code=400, detail="Este endpoint es solo para carrito de farmacia")
+    clean_item_type = payload.item_type.strip().lower()
+
+    if clean_item_type not in {"pharmacy", "education"}:
+        raise HTTPException(status_code=400, detail="item_type debe ser pharmacy o education")
 
     if not payload.items:
         raise HTTPException(status_code=400, detail="El carrito está vacío")
@@ -869,12 +935,39 @@ def create_marketplace_paypal_cart_order(
     if not buyer_phone:
         raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
 
+    if clean_item_type == "education" and not buyer_email:
+        raise HTTPException(status_code=400, detail="El email es obligatorio para compras de Mayu Educación")
+
     subtotal = 0.0
     items_data = []
 
     for item in payload.items:
         if item.quantity <= 0:
             raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
+
+        if clean_item_type == "education":
+            resource = (
+                db.query(models.EducationResource)
+                .filter(models.EducationResource.id == item.product_id)
+                .filter(models.EducationResource.active == True)
+                .first()
+            )
+
+            if not resource:
+                raise HTTPException(status_code=404, detail=f"Contenido educativo {item.product_id} no encontrado")
+
+            unit_price = float(resource.price or 0)
+            line_total = round(unit_price * item.quantity, 2)
+            subtotal += line_total
+
+            items_data.append({
+                "resource_id": resource.id,
+                "title": resource.title,
+                "quantity": item.quantity,
+                "unit_price": unit_price,
+                "total": line_total,
+            })
+            continue
 
         product = (
             db.query(models.MarketplaceProduct)
@@ -902,11 +995,16 @@ def create_marketplace_paypal_cart_order(
         })
 
     subtotal = round(subtotal, 2)
-    discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
-    discount_info = validate_member_discount_code(db, discount_code)
-    doctor_info = validate_doctor_prescriber_identifier(
-        db,
-        payload.doctor_prescriber_identifier,
+    discount_code = (
+        payload.discount_code.strip()
+        if clean_item_type == "pharmacy" and payload.discount_code and payload.discount_code.strip()
+        else None
+    )
+    discount_info = validate_member_discount_code(db, discount_code) if clean_item_type == "pharmacy" else None
+    doctor_info = (
+        validate_doctor_prescriber_identifier(db, payload.doctor_prescriber_identifier)
+        if clean_item_type == "pharmacy"
+        else None
     )
     discount_percent = 0.0
     discount_amount = 0.0
@@ -931,7 +1029,11 @@ def create_marketplace_paypal_cart_order(
                     "currency_code": payload.currency,
                     "value": f"{total:.2f}",
                 },
-                "description": f"Mayu Marketplace Farmacia - {len(items_data)} productos",
+                "description": (
+                    f"Mayu Educación - {len(items_data)} contenidos"
+                    if clean_item_type == "education"
+                    else f"Mayu Marketplace Farmacia - {len(items_data)} productos"
+                ),
             }
         ],
         "application_context": {
@@ -952,16 +1054,17 @@ def create_marketplace_paypal_cart_order(
         currency=payload.currency,
         status="created",
         provider="paypal",
-        payment_type="marketplace_pharmacy",
+        payment_type=f"marketplace_{clean_item_type}",
         payment_reference=response["id"],
         payer_email=buyer_email,
         raw_payload=json.dumps({
             "paypal": response,
             "marketplace": {
-                "item_type": "pharmacy",
+                "item_type": clean_item_type,
                 "items": [
                     {
-                        "product_id": item["product_id"],
+                        "product_id": item.get("product_id") or item.get("resource_id"),
+                        "resource_id": item.get("resource_id"),
                         "title": item["title"],
                         "quantity": item["quantity"],
                         "unit_price": item["unit_price"],
@@ -1013,10 +1116,14 @@ def create_marketplace_paypal_cart_order(
             approval_url = link.get("href")
 
     return {
-        "message": "Orden PayPal carrito farmacia creada",
+        "message": (
+            "Orden PayPal carrito educación creada"
+            if clean_item_type == "education"
+            else "Orden PayPal carrito farmacia creada"
+        ),
         "payment_id": payment.id,
         "paypal_order_id": response["id"],
-        "item_type": "pharmacy",
+        "item_type": clean_item_type,
         "items": items_data,
         "subtotal": subtotal,
         "discount_code": discount_code,
