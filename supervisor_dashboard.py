@@ -4,7 +4,15 @@ from sqlalchemy import func, extract
 
 from database import SessionLocal
 from dependencies import get_current_user
-from models import User, Ambassador, Commission, MembershipPayment, Order
+from models import (
+    User,
+    Ambassador,
+    Commission,
+    MembershipPayment,
+    Order,
+    MarketplaceOrder,
+    EducationOrder,
+)
 
 
 router = APIRouter(prefix="/supervisor-dashboard", tags=["supervisor-dashboard"])
@@ -30,6 +38,40 @@ def require_supervisor_admin_or_superadmin(current_user: User):
             status_code=403,
             detail="Acceso solo para supervisor, admin o superadmin",
         )
+
+
+def payment_to_supervisor_dict(payment: MembershipPayment):
+    return {
+        "id": payment.id,
+        "user_id": payment.user_id,
+        "user_name": payment.user.name if payment.user else None,
+        "order_id": payment.order_id,
+        "payment_type": getattr(payment, "payment_type", None),
+        "provider": getattr(payment, "provider", None),
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "status": payment.status,
+        "payer_email": payment.payer_email,
+        "admin_verified": payment.admin_verified,
+        "admin_verified_at": payment.admin_verified_at,
+        "created_at": payment.created_at,
+        "paid_at": payment.paid_at,
+    }
+
+
+def order_to_supervisor_dict(order: Order):
+    return {
+        "id": order.id,
+        "user_id": order.user_id,
+        "user_name": order.user.name if order.user else None,
+        "status": order.status,
+        "membership_level_snapshot": order.membership_level_snapshot,
+        "total_amount_snapshot": order.total_amount_snapshot,
+        "created_at": order.created_at,
+        "approved_at": order.approved_at,
+        "shipped_at": order.shipped_at,
+        "delivered_at": order.delivered_at,
+    }
 
 
 # =========================
@@ -138,6 +180,26 @@ def get_supervisor_kpis(
 
     total_commission_records = db.query(Commission).count()
 
+    marketplace_pharmacy_orders = db.query(MarketplaceOrder).count()
+    marketplace_pharmacy_paid_orders = db.query(MarketplaceOrder).filter(
+        MarketplaceOrder.payment_status.in_(["paid", "verified"])
+    ).count()
+    marketplace_pharmacy_paid_amount = db.query(
+        func.coalesce(func.sum(MarketplaceOrder.total), 0)
+    ).filter(
+        MarketplaceOrder.payment_status.in_(["paid", "verified"])
+    ).scalar()
+
+    education_orders = db.query(EducationOrder).count()
+    education_paid_orders = db.query(EducationOrder).filter(
+        EducationOrder.payment_status.in_(["paid", "verified"])
+    ).count()
+    education_paid_amount = db.query(
+        func.coalesce(func.sum(EducationOrder.total), 0)
+    ).filter(
+        EducationOrder.payment_status.in_(["paid", "verified"])
+    ).scalar()
+
     return {
         "total_users": total_users,
         "active_users": active_users,
@@ -161,7 +223,94 @@ def get_supervisor_kpis(
         "total_generated": float(total_generated or 0),
         "total_pending": float(total_pending or 0),
         "total_paid": float(total_paid or 0),
+
+        "marketplace_pharmacy_orders": marketplace_pharmacy_orders,
+        "marketplace_pharmacy_paid_orders": marketplace_pharmacy_paid_orders,
+        "marketplace_pharmacy_paid_amount": float(marketplace_pharmacy_paid_amount or 0),
+        "education_orders": education_orders,
+        "education_paid_orders": education_paid_orders,
+        "education_paid_amount": float(education_paid_amount or 0),
     }
+
+
+@router.get("/summary")
+def get_supervisor_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_supervisor_admin_or_superadmin(current_user)
+
+    kpis = get_supervisor_kpis(db=db, current_user=current_user)
+
+    initial_membership_payments = (
+        db.query(MembershipPayment)
+        .filter(MembershipPayment.payment_type.in_(["signup", "membership_initial", "subscription"]))
+        .count()
+    )
+    renewal_membership_payments = (
+        db.query(MembershipPayment)
+        .filter(MembershipPayment.payment_type == "subscription_renewal")
+        .count()
+    )
+
+    return {
+        "total_socios": kpis["total_users"],
+        "active_socios": kpis["active_users"],
+        "inactive_socios": kpis["inactive_users"],
+        "initial_membership_payments": initial_membership_payments,
+        "renewal_membership_payments": renewal_membership_payments,
+        "total_ambassadors": kpis["total_ambassadors"],
+        "active_ambassadors": kpis["active_ambassadors"],
+        "pending_review_orders": kpis["pending_review_orders"],
+        "ready_for_logistics": kpis["ready_for_logistics"],
+        "shipped_orders": kpis["shipped_orders"],
+        "delivered_orders": kpis["delivered_orders"],
+        "total_generated": kpis["total_generated"],
+        "total_pending": kpis["total_pending"],
+        "total_paid": kpis["total_paid"],
+        "total_payments": kpis["total_payments"],
+        "verified_payments": kpis["verified_payments"],
+        "pending_payments": kpis["pending_payments"],
+        "total_paid_amount": kpis["total_paid_amount"],
+        "total_pending_payment_amount": kpis["total_pending_payment_amount"],
+        "marketplace_pharmacy_orders": kpis["marketplace_pharmacy_orders"],
+        "marketplace_pharmacy_paid_orders": kpis["marketplace_pharmacy_paid_orders"],
+        "marketplace_pharmacy_paid_amount": kpis["marketplace_pharmacy_paid_amount"],
+        "education_orders": kpis["education_orders"],
+        "education_paid_orders": kpis["education_paid_orders"],
+        "education_paid_amount": kpis["education_paid_amount"],
+        "commission_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7. Pago mensual día 10 con corte al mes anterior.",
+        "admin_review_window": "Afiliaciones y renovaciones en Admin Mayu",
+        "shipping_window": "Logística despacha órdenes aprobadas",
+    }
+
+
+@router.get("/payments")
+def get_supervisor_payments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_supervisor_admin_or_superadmin(current_user)
+
+    payments = (
+        db.query(MembershipPayment)
+        .order_by(MembershipPayment.created_at.desc())
+        .limit(300)
+        .all()
+    )
+
+    return {"items": [payment_to_supervisor_dict(payment) for payment in payments]}
+
+
+@router.get("/orders")
+def get_supervisor_orders(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_supervisor_admin_or_superadmin(current_user)
+
+    orders = db.query(Order).order_by(Order.created_at.desc()).limit(300).all()
+    return {"items": [order_to_supervisor_dict(order) for order in orders]}
 
 
 # =========================
