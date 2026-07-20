@@ -13,7 +13,10 @@ from database import SessionLocal
 from dependencies import get_current_user
 import models
 from member_cards import get_or_create_card
-from marketplace_paypal import fulfill_pharmacy_payment_if_needed
+from marketplace_paypal import (
+    fulfill_education_payment_if_needed,
+    fulfill_pharmacy_payment_if_needed,
+)
 from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
 from marketplace import (
     sync_marketplace_doctor_wallet_after_commit,
@@ -497,8 +500,10 @@ def build_marketplace_payphone_payment(
     payload: PayphoneMarketplaceCartRequest,
     db: Session,
 ):
-    if payload.item_type.strip().lower() != "pharmacy":
-        raise HTTPException(status_code=400, detail="Este endpoint es solo para carrito de farmacia")
+    clean_item_type = payload.item_type.strip().lower()
+
+    if clean_item_type not in {"pharmacy", "education"}:
+        raise HTTPException(status_code=400, detail="item_type debe ser pharmacy o education")
 
     if not payload.items:
         raise HTTPException(status_code=400, detail="El carrito está vacío")
@@ -518,12 +523,39 @@ def build_marketplace_payphone_payment(
     if not buyer_phone:
         raise HTTPException(status_code=400, detail="El teléfono es obligatorio")
 
+    if clean_item_type == "education" and not buyer_email:
+        raise HTTPException(status_code=400, detail="El email es obligatorio para compras de Mayu Educación")
+
     subtotal = 0.0
     items_data = []
 
     for item in payload.items:
         if item.quantity <= 0:
             raise HTTPException(status_code=400, detail="La cantidad debe ser mayor a cero")
+
+        if clean_item_type == "education":
+            resource = (
+                db.query(models.EducationResource)
+                .filter(models.EducationResource.id == item.product_id)
+                .filter(models.EducationResource.active == True)
+                .first()
+            )
+
+            if not resource:
+                raise HTTPException(status_code=404, detail=f"Contenido educativo {item.product_id} no encontrado")
+
+            unit_price = float(resource.price or 0)
+            line_total = round(unit_price * item.quantity, 2)
+            subtotal += line_total
+
+            items_data.append({
+                "resource_id": resource.id,
+                "title": resource.title,
+                "quantity": item.quantity,
+                "unit_price": unit_price,
+                "total": line_total,
+            })
+            continue
 
         product = (
             db.query(models.MarketplaceProduct)
@@ -551,11 +583,19 @@ def build_marketplace_payphone_payment(
         })
 
     subtotal = round(subtotal, 2)
-    discount_code = payload.discount_code.strip() if payload.discount_code and payload.discount_code.strip() else None
-    discount_info = validate_member_discount_code(db, discount_code)
-    doctor_info = validate_doctor_prescriber_identifier(
-        db,
-        payload.doctor_prescriber_identifier,
+    discount_code = (
+        payload.discount_code.strip()
+        if clean_item_type == "pharmacy" and payload.discount_code and payload.discount_code.strip()
+        else None
+    )
+    discount_info = validate_member_discount_code(db, discount_code) if clean_item_type == "pharmacy" else None
+    doctor_info = (
+        validate_doctor_prescriber_identifier(
+            db,
+            payload.doctor_prescriber_identifier,
+        )
+        if clean_item_type == "pharmacy"
+        else None
     )
     discount_percent = 0.0
     discount_amount = 0.0
@@ -571,7 +611,11 @@ def build_marketplace_payphone_payment(
         raise HTTPException(status_code=400, detail="El total debe ser mayor a cero")
 
     client_transaction_id = generate_client_transaction_id("MP")
-    description = f"Mayu Marketplace Farmacia - {len(items_data)} productos"
+    description = (
+        f"Mayu Educación - {len(items_data)} contenidos"
+        if clean_item_type == "education"
+        else f"Mayu Marketplace Farmacia - {len(items_data)} productos"
+    )
 
     payphone_data = create_payphone_link(
         amount=total,
@@ -588,16 +632,17 @@ def build_marketplace_payphone_payment(
         currency=payload.currency,
         status="created",
         provider="payphone",
-        payment_type="marketplace_pharmacy",
+        payment_type=f"marketplace_{clean_item_type}",
         payment_reference=client_transaction_id,
         payer_email=buyer_email,
         raw_payload=json.dumps({
             "payphone": payphone_data,
             "marketplace": {
-                "item_type": "pharmacy",
+                "item_type": clean_item_type,
                 "items": [
                     {
-                        "product_id": item["product_id"],
+                        "product_id": item.get("product_id") or item.get("resource_id"),
+                        "resource_id": item.get("resource_id"),
                         "title": item["title"],
                         "quantity": item["quantity"],
                         "unit_price": item["unit_price"],
@@ -646,10 +691,14 @@ def build_marketplace_payphone_payment(
     db.refresh(payment)
 
     return {
-        "message": "Link PayPhone carrito farmacia creado",
+        "message": (
+            "Link PayPhone carrito educación creado"
+            if clean_item_type == "education"
+            else "Link PayPhone carrito farmacia creado"
+        ),
         "payment_id": payment.id,
         "clientTransactionId": client_transaction_id,
-        "item_type": "pharmacy",
+        "item_type": clean_item_type,
         "items": items_data,
         "subtotal": subtotal,
         "discount_code": discount_code,
@@ -679,8 +728,8 @@ def confirm_marketplace_payphone_payment(
     if not payment:
         raise HTTPException(status_code=404, detail="Pago marketplace PayPhone no encontrado")
 
-    if payment.payment_type != "marketplace_pharmacy":
-        raise HTTPException(status_code=400, detail="Este pago no pertenece a Marketplace Farmacia")
+    if payment.payment_type not in {"marketplace_pharmacy", "marketplace_education"}:
+        raise HTTPException(status_code=400, detail="Este pago no pertenece a Marketplace")
 
     payphone_payload = {
         "id": payload.id,
@@ -708,6 +757,7 @@ def confirm_marketplace_payphone_payment(
             payment.payment_reference = payload.transactionId
 
     pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
+    education_fulfillment = fulfill_education_payment_if_needed(payment, db)
 
     db.commit()
     db.refresh(payment)
@@ -738,6 +788,7 @@ def confirm_marketplace_payphone_payment(
         "amount": float(payment.amount or 0),
         "currency": payment.currency,
         "pharmacy_fulfillment": pharmacy_fulfillment,
+        "education_fulfillment": education_fulfillment,
     }
 
 
@@ -939,7 +990,7 @@ async def payphone_webhook(
         }
 
     if is_payphone_paid(payload):
-        if payment.payment_type == "marketplace_pharmacy":
+        if payment.payment_type in {"marketplace_pharmacy", "marketplace_education"}:
             confirm_payload = PayphoneConfirmRequest(
                 id=payload.get("id"),
                 clientTransactionId=client_transaction_id,
