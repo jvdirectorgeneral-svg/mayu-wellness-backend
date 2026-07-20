@@ -326,6 +326,36 @@ def order_items_data(order: Order):
     }
 
 
+def order_tracking_data(order: Order):
+    return {
+        "carrier": getattr(order, "carrier", None),
+        "tracking_number": getattr(order, "tracking_number", None),
+        "tracking_url": getattr(order, "tracking_url", None),
+        "shipping_notes": getattr(order, "shipping_notes", None),
+    }
+
+
+def order_tracking_history_data(order: Order):
+    history = getattr(order, "tracking_history", []) or []
+
+    return {
+        "tracking_history": [
+            {
+                "id": h.id,
+                "order_id": h.order_id,
+                "status": h.status,
+                "note": h.note,
+                "carrier": h.carrier,
+                "tracking_number": h.tracking_number,
+                "tracking_url": h.tracking_url,
+                "created_at": h.created_at,
+                "created_by": h.created_by,
+            }
+            for h in history
+        ]
+    }
+
+
 def payment_to_dict(payment: MembershipPayment):
     payment_type = getattr(payment, "payment_type", None)
     initial_types = {"signup", "membership_initial", "subscription"}
@@ -429,6 +459,8 @@ def order_to_dict(db: Session, order: Order):
         "shipping_batch_date": getattr(order, "shipping_batch_date", None),
         "items_count": len(order.items),
         **order_items_data(order),
+        **order_tracking_data(order),
+        **order_tracking_history_data(order),
         "payment_id": payment.id if payment else None,
         "payment_type": getattr(payment, "payment_type", None) if payment else None,
         "provider": getattr(payment, "provider", None) if payment else None,
@@ -500,6 +532,41 @@ def get_best_selection_for_payment(db: Session, user: User):
             return selection
 
     return current_selection
+
+
+def monthly_amount_with_iva_by_level(level):
+    prices = {
+        1: 44.80,
+        2: 56.00,
+        3: 67.20,
+    }
+    try:
+        return prices.get(int(level or 0), 0.0)
+    except Exception:
+        return 0.0
+
+
+def monthly_selection_to_admin_user_data(db: Session, user: User):
+    selection = get_best_selection_for_payment(db, user)
+    if not selection:
+        return {
+            "monthly_selection_id": None,
+            "monthly_selection_month": None,
+            "monthly_selection_year": None,
+            "monthly_selection_status": None,
+            "monthly_selection_products": [],
+            "monthly_amount": monthly_amount_with_iva_by_level(user.membership_level),
+            "next_debit_day": 1,
+        }
+
+    data = get_monthly_selection_data(db, user.id, selection.month, selection.year)
+    return {
+        **data,
+        "monthly_selection_month": selection.month,
+        "monthly_selection_year": selection.year,
+        "monthly_amount": monthly_amount_with_iva_by_level(user.membership_level),
+        "next_debit_day": 1,
+    }
 
 
 def get_or_create_order_for_payment(db: Session, user: User, payment: MembershipPayment, current_user: User):
@@ -644,7 +711,12 @@ def get_admin_summary(db: Session = Depends(get_db), current_user: User = Depend
 def get_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_admin_or_superadmin(current_user)
     users = db.query(User).filter(User.role == "member").order_by(User.id.desc()).all()
-    return {"items": [user_to_dict(u) for u in users]}
+    items = []
+    for user in users:
+        data = user_to_dict(user)
+        data.update(monthly_selection_to_admin_user_data(db, user))
+        items.append(data)
+    return {"items": items}
 
 
 @router.put("/users/{user_id}")
