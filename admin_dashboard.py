@@ -536,9 +536,9 @@ def get_best_selection_for_payment(db: Session, user: User):
 
 def monthly_amount_with_iva_by_level(level):
     prices = {
-        1: 44.80,
-        2: 56.00,
-        3: 67.20,
+        1: 42.00,
+        2: 52.00,
+        3: 62.00,
     }
     try:
         return prices.get(int(level or 0), 0.0)
