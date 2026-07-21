@@ -66,7 +66,15 @@ def get_plan_id_by_level(level: int):
         2: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_2",
         3: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_3",
     }
-    return os.getenv(env_map.get(level, "") or "")
+    old_plan_ids = {
+        "P-21C59754B6148072NNJMPWRQ",
+        "P-1T277384JR2166440NJMPWRI",
+        "P-6FL801269K374750WNJMPWRY",
+    }
+    plan_id = (os.getenv(env_map.get(level, "") or "") or "").strip()
+    if plan_id in old_plan_ids:
+        return None
+    return plan_id or None
 
 
 def mask_paypal_id(value: Optional[str]):
