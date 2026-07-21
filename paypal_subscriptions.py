@@ -61,14 +61,6 @@ def get_base_url():
 
 
 def get_plan_id_by_level(level: int):
-    sandbox_plan_ids = {
-        1: "P-21C59754B6148072NNJMPWRQ",
-        2: "P-1T277384JR2166440NJMPWRI",
-        3: "P-6FL801269K374750WNJMPWRY",
-    }
-    if get_paypal_mode() == "sandbox":
-        return sandbox_plan_ids.get(level)
-
     env_map = {
         1: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_1",
         2: "PAYPAL_SUBSCRIPTIONS_PLAN_ID_LEVEL_2",
@@ -86,13 +78,13 @@ def mask_paypal_id(value: Optional[str]):
     return f"{clean_value[:4]}••••{clean_value[-4:]}"
 
 
-IVA_RATE = 0.12
-SIGNUP_FEE_BASE = 5.00
+IVA_RATE = 0.00
+SIGNUP_FEE_BASE = 0.00
 
 BASE_MONTHLY_PRICES = {
-    1: 40.00,
-    2: 50.00,
-    3: 60.00,
+    1: 42.00,
+    2: 52.00,
+    3: 62.00,
 }
 
 MONTHLY_PRICES = {
@@ -862,7 +854,7 @@ def create_plan(payload: CreatePlanRequest):
         "name": plan_name,
         "description": (
             f"Mensualidad recurrente {plan_name}. "
-            "Valores incluyen IVA Ecuador 12%."
+            "Primer cobro y recurrencia mensual por el mismo valor."
         ),
         "status": "ACTIVE",
         "billing_cycles": [
@@ -904,7 +896,7 @@ def create_plan(payload: CreatePlanRequest):
         "signup_fee": signup_fee,
         "first_payment_amount": first_payment_amount,
         "setup_fee": first_payment_amount,
-        "note": "PayPal cobra inscripción + primera mensualidad con IVA como setup_fee. La mensualidad recurrente empieza después y también incluye IVA.",
+        "note": "PayPal respaldo cobra el primer mes como setup_fee y luego la misma mensualidad recurrente. No hay inscripción ni IVA extra en Mayu Wellness Club.",
         "plan_id": response.get("id"),
         "response": response,
     }
