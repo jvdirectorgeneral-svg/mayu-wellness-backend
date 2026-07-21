@@ -111,9 +111,9 @@ def add_tracking_history(
 
 def get_monthly_amount_by_level(level: int) -> float:
     prices = {
-        1: 40.00,
-        2: 50.00,
-        3: 60.00,
+        1: 42.00,
+        2: 52.00,
+        3: 62.00,
     }
 
     if level not in prices:
@@ -123,11 +123,11 @@ def get_monthly_amount_by_level(level: int) -> float:
 
 
 def get_iva_rate() -> float:
-    return 0.12
+    return 0.00
 
 
 def get_signup_fee() -> float:
-    return 5.00
+    return 0.00
 
 
 def with_iva(amount: float) -> float:
@@ -155,13 +155,13 @@ def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
 
     rounded = round(float(amount), 2)
 
-    if rounded in [50.40, 45.00, 40.00]:
+    if rounded == 42.00:
         return 1
 
-    if rounded in [61.60, 55.00, 50.00]:
+    if rounded == 52.00:
         return 2
 
-    if rounded in [72.80, 65.00, 60.00]:
+    if rounded == 62.00:
         return 3
 
     return None
@@ -496,9 +496,8 @@ def create_order(
                     "value": f"{first_payment_amount:.2f}",
                 },
                 "description": (
-                    f"Mayu Wellness Club - Primer pago Nivel {plan_level} "
-                    f"incluye mensualidad ${monthly_amount:.2f} con IVA "
-                    f"+ inscripción inicial ${signup_fee:.2f} con IVA"
+                    f"Mayu Wellness Club - Mensualidad Nivel {plan_level} "
+                    f"${monthly_amount:.2f}. Sin inscripción ni IVA extra."
                 ),
             }
         ],
