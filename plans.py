@@ -228,19 +228,19 @@ def seed_plans(db: Session = Depends(get_db)):
         {
             "name": "Nivel 1 - Cobre",
             "level": 1,
-            "price": 40,
+            "price": 42,
             "description": "Plan base",
         },
         {
             "name": "Nivel 2 - Plata",
             "level": 2,
-            "price": 50,
+            "price": 52,
             "description": "Plan intermedio",
         },
         {
             "name": "Nivel 3 - Oro",
             "level": 3,
-            "price": 60,
+            "price": 62,
             "description": "Plan premium",
         },
     ]
