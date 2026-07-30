@@ -367,7 +367,8 @@ def sync_card_display_code(db: Session | None, user, card):
 
 
 def member_apple_serial(card):
-    return f"member-card-{card.member_code}-{card.id}".lower()
+    visual_version = "-nivel1-cobre-20260718" if getattr(card, "level_snapshot", None) == 1 else ""
+    return f"member-card-{card.member_code}-{card.id}{visual_version}".lower()
 
 
 def get_member_card_by_apple_serial(db: Session, serial_number: str):
@@ -521,7 +522,6 @@ def get_wallet_asset(filename: str):
         except Exception:
             pass
 
-    
     if filename == "wallet_cobre.png":
         try:
             image = Image.open(
@@ -680,6 +680,17 @@ def open_member_card_background(bg_path: str, visual: dict, width: int, height: 
     return Image.new("RGB", (width, height), visual["fallback_color"])
 
 
+def open_wallet_visual_image(source_path: str, visual: dict):
+    if visual.get("wallet_file") == "wallet_cobre.png":
+        try:
+            image_bytes = base64.b64decode(LEVEL_1_CARD_COBRE_JPEG_BASE64)
+            return Image.open(BytesIO(image_bytes)).convert("RGB")
+        except Exception:
+            pass
+
+    return Image.open(source_path).convert("RGB")
+
+
 @router.get("/user/{user_id}/image")
 def generate_card_image(user_id: int, db: Session = Depends(get_db)):
     user, card = get_or_create_card(db, user_id)
@@ -798,8 +809,8 @@ def fit_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_colo
     canvas.convert("RGB").save(target_path)
 
 
-def cover_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_color=(15, 23, 42)):
-    img = Image.open(source_path).convert("RGB")
+def cover_image_object_to_canvas(img: Image.Image, target_path: str, size: tuple, bg_color=(15, 23, 42)):
+    img = img.convert("RGB")
     img_ratio = img.width / img.height
     target_ratio = size[0] / size[1]
 
@@ -819,6 +830,10 @@ def cover_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_co
     canvas = Image.new("RGB", size, bg_color)
     canvas.paste(img, (0, 0))
     canvas.save(target_path)
+
+
+def cover_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_color=(15, 23, 42)):
+    cover_image_object_to_canvas(Image.open(source_path).convert("RGB"), target_path, size, bg_color)
 
 
 def copy_or_create_wallet_images(pass_dir: str, user, card):
@@ -850,15 +865,16 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
         else:
             create_wallet_icon(target)
 
-    if os.path.exists(wallet_image_path):
-        cover_image_to_canvas(
-            wallet_image_path,
+    if os.path.exists(wallet_image_path) or visual["wallet_file"] == "wallet_cobre.png":
+        wallet_image = open_wallet_visual_image(wallet_image_path, visual)
+        cover_image_object_to_canvas(
+            wallet_image,
             os.path.join(pass_dir, "strip.png"),
             (375, 123),
             visual["fallback_color"],
         )
-        cover_image_to_canvas(
-            wallet_image_path,
+        cover_image_object_to_canvas(
+            wallet_image,
             os.path.join(pass_dir, "strip@2x.png"),
             (750, 246),
             visual["fallback_color"],
@@ -1200,11 +1216,14 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
         pass
 
     visual = get_card_visual_data(db, user, card)
-    object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}".replace("-", "_").lower()
+    wallet_visual_version = (
+        "nivel1_cobre_20260718" if visual.get("wallet_file") == "wallet_cobre.png" else "v1"
+    )
+    object_suffix = f"{card.member_code}_{card.id}_{card.level_snapshot}_{card.status}_{wallet_visual_version}".replace("-", "_").lower()
     object_id = f"{issuer_id}.{object_suffix}"
 
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
-    full_card_image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image?v={card.id}-{card.level_snapshot}-{card.status}-{uuid.uuid4()}"
+    full_card_image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image?v={card.id}-{card.level_snapshot}-{card.status}-{wallet_visual_version}-{uuid.uuid4()}"
     logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
     card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
 
