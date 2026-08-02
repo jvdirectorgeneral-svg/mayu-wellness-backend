@@ -82,5 +82,22 @@ class PayPalWebhookVerificationTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 503)
 
 
+class PayPalAdminAccessTests(unittest.TestCase):
+    class User:
+        def __init__(self, role):
+            self.role = role
+
+    def test_allows_admin_and_superadmin(self):
+        self.assertIsNone(paypal_subscriptions.require_admin(self.User("admin")))
+        self.assertIsNone(
+            paypal_subscriptions.require_admin(self.User("superadmin"))
+        )
+
+    def test_rejects_non_admin(self):
+        with self.assertRaises(HTTPException) as raised:
+            paypal_subscriptions.require_admin(self.User("member"))
+        self.assertEqual(raised.exception.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
+from dependencies import get_current_user
 import models
 from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
 
@@ -132,6 +133,11 @@ class CreatePlanRequest(BaseModel):
     product_id: str
     plan_level: int
     currency: str = "USD"
+
+
+def require_admin(user):
+    if not user or user.role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Acceso solo admin")
 
 
 def safe_set(obj, attr, value):
@@ -873,7 +879,11 @@ def debug_paypal_plans():
 
 
 @router.post("/create-product")
-def create_product(payload: CreateProductRequest):
+def create_product(
+    payload: CreateProductRequest,
+    current_user=Depends(get_current_user),
+):
+    require_admin(current_user)
     token = get_token()
 
     body = {
@@ -893,7 +903,11 @@ def create_product(payload: CreateProductRequest):
 
 
 @router.post("/create-plan")
-def create_plan(payload: CreatePlanRequest):
+def create_plan(
+    payload: CreatePlanRequest,
+    current_user=Depends(get_current_user),
+):
+    require_admin(current_user)
     if payload.plan_level not in MONTHLY_PRICES:
         raise HTTPException(status_code=400, detail="Nivel inválido")
 
