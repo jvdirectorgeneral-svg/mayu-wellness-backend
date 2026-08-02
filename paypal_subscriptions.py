@@ -1,10 +1,11 @@
 import os
 import json
+import hmac
 import base64
 import urllib.request
 import urllib.error
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -55,6 +56,11 @@ def get_paypal_client_secret():
 
 def get_paypal_webhook_id():
     value = os.getenv("PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID")
+    return value.strip() if value else None
+
+
+def get_paypal_test_plan_id():
+    value = os.getenv("PAYPAL_SUBSCRIPTIONS_TEST_PLAN_ID")
     return value.strip() if value else None
 
 
@@ -133,6 +139,10 @@ class CreatePlanRequest(BaseModel):
     product_id: str
     plan_level: int
     currency: str = "USD"
+
+
+class CreateSandboxTestPlanRequest(BaseModel):
+    setup_token: str
 
 
 def require_admin(user):
@@ -972,6 +982,58 @@ def create_plan(
     }
 
 
+@router.post("/create-sandbox-test-plan")
+def create_sandbox_test_plan(payload: CreateSandboxTestPlanRequest):
+    if get_paypal_mode() != "sandbox":
+        raise HTTPException(status_code=404, detail="No disponible")
+
+    expected_token = os.getenv("PAYPAL_SUBSCRIPTIONS_TEST_SETUP_TOKEN", "")
+    if not expected_token or not hmac.compare_digest(payload.setup_token, expected_token):
+        raise HTTPException(status_code=403, detail="Token inválido")
+
+    token = get_token()
+    regular_plan_id = get_plan_id_by_level(1)
+    if not regular_plan_id:
+        raise HTTPException(status_code=500, detail="Plan Nivel 1 no configurado")
+
+    regular_plan = paypal_request(
+        "GET", f"/v1/billing/plans/{regular_plan_id}", token
+    )
+    product_id = regular_plan.get("product_id")
+    if not product_id:
+        raise HTTPException(status_code=500, detail="PayPal no devolvió product_id")
+
+    amount = MONTHLY_PRICES[1]
+    body = {
+        "product_id": product_id,
+        "name": "Mayu Nivel 1 - Prueba renovación 2 días",
+        "description": "Plan temporal Sandbox para verificar renovación automática.",
+        "status": "ACTIVE",
+        "billing_cycles": [
+            {
+                "frequency": {"interval_unit": "DAY", "interval_count": 2},
+                "tenure_type": "REGULAR",
+                "sequence": 1,
+                "total_cycles": 2,
+                "pricing_scheme": {
+                    "fixed_price": {
+                        "value": f"{amount:.2f}",
+                        "currency_code": "USD",
+                    }
+                },
+            }
+        ],
+        "payment_preferences": {
+            "auto_bill_outstanding": True,
+            "setup_fee": {"value": f"{amount:.2f}", "currency_code": "USD"},
+            "setup_fee_failure_action": "CANCEL",
+            "payment_failure_threshold": 1,
+        },
+    }
+    response = paypal_request("POST", "/v1/billing/plans", token, body)
+    return {"plan_id": response.get("id"), "status": response.get("status")}
+
+
 @router.post("/create")
 def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depends(get_db)):
     if payload.plan_level not in MONTHLY_PRICES:
@@ -991,7 +1053,18 @@ def create_subscription(payload: CreateSubscriptionRequest, db: Session = Depend
         )
 
     token = get_token()
-    start_time = payload.start_time or first_day_next_month_utc()
+    test_plan_id = get_paypal_test_plan_id()
+    if (
+        get_paypal_mode() == "sandbox"
+        and test_plan_id
+        and plan_id == test_plan_id
+        and not payload.start_time
+    ):
+        start_time = (
+            datetime.now(timezone.utc) + timedelta(days=2)
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    else:
+        start_time = payload.start_time or first_day_next_month_utc()
     backend_url = BASE_PUBLIC_URL.rstrip("/")
     return_query = urllib.parse.urlencode(
         {
