@@ -52,6 +52,11 @@ def get_paypal_client_secret():
     return value.strip() if value else None
 
 
+def get_paypal_webhook_id():
+    value = os.getenv("PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID")
+    return value.strip() if value else None
+
+
 def get_base_url():
     return (
         "https://api-m.sandbox.paypal.com"
@@ -204,6 +209,49 @@ def paypal_request(method: str, path: str, token: str, body=None):
         raise HTTPException(
             status_code=500,
             detail=f"Error PayPal: HTTP Error {e.code}: {error}",
+        )
+
+
+async def verify_paypal_webhook_signature(request: Request, event: dict):
+    webhook_id = get_paypal_webhook_id()
+    if not webhook_id:
+        raise HTTPException(
+            status_code=503,
+            detail="PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID no está configurado",
+        )
+
+    required_headers = {
+        "auth_algo": request.headers.get("paypal-auth-algo"),
+        "cert_url": request.headers.get("paypal-cert-url"),
+        "transmission_id": request.headers.get("paypal-transmission-id"),
+        "transmission_sig": request.headers.get("paypal-transmission-sig"),
+        "transmission_time": request.headers.get("paypal-transmission-time"),
+    }
+    missing_headers = [
+        name for name, value in required_headers.items() if not value
+    ]
+    if missing_headers:
+        raise HTTPException(
+            status_code=400,
+            detail="Faltan encabezados de firma PayPal",
+        )
+
+    verification_payload = {
+        **required_headers,
+        "webhook_id": webhook_id,
+        "webhook_event": event,
+    }
+    verification = paypal_request(
+        "POST",
+        "/v1/notifications/verify-webhook-signature",
+        get_token(),
+        verification_payload,
+    )
+
+    if verification.get("verification_status") != "SUCCESS":
+        raise HTTPException(
+            status_code=401,
+            detail="Firma de webhook PayPal inválida",
         )
 
 
@@ -1183,6 +1231,8 @@ def subscription_cancel(request: Request):
 @router.post("/webhook")
 async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
     event = await request.json()
+    await verify_paypal_webhook_signature(request, event)
+
     event_type = event.get("event_type")
     resource = event.get("resource", {})
 
