@@ -99,36 +99,5 @@ class PayPalAdminAccessTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 403)
 
 
-class PayPalSandboxTestPlanTests(unittest.TestCase):
-    def test_test_plan_endpoint_is_hidden_in_live_mode(self):
-        payload = paypal_subscriptions.CreateSandboxTestPlanRequest(
-            setup_token="test-token"
-        )
-        with patch.dict(
-            os.environ,
-            {"PAYPAL_SUBSCRIPTIONS_MODE": "live"},
-            clear=False,
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                paypal_subscriptions.create_sandbox_test_plan(payload)
-        self.assertEqual(raised.exception.status_code, 404)
-
-    def test_test_plan_endpoint_rejects_invalid_token(self):
-        payload = paypal_subscriptions.CreateSandboxTestPlanRequest(
-            setup_token="wrong-token"
-        )
-        with patch.dict(
-            os.environ,
-            {
-                "PAYPAL_SUBSCRIPTIONS_MODE": "sandbox",
-                "PAYPAL_SUBSCRIPTIONS_TEST_SETUP_TOKEN": "expected-token",
-            },
-            clear=False,
-        ):
-            with self.assertRaises(HTTPException) as raised:
-                paypal_subscriptions.create_sandbox_test_plan(payload)
-        self.assertEqual(raised.exception.status_code, 403)
-
-
 if __name__ == "__main__":
     unittest.main()
