@@ -616,7 +616,7 @@ def create_monthly_membership_payment_from_webhook(
     )
 
     level = user.membership_level or 1
-    default_amount = MONTHLY_PRICES.get(level, 40.00)
+    default_amount = MONTHLY_PRICES.get(level, MONTHLY_PRICES[1])
     amount = extract_paypal_amount(resource, default_amount)
 
     payment = models.MembershipPayment(

@@ -36,6 +36,16 @@ from models import (
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
 CRON_SECRET = os.getenv("MARKETING_CRON_SECRET")
+MAYU_EMAIL_LOGO_URL = os.getenv(
+    "MAYU_EMAIL_LOGO_URL",
+    "https://mayuwellnesclub.com/mayu-email-logo.png",
+)
+
+MEMBERSHIP_MONTHLY_PRICES = {
+    1: 42.00,
+    2: 52.00,
+    3: 62.00,
+}
 
 VALID_CHANNELS = {"push", "email", "whatsapp"}
 VALID_TARGET_GROUPS = {
@@ -122,7 +132,14 @@ def send_marketing_email(
         "subject": subject,
         "html": f"""
         <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
-            <h2 style="margin-bottom:16px;">Mayu Wellness Club</h2>
+            <div style="margin-bottom:24px; text-align:center;">
+                <img
+                    src="{MAYU_EMAIL_LOGO_URL}"
+                    alt="Mayu Salud Funcional"
+                    width="320"
+                    style="display:inline-block; width:100%; max-width:320px; height:auto; border-radius:12px;"
+                />
+            </div>
             {image_html}
             <div style="font-size:16px; line-height:1.7; white-space:pre-line;">
                 {message}
@@ -215,14 +232,9 @@ def safe_money(value):
 
 
 def member_payment_amounts(level: int | None):
-    monthly_prices = {
-        1: 44.80,
-        2: 56.00,
-        3: 67.20,
-    }
-    monthly_amount = monthly_prices.get(level or 0, 0.00)
-    signup_amount = 5.60
-    first_payment_amount = round(monthly_amount + signup_amount, 2)
+    monthly_amount = MEMBERSHIP_MONTHLY_PRICES.get(level or 0, 0.00)
+    signup_amount = 0.00
+    first_payment_amount = monthly_amount
 
     return {
         "signup_amount": signup_amount,
@@ -296,8 +308,9 @@ def build_admin_member_payment_message(
                 "",
                 "Detalle PayPal inicial:",
                 f"- Pago inicial cobrado: {safe_money(payment.amount)} {payment.currency or 'USD'}",
-                f"- Inscripción: {safe_money(amounts['signup_amount'])} IVA incluido",
-                f"- Primera mensualidad: {safe_money(amounts['monthly_amount'])} IVA incluido",
+                "- Cuota de inscripción: $0.00",
+                f"- Primer cobro mensual: {safe_money(amounts['monthly_amount'])}",
+                "- IVA: 0%",
                 f"- Próximo débito mensual: {safe_money(amounts['monthly_amount'])} el día {amounts['next_debit_day']} de cada mes",
                 "- Estado operativo: PayPal OK, socio activo en vivo",
             ])
@@ -602,16 +615,15 @@ def send_push_notification(
         raise Exception("Token push vacío")
 
     access_token = get_firebase_access_token()
+    communication_image_url = image_url or MAYU_EMAIL_LOGO_URL
 
     url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
     notification = {
         "title": title,
         "body": message,
+        "image": communication_image_url,
     }
-
-    if image_url:
-        notification["image"] = image_url
 
     payload = {
         "message": {
@@ -620,7 +632,7 @@ def send_push_notification(
             "data": {
                 "title": title,
                 "message": message,
-                "image_url": image_url or "",
+                "image_url": communication_image_url,
                 "source": "mayu_marketing",
                 "click_action": "FLUTTER_NOTIFICATION_CLICK",
             },
@@ -1192,7 +1204,7 @@ def member_level_info(level: int | None):
     plans = {
         1: {
             "name": "Nivel 1 - Cobre",
-            "price": 44.80,
+            "price": MEMBERSHIP_MONTHLY_PRICES[1],
             "benefits": [
                 "Selección mensual de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con acceso a tu membresía.",
@@ -1202,7 +1214,7 @@ def member_level_info(level: int | None):
         },
         2: {
             "name": "Nivel 2 - Plata",
-            "price": 56.00,
+            "price": MEMBERSHIP_MONTHLY_PRICES[2],
             "benefits": [
                 "Selección mensual ampliada de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con beneficios activos.",
@@ -1212,7 +1224,7 @@ def member_level_info(level: int | None):
         },
         3: {
             "name": "Nivel 3 - Oro",
-            "price": 67.20,
+            "price": MEMBERSHIP_MONTHLY_PRICES[3],
             "benefits": [
                 "Selección mensual premium de productos Mayu Wellness Club.",
                 "Tarjeta digital Mayu con beneficios activos.",
@@ -1242,7 +1254,10 @@ Hola {user.name},
 Bienvenido a Mayu Wellness Club.
 
 Tu membresía quedó activa en {level_info["name"]}.
-Valor mensual del plan: ${level_info["price"]:.2f} IVA incluido.
+Valor mensual del plan: ${level_info["price"]:.2f} USD.
+IVA: 0%. No existe cuota de inscripción.
+
+Al aprobar la suscripción autorizas a PayPal a realizar el débito automático mensual del valor de tu plan hasta que canceles la suscripción.
 
 La salud es nuestros hábitos de todos los días. Por eso, tu club está pensado para acompañarte mes a mes con productos, educación y una rutina más consciente.
 
@@ -1252,8 +1267,6 @@ Beneficios de tu plan:
 Cada mes podrás revisar o cambiar tu selección de productos según las reglas del club. Cuando tu pago mensual esté confirmado, se genera tu orden y el equipo Mayu la prepara para despacho.
 
 Gracias por ser parte de Mayu Wellness Club.
-
-Equipo Mayu Wellness Club
 """
 
 
@@ -1285,6 +1298,7 @@ Bienvenido como Embajador Mayu Wellness Club.
 Tu cuenta de embajador quedó activa. Desde ahora puedes compartir tu código, referir socios y construir tu comunidad Mayu con una lógica clara:
 
 - Cada socio activo referido suma comisión mensual.
+- Nivel 1 genera $5, Nivel 2 genera $6 y Nivel 3 genera $7 por cada socio referido con pago mensual confirmado.
 - El pago se realiza el día 10.
 - El corte va del 1 al 30 del mes anterior.
 - Tu tarjeta digital y wallet muestran tu código, próxima comisión y pago realizado.
@@ -1292,8 +1306,6 @@ Tu cuenta de embajador quedó activa. Desde ahora puedes compartir tu código, r
 La salud es nuestros hábitos de todos los días. Como embajador, ayudas a llevar ese mensaje a más personas.
 
 Gracias por formar parte de Mayu Wellness Club.
-
-Equipo Mayu Wellness Club
 """
 
 
