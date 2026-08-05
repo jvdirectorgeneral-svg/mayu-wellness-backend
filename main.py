@@ -51,7 +51,15 @@ def reconcile_existing_subscription_renewals_on_startup():
         result = reconcile_all_paid_subscription_renewals(db)
         print(
             "subscription renewal reconciliation:",
-            {"checked": result["checked"], "processed": result["processed"]},
+            {
+                "checked": result["checked"],
+                "processed": result["processed"],
+                # Contains only provider status/counts (never wallet tokens).
+                # This makes missing device registrations and APNs failures
+                # visible in Render without exposing private identifiers.
+                "wallet_sync": result.get("wallet_sync", {}),
+            },
+            flush=True,
         )
     except Exception as exc:
         db.rollback()
