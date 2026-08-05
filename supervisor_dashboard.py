@@ -279,7 +279,7 @@ def get_supervisor_summary(
         "education_orders": kpis["education_orders"],
         "education_paid_orders": kpis["education_paid_orders"],
         "education_paid_amount": kpis["education_paid_amount"],
-        "commission_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7. Pago mensual día 10 con corte al mes anterior.",
+        "commission_rule": "Nivel 1: $5, Nivel 2: $6, Nivel 3: $7. Pago administrativo del día 8 al 10 con corte al mes anterior.",
         "admin_review_window": "Afiliaciones y renovaciones en Admin Mayu",
         "shipping_window": "Logística despacha órdenes aprobadas",
     }

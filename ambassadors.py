@@ -116,15 +116,10 @@ def commission_amount_by_level(level):
 
 
 def get_next_payment_day():
-    today = datetime.utcnow()
-
-    if today.day <= 5:
-        return 5
-
-    if today.day <= 21:
-        return 21
-
-    return 5
+    # The administrative payout window opens on day 8 and closes on day 10.
+    # Returning its opening day keeps older clients that expect an integer
+    # aligned with the current rule.
+    return 8
 
 
 def format_order_products(order):
@@ -699,7 +694,7 @@ def get_ambassador_dashboard(
     monthly_commission = projected_monthly_commission
     projected_yearly_commission = projected_monthly_commission * 12
     next_payment_day = get_next_payment_day()
-    payment_frequency = "Pagos administrativos los días 5 y 21 de cada mes"
+    payment_frequency = "Pagos administrativos del día 8 al 10 de cada mes"
     goal = 100
 
     return {
@@ -732,7 +727,7 @@ def get_ambassador_dashboard(
                 "Nivel 2 - Plata": 6,
                 "Nivel 3 - Oro": 7,
             },
-            "message": f"Con tus socios activos actuales, tu proyección mensual es de ${projected_monthly_commission:.2f}. Se paga administrativamente los días 5 y 21 de cada mes.",
+            "message": f"Con tus socios activos actuales, tu proyección mensual es de ${projected_monthly_commission:.2f}. Se paga administrativamente del día 8 al 10 de cada mes, con corte del mes anterior.",
         },
         "reward_progress": {
             "goal": goal,

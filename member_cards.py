@@ -751,7 +751,7 @@ def generate_card_image(user_id: int, db: Session = Depends(get_db)):
         draw_text(
             draw,
             (60, 440),
-            "Pago mensual dia 10",
+            "Pago del dia 8 al 10",
             info_font,
         )
         draw_text(draw, (60, 480), f"Codigo: {visual['member_code']}", info_font)
@@ -1086,7 +1086,7 @@ def build_member_apple_wallet_file(
                             {
                                 "key": "payout_rule",
                                 "label": "Regla de pago",
-                                "value": "Pago mensual el día 10. Corte del 1 al 30.",
+                                "value": "Pago administrativo del día 8 al 10. Corte del 1 al 30.",
                             },
                         ]
                         if ambassador_summary
@@ -1261,7 +1261,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
                 "header": "Pago realizado",
                 "body": f"${ambassador_summary['total_paid']:.2f}",
             },
-            {"id": "payout_rule", "header": "Pago", "body": "Día 10, corte 1 al 30"},
+            {"id": "payout_rule", "header": "Pago", "body": "Días 8 al 10, corte 1 al 30"},
             {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
             {"id": "code", "header": "Código", "body": card.member_code},
         ]

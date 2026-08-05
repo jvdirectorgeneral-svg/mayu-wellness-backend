@@ -1299,7 +1299,7 @@ Tu cuenta de embajador quedó activa. Desde ahora puedes compartir tu código, r
 
 - Cada socio activo referido suma comisión mensual.
 - Nivel 1 genera $5, Nivel 2 genera $6 y Nivel 3 genera $7 por cada socio referido con pago mensual confirmado.
-- El pago se realiza el día 10.
+- El pago se realiza administrativamente del día 8 al 10.
 - El corte va del 1 al 30 del mes anterior.
 - Tu tarjeta digital y wallet muestran tu código, próxima comisión y pago realizado.
 
