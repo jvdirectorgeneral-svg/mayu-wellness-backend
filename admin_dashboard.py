@@ -370,6 +370,11 @@ def payment_to_dict(payment: MembershipPayment):
         membership_cycle_type = "other"
         membership_cycle_label = "Otro pago"
 
+    order = payment.order
+    selection = payment.monthly_selection
+    cycle_month = order.month if order else (selection.month if selection else None)
+    cycle_year = order.year if order else (selection.year if selection else None)
+
     return {
         "id": payment.id,
         "user_id": payment.user_id,
@@ -389,6 +394,14 @@ def payment_to_dict(payment: MembershipPayment):
         "admin_verified_at": payment.admin_verified_at,
         "created_at": payment.created_at,
         "paid_at": payment.paid_at,
+        "cycle_month": cycle_month,
+        "cycle_year": cycle_year,
+        "order_code": order.order_code if order else None,
+        "order_status": order.status if order else None,
+        "logistics_notes": order.logistics_notes if order else None,
+        "logistics_ready": bool(order and order.status in {
+            "approved_for_logistics", "preparing", "shipped", "delivered"
+        }),
     }
 
 

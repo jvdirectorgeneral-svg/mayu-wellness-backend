@@ -18,6 +18,7 @@ from database import SessionLocal
 from dependencies import get_current_user
 import models
 from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
+from renewal_processing import reconcile_subscription_renewal
 
 router = APIRouter(
     prefix="/payments/paypal/subscriptions",
@@ -1327,14 +1328,27 @@ async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
                 subscription_id=subscription_id,
                 event=event,
             )
-            db.commit()
+            renewal_sync = reconcile_subscription_renewal(
+                db=db,
+                payment=monthly_payment,
+                sync_wallet=True,
+            )
+            db.refresh(monthly_payment)
+
+            renewal_order = None
+            if monthly_payment.order_id:
+                renewal_order = (
+                    db.query(models.Order)
+                    .filter(models.Order.id == monthly_payment.order_id)
+                    .first()
+                )
 
             try:
                 admin_email_sync = notify_admin_member_payment_event(
                     db=db,
                     user=user,
                     payment=monthly_payment,
-                    order=monthly_payment.order,
+                    order=renewal_order,
                     trigger="paypal_subscription_renewal",
                 )
                 db.commit()
@@ -1351,6 +1365,7 @@ async def subscription_webhook(request: Request, db: Session = Depends(get_db)):
                 "payment_id": monthly_payment.id,
                 "payment_status": monthly_payment.status,
                 "admin_verified": monthly_payment.admin_verified,
+                "renewal_processing": renewal_sync,
                 "admin_email_notification": admin_email_sync,
             }
 

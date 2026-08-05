@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import engine, Base
+from database import engine, Base, SessionLocal
+from renewal_processing import reconcile_all_paid_subscription_renewals
 
 from users import router as users_router
 from products import router as products_router
@@ -40,6 +41,23 @@ app = FastAPI(
     title="Mayu Wellness API",
     version="1.0.0",
 )
+
+
+@app.on_event("startup")
+def reconcile_existing_subscription_renewals_on_startup():
+    """Repair paid renewals received before automatic downstream processing existed."""
+    db = SessionLocal()
+    try:
+        result = reconcile_all_paid_subscription_renewals(db)
+        print(
+            "subscription renewal reconciliation:",
+            {"checked": result["checked"], "processed": result["processed"]},
+        )
+    except Exception as exc:
+        db.rollback()
+        print("subscription renewal reconciliation failed:", str(exc))
+    finally:
+        db.close()
 
 
 app.add_middleware(
