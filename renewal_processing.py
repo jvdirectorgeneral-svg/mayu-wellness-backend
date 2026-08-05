@@ -321,9 +321,13 @@ def reconcile_all_paid_subscription_renewals(db: Session) -> dict:
     )
 
     results = []
+    ambassador_ids_to_sync = set()
     for payment in payments:
         try:
-            results.append(reconcile_subscription_renewal(db, payment, sync_wallet=False))
+            result = reconcile_subscription_renewal(db, payment, sync_wallet=False)
+            results.append(result)
+            if result.get("processed") and result.get("ambassador_id"):
+                ambassador_ids_to_sync.add(result["ambassador_id"])
         except Exception as exc:
             db.rollback()
             results.append(
@@ -333,8 +337,18 @@ def reconcile_all_paid_subscription_renewals(db: Session) -> dict:
                     "reason": str(exc),
                 }
             )
+
+    # Reconciliation can create commissions that predate this deployment.  The
+    # ambassador pass is dynamic, so notify every affected Apple/Google Wallet
+    # after all database commits have completed.  Sync once per ambassador to
+    # avoid duplicate APNs notifications when several renewals are repaired.
+    wallet_sync = {}
+    for ambassador_id in sorted(ambassador_ids_to_sync):
+        wallet_sync[str(ambassador_id)] = sync_ambassador_wallets(db, ambassador_id)
+
     return {
         "checked": len(payments),
         "processed": sum(1 for item in results if item.get("processed")),
         "items": results,
+        "wallet_sync": wallet_sync,
     }
