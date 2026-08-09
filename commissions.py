@@ -892,11 +892,38 @@ def pay_pending_commissions_by_ambassador(
     db.commit()
     wallet_sync = sync_ambassador_wallets(db, ambassador_id)
 
+    remaining_pending = round(
+        float(
+            db.query(func.coalesce(func.sum(Commission.commission_amount), 0))
+            .filter(
+                Commission.ambassador_id == ambassador_id,
+                Commission.status == "pending",
+            )
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+    total_paid_all = round(
+        float(
+            db.query(func.coalesce(func.sum(Commission.commission_amount), 0))
+            .filter(
+                Commission.ambassador_id == ambassador_id,
+                Commission.status == "paid",
+            )
+            .scalar()
+            or 0
+        ),
+        2,
+    )
+
     return {
         "paid": True,
         "message": "Corte mensual del embajador pagado correctamente",
         "paid_records": len(payable_commissions),
         "paid_amount": round(paid_total, 2),
+        "remaining_pending_amount": remaining_pending,
+        "total_paid_amount": total_paid_all,
         "payout_window_open": payout_window_open,
         "payout_rule": "Pago disponible del 8 al 10. Corte del 1 al 30 del mes anterior.",
         "wallet_sync": wallet_sync,
