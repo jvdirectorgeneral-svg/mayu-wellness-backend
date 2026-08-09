@@ -10,6 +10,7 @@ from sqlalchemy import func, case
 from database import SessionLocal
 from dependencies import get_current_user
 from member_cards import get_or_create_card, safe_update_member_wallets
+from marketing import send_push_to_latest_user_token
 from models import (
     Commission,
     Ambassador,
@@ -97,6 +98,40 @@ def sync_ambassador_wallets(db: Session, ambassador_id: int):
             "google": {"updated": False, "detail": str(exc)},
             "apple": {"sent": 0, "errors": [{"detail": str(exc)}]},
         }
+
+
+def safe_send_ambassador_push(
+    db: Session,
+    ambassador_id: int,
+    title: str,
+    message: str,
+):
+    ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first()
+    if not ambassador:
+        return {"sent": False, "detail": "Embajador no encontrado"}
+    try:
+        result = send_push_to_latest_user_token(
+            db=db,
+            user_id=ambassador.user_id,
+            title=title,
+            message=message,
+        )
+        return {"sent": True, **result}
+    except Exception as exc:
+        # A missing/expired app token must never roll back a paid renewal or a
+        # completed ambassador payout. Wallet updates remain a separate channel.
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        return {"sent": False, "detail": str(exc)}
+
+
+def masked_bank_account(ambassador: Ambassador) -> str:
+    account = str(getattr(ambassador, "bank_account_number", None) or "").strip()
+    if not account:
+        return "cuenta registrada"
+    return f"cuenta terminada en {account[-4:]}"
 
 
 def get_plan_by_user_level(db: Session, user: User) -> Plan | None:
@@ -891,6 +926,16 @@ def pay_pending_commissions_by_ambassador(
 
     db.commit()
     wallet_sync = sync_ambassador_wallets(db, ambassador_id)
+    payout_push = safe_send_ambassador_push(
+        db,
+        ambassador_id,
+        "Pago de comisiones Mayu realizado",
+        (
+            f"Se pagó ${paid_total:.2f} USD a tu {masked_bank_account(ambassador)} "
+            f"del banco {getattr(ambassador, 'bank_name', None) or 'registrado'}. "
+            "Tu historial y tarjeta digital ya fueron actualizados."
+        ),
+    )
 
     remaining_pending = round(
         float(
@@ -927,4 +972,5 @@ def pay_pending_commissions_by_ambassador(
         "payout_window_open": payout_window_open,
         "payout_rule": "Pago disponible del 8 al 10. Corte del 1 al 30 del mes anterior.",
         "wallet_sync": wallet_sync,
+        "push_notification": payout_push,
     }

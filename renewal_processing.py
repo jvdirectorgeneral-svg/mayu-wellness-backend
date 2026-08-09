@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 import models
 from commissions import (
     ensure_current_month_pending_commissions_for_ambassador,
+    safe_send_ambassador_push,
     sync_ambassador_wallets,
 )
 
@@ -290,8 +291,23 @@ def reconcile_subscription_renewal(
     db.refresh(payment)
 
     wallet_sync = None
+    ambassador_push = None
     if sync_wallet and ambassador_id:
         wallet_sync = sync_ambassador_wallets(db, ambassador_id)
+    if ambassador_id and created_commissions:
+        commission_total = sum(
+            float(item.commission_amount or 0) for item in created_commissions
+        )
+        ambassador_push = safe_send_ambassador_push(
+            db,
+            ambassador_id,
+            "Nueva renovación mensual Mayu",
+            (
+                f"El pago mensual de {user.name} fue confirmado. "
+                f"Se acreditó una comisión pendiente de ${commission_total:.2f} USD. "
+                "Tu tarjeta digital y saldo ya fueron actualizados."
+            ),
+        )
 
     return {
         "processed": True,
@@ -306,6 +322,7 @@ def reconcile_subscription_renewal(
         "ambassador_id": ambassador_id,
         "next_selection_id": next_selection.id,
         "wallet_sync": wallet_sync,
+        "push_notification": ambassador_push,
     }
 
 
