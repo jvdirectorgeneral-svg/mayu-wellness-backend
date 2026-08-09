@@ -206,17 +206,7 @@ def ambassador_commission_summary(db: Session | None, user):
     current_display_amount = total_pending
     secondary_projected_amount = projected_monthly_commission
 
-    if (
-        current_display_amount <= 0
-        and projected_monthly_commission > 0
-        and not has_current_period_records
-    ):
-        # If the current month does not yet have persisted commission rows,
-        # surface the month projection as the pending payable amount so admin
-        # can see and settle it without waiting for an explicit row creation.
-        current_display_amount = projected_monthly_commission
-        secondary_projected_amount = 0.0
-    elif current_display_amount <= 0 and has_current_period_paid:
+    if current_display_amount <= 0 and has_current_period_paid:
         # Once the current month has already been paid, keep wallets/admin at
         # zero instead of re-surfacing the same month as a new projected debt.
         secondary_projected_amount = 0.0

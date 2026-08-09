@@ -17,6 +17,7 @@ from models import (
     User,
     Plan,
     MembershipPayment,
+    Order,
 )
 
 router = APIRouter(prefix="/commissions", tags=["commissions"])
@@ -289,6 +290,27 @@ def commission_to_dict(db: Session, c: Commission):
     )
     referred_user = db.query(User).filter(User.id == c.referred_user_id).first()
     plan = db.query(Plan).filter(Plan.id == c.plan_id).first()
+    payment = (
+        db.query(MembershipPayment)
+        .filter(MembershipPayment.user_id == c.referred_user_id)
+        .outerjoin(Order, MembershipPayment.order_id == Order.id)
+        .filter(
+            ((Order.month == c.month) & (Order.year == c.year))
+            | (
+                (func.extract("month", MembershipPayment.paid_at) == c.month)
+                & (func.extract("year", MembershipPayment.paid_at) == c.year)
+            )
+        )
+        .order_by(MembershipPayment.paid_at.desc(), MembershipPayment.id.desc())
+        .first()
+    )
+    payment_type = payment.payment_type if payment else None
+    cycle_type = (
+        "renewal" if payment_type == "subscription_renewal" else
+        "initial" if payment_type in {"signup", "membership_initial", "subscription"} else
+        "unlinked"
+    )
+    order = payment.order if payment else None
 
     return {
         "commission_id": c.id,
@@ -327,6 +349,23 @@ def commission_to_dict(db: Session, c: Commission):
         "generated_at": c.generated_at,
         "paid_at": c.paid_at,
         "notes": c.notes,
+        "membership_cycle_type": cycle_type,
+        "membership_cycle_label": (
+            "Renovación mensual" if cycle_type == "renewal" else
+            "Primera afiliación" if cycle_type == "initial" else
+            "Pago por vincular"
+        ),
+        "membership_payment_id": payment.id if payment else None,
+        "membership_payment_type": payment_type,
+        "membership_payment_status": payment.status if payment else None,
+        "membership_payment_amount": payment.amount if payment else None,
+        "membership_payment_paid_at": payment.paid_at if payment else None,
+        "order_id": order.id if order else None,
+        "order_code": order.order_code if order else None,
+        "order_status": order.status if order else None,
+        "logistics_ready": bool(order and order.status in {
+            "approved_for_logistics", "preparing", "shipped", "delivered"
+        }),
     }
 
 

@@ -192,9 +192,12 @@ def ambassador_to_dict(db: Session, a: Ambassador):
             ),
             2,
         )
-    upcoming_commission = current_cycle_commission
-    if upcoming_commission <= 0 and summary:
-        upcoming_commission = summary["projected_monthly_commission"]
+    # Admin, the ambassador pass and the ambassador dashboard must all expose
+    # the same persisted balance. Projections are informative only and must
+    # never replace the real pending amount.
+    total_pending_commission = round(
+        sum(float(c.commission_amount or 0) for c in pending_commissions), 2
+    )
 
     return {
         "id": a.id,
@@ -214,13 +217,14 @@ def ambassador_to_dict(db: Session, a: Ambassador):
         "bank_account_holder": getattr(a, "bank_account_holder", None),
         "bank_identification": getattr(a, "bank_identification", None),
         "payment_notes": getattr(a, "payment_notes", None),
-        "commission_balance": upcoming_commission,
-        "commission_balance_label": "Próxima comisión",
+        "commission_balance": total_pending_commission,
+        "commission_balance_label": "Saldo total pendiente",
+        "current_cycle_commission_amount": current_cycle_commission,
         "payable_commission_amount": payable_commission,
         "payable_commission_label": "Corte mensual pagable",
         "payout_window_open": payout_window_open,
         "payout_window_label": "Disponible del 8 al 10 de cada mes",
-        "projected_monthly_commission": upcoming_commission,
+        "projected_monthly_commission": summary["projected_monthly_commission"] if summary else 0.0,
         "projected_monthly_commission_raw": summary["projected_monthly_commission"] if summary else 0.0,
         "total_paid_commissions": summary["total_paid"] if summary else 0.0,
         "total_generated_commissions": summary["total_generated"] if summary else 0.0,
@@ -444,6 +448,12 @@ def get_payment_for_order(db: Session, order: Order):
 
 def order_to_dict(db: Session, order: Order):
     payment = get_payment_for_order(db, order)
+    payment_type = getattr(payment, "payment_type", None) if payment else None
+    cycle_type = (
+        "renewal" if payment_type == "subscription_renewal" else
+        "initial" if payment_type in {"signup", "membership_initial", "subscription"} else
+        "unlinked"
+    )
 
     return {
         "id": order.id,
@@ -475,7 +485,13 @@ def order_to_dict(db: Session, order: Order):
         **order_tracking_data(order),
         **order_tracking_history_data(order),
         "payment_id": payment.id if payment else None,
-        "payment_type": getattr(payment, "payment_type", None) if payment else None,
+        "payment_type": payment_type,
+        "membership_cycle_type": cycle_type,
+        "membership_cycle_label": (
+            "Renovación mensual" if cycle_type == "renewal" else
+            "Primera afiliación" if cycle_type == "initial" else
+            "Pago por vincular"
+        ),
         "provider": getattr(payment, "provider", None) if payment else None,
         "payment_status": payment.status if payment else None,
         "payment_amount": payment.amount if payment else None,
@@ -985,11 +1001,7 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
     if not payment:
         raise HTTPException(status_code=404, detail="Pago no encontrado")
 
-    if payment.admin_verified:
-        raise HTTPException(
-            status_code=400,
-            detail="Este pago ya fue verificado. No se puede reprocesar.",
-        )
+    already_verified = bool(payment.admin_verified)
 
     user = db.query(User).filter(User.id == payment.user_id).first()
     if not user:
@@ -1080,36 +1092,46 @@ def verify_payment(payment_id: int, db: Session = Depends(get_db), current_user:
     if referral:
         commission_sync = sync_ambassador_wallets(db, referral.ambassador_id)
 
-    try:
-        welcome_sync = send_welcome_member_notifications(
-            db=db,
-            user=user,
-            trigger="admin_payment_verify",
-        )
-        db.commit()
-    except Exception as exc:
-        welcome_sync = {
-            "sent": False,
-            "error": str(exc),
-        }
+    if already_verified:
+        welcome_sync = {"sent": False, "detail": "Notificación ya procesada"}
+    else:
+        try:
+            welcome_sync = send_welcome_member_notifications(
+                db=db,
+                user=user,
+                trigger="admin_payment_verify",
+            )
+            db.commit()
+        except Exception as exc:
+            welcome_sync = {
+                "sent": False,
+                "error": str(exc),
+            }
 
-    try:
-        admin_email_sync = notify_admin_member_payment_event(
-            db=db,
-            user=user,
-            payment=payment,
-            order=order,
-            trigger="admin_payment_verify",
-        )
-        db.commit()
-    except Exception as exc:
-        admin_email_sync = {
-            "sent": False,
-            "error": str(exc),
-        }
+    if already_verified:
+        admin_email_sync = {"sent": False, "detail": "Aviso ya procesado"}
+    else:
+        try:
+            admin_email_sync = notify_admin_member_payment_event(
+                db=db,
+                user=user,
+                payment=payment,
+                order=order,
+                trigger="admin_payment_verify",
+            )
+            db.commit()
+        except Exception as exc:
+            admin_email_sync = {
+                "sent": False,
+                "error": str(exc),
+            }
 
     return {
-        "message": "Pago verificado, suscripción activa y orden liberada a logística",
+        "message": (
+            "Pago ya confirmado; orden reconfirmada para logística"
+            if already_verified else
+            "Pago verificado, suscripción activa y orden liberada a logística"
+        ),
         "payment": payment_to_dict(payment),
         "order": order_to_dict(db, order),
         "ambassador_commission": {
