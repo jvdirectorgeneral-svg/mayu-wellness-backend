@@ -4,10 +4,14 @@ from sqlalchemy import or_
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+import html
 
 from database import SessionLocal
 from dependencies import get_current_user
 import models
+from commissions import safe_send_ambassador_push, sync_ambassador_wallets
+from member_cards import get_or_create_card, safe_update_member_wallets
+from notification_service import safe_send_email, safe_send_push_to_user
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
@@ -60,6 +64,20 @@ def format_month_label(month: int, year: int) -> str:
         9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
     }
     return f"{months.get(month, 'Mes')} {year}"
+
+
+def is_future_cycle(order: models.Order) -> bool:
+    now = datetime.utcnow()
+    return (order.year, order.month) > (now.year, now.month)
+
+
+def cycle_type_data(payment):
+    payment_type = getattr(payment, "payment_type", None) if payment else None
+    if payment_type == "subscription_renewal":
+        return "renewal", "Renovación mensual"
+    if payment_type in {"signup", "membership_initial", "subscription"}:
+        return "initial", "Primera afiliación"
+    return "unlinked", "Pago por vincular"
 
 
 def get_next_month_year(month: int, year: int):
@@ -160,6 +178,7 @@ def get_order_payment(db: Session, order: models.Order):
 
 
 def payment_data(payment):
+    cycle_type, cycle_label = cycle_type_data(payment)
     return {
         "payment_id": payment.id if payment else None,
         "payment_type": getattr(payment, "payment_type", None) if payment else None,
@@ -168,6 +187,8 @@ def payment_data(payment):
         "payer_email": payment.payer_email if payment else None,
         "admin_verified": payment.admin_verified if payment else False,
         "admin_verified_at": payment.admin_verified_at if payment else None,
+        "membership_cycle_type": cycle_type,
+        "membership_cycle_label": cycle_label,
     }
 
 
@@ -248,6 +269,87 @@ def add_tracking_history(
             created_by=current_user.id if current_user else None,
         )
     )
+
+
+def notify_membership_order_update(db: Session, order: models.Order, status: str):
+    labels = {
+        "preparing": "Tu pedido Mayu está en preparación",
+        "shipped": "Tu pedido Mayu fue enviado",
+        "delivered": "Tu pedido Mayu fue entregado",
+    }
+    subject = labels.get(status)
+    if not subject or not order.user:
+        return {"push": False, "email": False, "wallet": None, "ambassador": None}
+
+    products = ", ".join(
+        f"{item.product_name_snapshot} x{item.quantity or 1}" for item in order.items
+    ) or "Productos de tu plan"
+    tracking_text = (
+        f" Guía {order.tracking_number} por {order.carrier}."
+        if status == "shipped" else ""
+    )
+    push_message = (
+        f"Orden {order.order_code} · {format_month_label(order.month, order.year)}. "
+        f"{products}.{tracking_text}"
+    )
+    member_push = safe_send_push_to_user(db, order.user_id, subject, push_message)
+
+    email_sent = False
+    if status in {"shipped", "delivered"}:
+        tracking_link = (
+            f'<p><a href="{html.escape(order.tracking_url)}">Ver seguimiento</a></p>'
+            if order.tracking_url else ""
+        )
+        email_sent = safe_send_email(
+            order.user.email,
+            subject,
+            f"""
+            <div style="font-family:Arial,sans-serif;line-height:1.6">
+              <h2>{html.escape(subject)}</h2>
+              <p>Hola {html.escape(order.user.name or 'socio Mayu')},</p>
+              <p><strong>Orden:</strong> {html.escape(order.order_code)}</p>
+              <p><strong>Período:</strong> {html.escape(format_month_label(order.month, order.year))}</p>
+              <p><strong>Productos:</strong> {html.escape(products)}</p>
+              <p><strong>Transportadora:</strong> {html.escape(order.carrier or '-')}</p>
+              <p><strong>Guía:</strong> {html.escape(order.tracking_number or '-')}</p>
+              {tracking_link}
+              <p>Equipo Mayu Wellness Club</p>
+            </div>
+            """,
+        )
+
+    try:
+        member_user, member_card = get_or_create_card(db, order.user_id)
+        member_wallet = safe_update_member_wallets(db, member_user, member_card)
+    except Exception as exc:
+        member_wallet = {"updated": False, "detail": str(exc)}
+
+    ambassador_result = None
+    referral = (
+        db.query(models.AmbassadorReferral)
+        .filter(
+            models.AmbassadorReferral.user_id == order.user_id,
+            models.AmbassadorReferral.status == "active",
+        )
+        .first()
+    )
+    if referral:
+        ambassador_result = {
+            "push": safe_send_ambassador_push(
+                db,
+                referral.ambassador_id,
+                f"Entrega de {order.user.name}",
+                push_message,
+            ),
+            "wallet": sync_ambassador_wallets(db, referral.ambassador_id),
+        }
+
+    return {
+        "push": member_push,
+        "email": email_sent,
+        "wallet": member_wallet,
+        "ambassador": ambassador_result,
+    }
 
 
 def get_monthly_selection_data(db: Session, user_id: int, month: int, year: int):
@@ -335,6 +437,7 @@ def open_next_selection_cycle(
 
 def order_to_dict(db: Session, order: models.Order, include_history: bool = False):
     payment = get_order_payment(db, order)
+    future_cycle = is_future_cycle(order)
 
     data = {
         "id": order.id,
@@ -351,6 +454,12 @@ def order_to_dict(db: Session, order: models.Order, include_history: bool = Fals
         "status": order.status,
         "order_status": order.status,
         "order_locked": order_is_locked(order),
+        "is_future_cycle": future_cycle,
+        "dispatch_blocked": future_cycle,
+        "dispatch_block_reason": (
+            f"Ciclo futuro: disponible desde el 01/{order.month:02d}/{order.year}"
+            if future_cycle else None
+        ),
         "logistics_notes": order.logistics_notes,
         "month": order.month,
         "year": order.year,
@@ -639,7 +748,8 @@ def list_user_orders(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_team_access(current_user)
+    if current_user.id != user_id:
+        require_team_access(current_user)
 
     orders = (
         db.query(models.Order)
@@ -661,7 +771,8 @@ def list_user_delivered_orders(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_team_access(current_user)
+    if current_user.id != user_id:
+        require_team_access(current_user)
 
     orders = (
         db.query(models.Order)
@@ -679,12 +790,13 @@ def get_order_detail(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    require_team_access(current_user)
-
     order = db.query(models.Order).filter(models.Order.id == order_id).first()
 
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
+
+    if current_user.id != order.user_id:
+        require_team_access(current_user)
 
     if current_user.role == "logistics" and order.status == "pending_payment_review":
         raise HTTPException(
@@ -787,6 +899,45 @@ def update_order_status(
     if not order:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
 
+    old_status = order.status
+    if old_status == payload.status:
+        return {
+            "message": "La orden ya se encuentra en ese estado",
+            "order": order_to_dict(db, order, include_history=True),
+            "notifications": {"sent": False, "detail": "Sin cambio de estado"},
+        }
+
+    if payload.status in {"preparing", "shipped"} and is_future_cycle(order):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No se puede despachar un ciclo futuro. "
+                f"Disponible desde el 01/{order.month:02d}/{order.year}."
+            ),
+        )
+
+    if payload.status == "shipped" and (
+        not (order.carrier or "").strip() or not (order.tracking_number or "").strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Registra transportadora y número de guía antes de marcar Enviado",
+        )
+
+    allowed_transitions = {
+        "pending_payment_review": {"approved_for_logistics", "cancelled"},
+        "approved_for_logistics": {"preparing", "cancelled"},
+        "preparing": {"shipped", "cancelled"},
+        "shipped": {"delivered", "cancelled"},
+        "delivered": set(),
+        "cancelled": set(),
+    }
+    if payload.status not in allowed_transitions.get(old_status, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Transición no permitida: {old_status} → {payload.status}",
+        )
+
     if current_user.role == "logistics":
         if order.status not in {"approved_for_logistics", "preparing", "shipped"}:
             raise HTTPException(
@@ -849,8 +1000,10 @@ def update_order_status(
 
     db.commit()
     db.refresh(order)
+    notifications = notify_membership_order_update(db, order, payload.status)
 
     return {
         "message": "Estado de orden actualizado correctamente",
         "order": order_to_dict(db, order, include_history=True),
+        "notifications": notifications,
     }

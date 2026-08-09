@@ -397,8 +397,46 @@ def verify_member_wallet_request(request: FastAPIRequest, card):
 def member_apple_last_updated(db: Session, user, card):
     summary = ambassador_commission_summary(db, user)
     latest = summary.get("latest_commission_at") if summary else None
+    order = latest_membership_order(db, user.id)
+    if order:
+        order_latest = order.delivered_at or order.shipped_at or order.prepared_at or order.created_at
+        if order_latest and (latest is None or order_latest > latest):
+            latest = order_latest
     base_dt = latest or user.created_at or datetime.utcnow()
     return format_datetime(base_dt.replace(tzinfo=timezone.utc), usegmt=True)
+
+
+def latest_membership_order(db: Session | None, user_id: int):
+    if not db:
+        return None
+    return (
+        db.query(models.Order)
+        .filter(models.Order.user_id == user_id)
+        .order_by(models.Order.year.desc(), models.Order.month.desc(), models.Order.id.desc())
+        .first()
+    )
+
+
+def wallet_order_fields(db: Session | None, user_id: int):
+    order = latest_membership_order(db, user_id)
+    if not order:
+        return []
+    labels = {
+        "approved_for_logistics": "Lista para preparar",
+        "preparing": "En preparación",
+        "shipped": "Enviado",
+        "delivered": "Entregado",
+    }
+    fields = [
+        {"id": "order_status", "header": "Último pedido", "body": labels.get(order.status, order.status)},
+        {"id": "order_code", "header": "Orden", "body": order.order_code},
+    ]
+    if order.tracking_number:
+        fields.append({"id": "tracking", "header": "Guía", "body": order.tracking_number})
+    if order.items:
+        products = ", ".join(f"{item.product_name_snapshot} x{item.quantity or 1}" for item in order.items)
+        fields.append({"id": "products", "header": "Productos", "body": products})
+    return fields
 
 
 def get_card_visual_data(db: Session | None, user, card):
@@ -971,6 +1009,7 @@ def build_member_apple_wallet_file(
         display_code = sync_card_display_code(db, user, card)
         visual = get_card_visual_data(db, user, card)
         ambassador_summary = ambassador_commission_summary(db, user)
+        order_wallet_fields = wallet_order_fields(db, user.id)
         pending_value = (
             f"${ambassador_summary['current_display_amount']:.2f}" if ambassador_summary else None
         )
@@ -1082,6 +1121,14 @@ def build_member_apple_wallet_file(
                         if ambassador_summary
                         else []
                     ),
+                    *[
+                        {
+                            "key": field["id"],
+                            "label": field["header"],
+                            "value": field["body"],
+                        }
+                        for field in order_wallet_fields
+                    ],
                     {"key": "web", "label": "Tarjeta web", "value": card_web_url},
                 ],
             },
@@ -1255,6 +1302,8 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
             {"id": "type", "header": "Tipo", "body": "Embajador Mayu"},
             {"id": "code", "header": "Código", "body": card.member_code},
         ]
+    elif db:
+        text_modules.extend(wallet_order_fields(db, user.id))
 
     return {
         "id": object_id,
