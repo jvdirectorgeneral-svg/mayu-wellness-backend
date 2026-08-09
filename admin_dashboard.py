@@ -806,13 +806,10 @@ def get_ambassadors(db: Session = Depends(get_db), current_user: User = Depends(
 
     items = []
     for ambassador in ambassadors:
-        ambassador_id = ambassador.id
-        try:
-            sync_ambassador_wallets(db, ambassador_id)
-            db.expire_all()
-            ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first() or ambassador
-        except Exception:
-            pass
+        # Listing data must be read-only and fast. Wallet synchronization is
+        # intentionally triggered only by commission/renewal/payout writes.
+        # Doing APNs/Google calls here previously added multiple seconds per
+        # ambassador every time Admin opened or refreshed the dashboard.
         items.append(ambassador_to_dict(db, ambassador))
 
     return {"items": items}

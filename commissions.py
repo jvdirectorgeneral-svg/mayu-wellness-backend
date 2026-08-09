@@ -1,5 +1,4 @@
 from datetime import datetime
-import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -78,21 +77,9 @@ def sync_ambassador_wallets(db: Session, ambassador_id: int):
 
     try:
         user, card = get_or_create_card(db, ambassador.user_id)
-        first_sync = safe_update_member_wallets(db, user, card)
-
-        # Second wallet sync after a short delay helps Apple/Google pick up
-        # the already-committed ambassador state more consistently.
-        time.sleep(2)
-        db.expire_all()
-        fresh_ambassador = db.query(Ambassador).filter(Ambassador.id == ambassador_id).first()
-        if fresh_ambassador:
-            user, card = get_or_create_card(db, fresh_ambassador.user_id)
-        second_sync = safe_update_member_wallets(db, user, card)
-
-        return {
-            "initial": first_sync,
-            "delayed_retry": second_sync,
-        }
+        # Call once after the transaction commit. A duplicate network update
+        # and an artificial delay made every admin payment unnecessarily slow.
+        return safe_update_member_wallets(db, user, card)
     except Exception as exc:
         return {
             "google": {"updated": False, "detail": str(exc)},
