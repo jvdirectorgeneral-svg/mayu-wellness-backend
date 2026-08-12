@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends
+import json
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base, SessionLocal
@@ -51,12 +52,93 @@ with engine.begin() as connection:
         "ALTER TABLE marketing_campaigns ADD COLUMN IF NOT EXISTS audience_tag VARCHAR",
     ):
         connection.execute(text(statement))
+    connection.execute(text(
+        "CREATE TABLE IF NOT EXISTS app_cleanup_log ("
+        "cleanup_key VARCHAR PRIMARY KEY, executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "details TEXT)"
+    ))
 
 
 app = FastAPI(
     title="Mayu Wellness API",
     version="1.0.0",
 )
+
+
+@app.on_event("startup")
+def reset_test_doctor_module_once():
+    """One-time, scoped cleanup requested for the two original doctor test cards."""
+    cleanup_key = "reset_test_doctors_julio_renato_20260811_v1"
+    target_emails = {
+        "juliovicencio@icloud.com",
+        "juliovicenciosalud@gmail.com",
+    }
+    db = SessionLocal()
+    try:
+        already_done = db.execute(text(
+            "SELECT 1 FROM app_cleanup_log WHERE cleanup_key = :cleanup_key"
+        ), {"cleanup_key": cleanup_key}).first()
+        if already_done:
+            return
+
+        doctors = db.query(models.DoctorPrescriber).filter(
+            models.DoctorPrescriber.email.in_(target_emails)
+        ).all()
+        doctor_ids = [doctor.id for doctor in doctors]
+        doctor_codes = [doctor.doctor_code for doctor in doctors]
+
+        deleted_wallets = 0
+        deleted_transactions = 0
+        cleaned_marketing = 0
+        cleared_orders = 0
+        if doctor_ids:
+            deleted_wallets = db.query(models.DoctorAppleWalletRegistration).filter(
+                models.DoctorAppleWalletRegistration.doctor_prescriber_id.in_(doctor_ids)
+            ).delete(synchronize_session=False)
+            deleted_transactions = db.query(models.DoctorCommissionTransaction).filter(
+                models.DoctorCommissionTransaction.doctor_prescriber_id.in_(doctor_ids)
+            ).delete(synchronize_session=False)
+
+            marketing_contacts = db.query(models.MarketingContact).filter(
+                models.MarketingContact.doctor_prescriber_id.in_(doctor_ids)
+            ).all()
+            for contact in marketing_contacts:
+                remaining_sources = [source for source in (contact.sources or "").split(",")
+                    if source and source != "doctor_prescriber"]
+                if remaining_sources:
+                    contact.sources = ",".join(remaining_sources)
+                    contact.doctor_prescriber_id = None
+                else:
+                    db.delete(contact)
+                cleaned_marketing += 1
+
+            if doctor_codes:
+                cleared_orders = db.query(models.MarketplaceOrder).filter(
+                    models.MarketplaceOrder.doctor_prescriber_identifier.in_(doctor_codes)
+                ).update({models.MarketplaceOrder.doctor_prescriber_identifier: None},
+                    synchronize_session=False)
+
+            for doctor in doctors:
+                db.delete(doctor)
+
+        details = json.dumps({
+            "doctor_emails": sorted(target_emails),
+            "doctors_deleted": len(doctors),
+            "wallet_registrations_deleted": deleted_wallets,
+            "commission_transactions_deleted": deleted_transactions,
+            "marketing_contacts_cleaned": cleaned_marketing,
+            "marketplace_order_references_cleared": cleared_orders,
+        })
+        db.execute(text(
+            "INSERT INTO app_cleanup_log (cleanup_key, details) VALUES (:cleanup_key, :details)"
+        ), {"cleanup_key": cleanup_key, "details": details})
+        db.commit()
+        print("one-time doctor module reset:", details, flush=True)
+    except Exception as exc:
+        db.rollback()
+        print("one-time doctor module reset failed:", str(exc), flush=True)
+    finally:
+        db.close()
 
 
 @app.on_event("startup")
