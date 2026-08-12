@@ -215,11 +215,12 @@ def create_payphone_link(
         "clientTransactionId": client_transaction_id,
         "storeId": str(PAYPHONE_STORE_ID),
         "additionalData": description,
-        "responseUrl": PAYPHONE_RESPONSE_URL,
-        "cancellationUrl": PAYPHONE_WEB_RETURN_URL,
+        "oneTime": True,
+        "expireIn": 0,
+        "isAmountEditable": False,
     }
 
-    url = f"{PAYPHONE_BASE_URL}/button/Prepare"
+    url = f"{PAYPHONE_BASE_URL}/Links"
 
     try:
         response = requests.post(

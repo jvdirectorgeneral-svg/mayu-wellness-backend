@@ -13,7 +13,9 @@ import models
 from marketing_contacts import upsert_marketing_contact
 from notification_service import (
     add_tracking_history,
+    mayu_email_header,
     notify_customer_order,
+    safe_send_email,
     safe_send_push_to_roles,
 )
 from pharmacy_loyalty import (
@@ -581,6 +583,31 @@ def sync_marketplace_doctor_wallet_after_commit(
         if isinstance(apple_sync, dict) else 0,
         "google_updated": bool((google_sync or {}).get("updated"))
         if isinstance(google_sync, dict) else False,
+    }
+    subject = "Nueva comisión acreditada · Doctor Prescriptor Mayu"
+    message = doctor_result["wallet_notification"]["message"]
+    email_sent = safe_send_email(
+        doctor.email,
+        subject,
+        f"""
+        <div style="max-width:620px;margin:auto;font-family:Arial,sans-serif;color:#17201f">
+          {mayu_email_header("Doctor Prescriptor Mayu")}
+          <div style="padding:24px;border:1px solid #dce7e5;border-top:0;border-radius:0 0 18px 18px">
+            <p>Hola <strong>{doctor.name}</strong>,</p>
+            <p>Una compra vinculada a tu código fue confirmada.</p>
+            <p><strong>Pedido:</strong> {order_code or '-'}</p>
+            <p><strong>Comisión acreditada:</strong> ${commission:.2f} USD</p>
+            <p><strong>Nuevo saldo pendiente:</strong> ${balance:.2f} USD</p>
+            <p>Tu tarjeta Wallet fue actualizada automáticamente.</p>
+          </div>
+        </div>
+        """,
+    )
+    doctor_result["doctor_notification"] = {
+        "email_sent": email_sent,
+        "email": doctor.email,
+        "subject": subject,
+        "message": message,
     }
     doctor_result["doctor_code"] = doctor.doctor_code
     doctor_result["order_code"] = order_code
