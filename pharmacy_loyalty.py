@@ -195,6 +195,10 @@ def normalize_phone(value: Optional[str]) -> str:
 def safe_send_pharmacy_email(to_email: str, subject: str, message: str):
     resend_api_key = os.getenv("RESEND_API_KEY")
     from_email = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+    logo_url = os.getenv(
+        "MAYU_EMAIL_LOGO_URL",
+        "https://mayuwellnesclub.com/mayu-email-logo.png",
+    )
 
     if not resend_api_key or not to_email:
         return {"sent": False, "detail": "Email no configurado"}
@@ -207,13 +211,19 @@ def safe_send_pharmacy_email(to_email: str, subject: str, message: str):
                 "to": [to_email],
                 "subject": subject,
                 "html": f"""
-                <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
-                    <h2 style="margin-bottom:16px; color:#00695C;">Mayu Magistral</h2>
+                <div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:24px;color:#1d2525">
+                    <div style="text-align:center;background:#006054;padding:22px;border-radius:18px 18px 0 0">
+                      <img src="{logo_url}" alt="Mayu Salud Funcional" width="210"
+                        style="display:block;width:210px;max-width:80%;height:auto;margin:0 auto;border:0" />
+                      <div style="color:#ffffff;font-size:18px;font-weight:bold;margin-top:12px">Mayu Magistral</div>
+                    </div>
+                    <div style="padding:24px;border:1px solid #d8e6e2;border-top:0;border-radius:0 0 18px 18px">
                     <div style="font-size:16px; line-height:1.7; white-space:pre-line;">
                         {message}
                     </div>
                     <br>
                     <p style="color:#00695C;">Equipo Mayu Magistral</p>
+                    </div>
                 </div>
                 """,
             }

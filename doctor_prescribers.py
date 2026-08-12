@@ -57,6 +57,10 @@ security = HTTPBearer()
 COMMISSION_RATE_BPS = 3000
 DOCTOR_WALLET_CLASS_SUFFIX = "doctor_prescriptor_mayu"
 DOCTOR_WALLET_AUTH_PREFIX = "mayu-doctor-wallet"
+MAYU_EMAIL_LOGO_URL = os.getenv(
+    "MAYU_EMAIL_LOGO_URL",
+    "https://mayuwellnesclub.com/mayu-email-logo.png",
+)
 
 
 class DoctorRegisterRequest(BaseModel):
@@ -306,13 +310,18 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
     google_url = doctor_data.get("google_wallet_url") or ""
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;padding:24px;color:#1d2525">
-      <h2 style="color:#006054">Doctor Prescriptor Mayu</h2>
+      <div style="text-align:center;background:#006054;padding:22px;border-radius:18px 18px 0 0">
+        <img src="{MAYU_EMAIL_LOGO_URL}" alt="Mayu Salud Funcional" width="210"
+          style="display:block;width:210px;max-width:80%;height:auto;margin:0 auto;border:0" />
+        <div style="color:#ffffff;font-size:18px;font-weight:bold;margin-top:12px">Doctor Prescriptor Mayu</div>
+      </div>
+      <div style="padding:24px;border:1px solid #d8e6e2;border-top:0;border-radius:0 0 18px 18px">
       <p>Hola {name},</p>
       <p>Estos son los datos para recuperar tu tarjeta Doctor Prescriptor Mayu.</p>
       <div style="background:#f4f4f1;border-radius:18px;padding:18px;margin:18px 0">
         <p><strong>Código:</strong> {code}</p>
         <p><strong>Saldo pendiente:</strong> ${float(commission):.2f}</p>
-        <p><strong>Comisión:</strong> 30% médico prescriptor</p>
+        <p><strong>Beneficios:</strong> 30% en efectivo/WhatsApp y 22% con tarjeta/PayPhone.</p>
       </div>
       <p style="text-align:center">
         <img src="{qr_url}" alt="QR Doctor Prescriptor Mayu" style="max-width:220px;width:100%;border-radius:16px" />
@@ -321,6 +330,7 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
       <p><a href="{apple_url}">Descargar Wallet iOS</a></p>
       <p><a href="{google_url}">Descargar Wallet Android</a></p>
       <p style="font-size:13px;color:#6b6b6b">Si todavía no tienes Wallet emitida, este enlace igualmente te permite recuperar tu código y QR.</p>
+      </div>
     </div>
     """
 

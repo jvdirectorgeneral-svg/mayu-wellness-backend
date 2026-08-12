@@ -8,6 +8,21 @@ from sqlalchemy.orm import Session
 import models
 from marketing import send_push_to_latest_user_token
 
+MAYU_EMAIL_LOGO_URL = os.getenv(
+    "MAYU_EMAIL_LOGO_URL",
+    "https://mayuwellnesclub.com/mayu-email-logo.png",
+)
+
+
+def mayu_email_header(title: str) -> str:
+    return f"""
+    <div style="text-align:center;background:#006054;padding:22px;border-radius:18px 18px 0 0">
+      <img src="{MAYU_EMAIL_LOGO_URL}" alt="Mayu Salud Funcional"
+        width="210" style="display:block;width:210px;max-width:80%;height:auto;margin:0 auto;border:0" />
+      <div style="color:#ffffff;font-size:18px;font-weight:bold;margin-top:12px">{html.escape(title)}</div>
+    </div>
+    """
+
 
 def safe_send_email(to_email: Optional[str], subject: str, html_body: str) -> bool:
     if not to_email:
@@ -106,7 +121,7 @@ def notify_customer_order(
             doctor_notice = f"""
             <div style="margin:16px 0;padding:14px 16px;border-radius:14px;background:#f4f4f1;border:1px solid #d8e6e2">
               <p style="margin:0 0 8px 0"><strong>Doctor afiliado:</strong> {html.escape(order.doctor_prescriber_identifier or "")}</p>
-              <p style="margin:0 0 6px 0"><strong>Comisión registrada:</strong> 30% de la compra.</p>
+              <p style="margin:0 0 6px 0"><strong>Beneficio Doctor Prescriptor:</strong> 30% en efectivo/WhatsApp o 22% con tarjeta/PayPhone.</p>
               <p style="margin:0"><strong>Pago administrativo:</strong> mensual, cada día 21.</p>
             </div>
             """
@@ -133,14 +148,16 @@ def notify_customer_order(
         email,
         subject,
         f"""
-        <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;padding:24px">
-          <h2>Farmacia Mayu</h2>
+        <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;padding:24px;color:#1d2525">
+          {mayu_email_header("Farmacia Mayu")}
+          <div style="padding:24px;border:1px solid #d8e6e2;border-top:0;border-radius:0 0 18px 18px">
           <p>Hola {html.escape(order.customer_name or "cliente Mayu")},</p>
           <p>{html.escape(message)}</p>
           <p><strong>Pedido: {html.escape(order.order_code)}</strong></p>
           {detail}
           {tracking}
           <p>Gracias por confiar en Mayu Wellness Club.</p>
+          </div>
         </div>
         """,
     )
