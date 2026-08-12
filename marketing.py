@@ -2454,16 +2454,34 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
     if source: query = query.filter(MarketingContact.sources.ilike(f"%{source}%"))
     if tag: query = query.filter(MarketingContact.tags.ilike(f"%{tag.strip()}%"))
     if consent is not None: query = query.filter(MarketingContact.marketing_consent == consent)
-    items = query.order_by(MarketingContact.updated_at.desc()).limit(min(max(limit, 1), 500)).all()
-    total_doctors = db.query(MarketingContact).filter(
+    raw_items = query.order_by(MarketingContact.updated_at.desc()).limit(min(max(limit * 2, 1), 1000)).all()
+    items = []
+    seen_contacts = set()
+    for item in raw_items:
+        identity = item.normalized_email or item.normalized_phone or f"id:{item.id}"
+        if identity in seen_contacts:
+            continue
+        seen_contacts.add(identity)
+        items.append(item)
+        if len(items) >= min(max(limit, 1), 500):
+            break
+    doctor_rows = db.query(MarketingContact).filter(
         MarketingContact.sources.ilike("%doctor_prescriber%")
-    ).count()
-    authorized_doctors = db.query(MarketingContact).filter(
+    ).all()
+    total_doctors = len({
+        item.normalized_email or item.normalized_phone or f"id:{item.id}"
+        for item in doctor_rows
+    })
+    authorized_doctor_rows = db.query(MarketingContact).filter(
         MarketingContact.sources.ilike("%doctor_prescriber%"),
         MarketingContact.marketing_consent == True,
         MarketingContact.unsubscribed_at.is_(None),
-    ).count()
-    return {"total": query.count(), "total_doctors": total_doctors,
+    ).all()
+    authorized_doctors = len({
+        item.normalized_email or item.normalized_phone or f"id:{item.id}"
+        for item in authorized_doctor_rows
+    })
+    return {"total": len(items), "total_doctors": total_doctors,
         "authorized_doctors": authorized_doctors,
         "items": [directory_contact_to_dict(item) for item in items]}
 
