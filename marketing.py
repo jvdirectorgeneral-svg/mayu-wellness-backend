@@ -2,6 +2,8 @@ import os
 import json
 import csv
 import io
+import openpyxl
+import xlrd
 import resend
 import requests
 import cloudinary
@@ -2544,29 +2546,58 @@ def archive_marketing_contact(contact_id: int, db: Session = Depends(get_db),
 async def import_marketing_contacts_csv(file: UploadFile = File(...), import_tag: str = Form(...),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_marketing_user(current_user)
-    content = (await file.read()).decode("utf-8-sig")
+    raw_file = await file.read()
+    filename = (file.filename or "").lower()
+    if filename.endswith(".csv"):
+        rows = list(csv.DictReader(io.StringIO(raw_file.decode("utf-8-sig"))))
+    elif filename.endswith(".xlsx"):
+        workbook = openpyxl.load_workbook(io.BytesIO(raw_file), read_only=True, data_only=True)
+        sheet = workbook.active
+        values = list(sheet.iter_rows(values_only=True))
+        if not values:
+            raise HTTPException(status_code=400, detail="El archivo Excel está vacío")
+        headers = [str(value or "").strip().lower() for value in values[0]]
+        rows = [dict(zip(headers, row)) for row in values[1:]]
+    elif filename.endswith(".xls"):
+        workbook = xlrd.open_workbook(file_contents=raw_file)
+        sheet = workbook.sheet_by_index(0)
+        if sheet.nrows == 0:
+            raise HTTPException(status_code=400, detail="El archivo Excel está vacío")
+        headers = [str(sheet.cell_value(0, col) or "").strip().lower()
+            for col in range(sheet.ncols)]
+        rows = [dict(zip(headers, sheet.row_values(row)))
+            for row in range(1, sheet.nrows)]
+    else:
+        raise HTTPException(status_code=400,
+            detail="Formato no permitido. Usa Excel .xlsx, .xls o CSV")
     imported = 0; errors = []
-    for number, row in enumerate(csv.DictReader(io.StringIO(content)), start=2):
+    for number, row in enumerate(rows, start=2):
         try:
-            name = row.get("name") or row.get("nombre") or "Contacto Mayu"
-            email = row.get("email") or row.get("correo")
-            phone = row.get("phone") or row.get("telefono") or row.get("celular")
+            row = {str(key or "").strip().lower(): value for key, value in row.items()}
+            name = str(row.get("name") or row.get("nombre") or "Contacto Mayu").strip()
+            email = str(row.get("email") or row.get("correo") or "").strip() or None
+            phone_value = row.get("phone") or row.get("telefono") or row.get("teléfono") or row.get("celular")
+            phone = str(phone_value or "").strip().removesuffix(".0") or None
             if not email and not phone: raise ValueError("sin correo ni teléfono")
             consent_value = str(row.get("marketing_consent") or row.get("consentimiento") or "").lower()
             consent = consent_value in {"1", "true", "si", "sí", "yes"}
-            birth_raw = row.get("birth_date") or row.get("cumpleanos") or row.get("fecha_nacimiento")
+            birth_raw = row.get("birth_date") or row.get("cumpleanos") or row.get("cumpleaños") or row.get("fecha_nacimiento")
             birth_date = None
             if birth_raw:
+                if isinstance(birth_raw, datetime):
+                    birth_date = birth_raw
                 for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
                     try:
-                        birth_date = datetime.strptime(birth_raw.strip(), fmt)
+                        birth_date = datetime.strptime(str(birth_raw).strip(), fmt)
                         break
                     except ValueError:
                         continue
             upsert_marketing_contact(db, name=name, email=email, phone=phone, source="external",
-                city=row.get("city") or row.get("ciudad"), birth_date=birth_date,
-                tags=",".join(filter(None, [import_tag, row.get("tags") or row.get("etiquetas")])), marketing_consent=consent,
-                consent_source="csv_import")
+                city=str(row.get("city") or row.get("ciudad") or "").strip() or None,
+                birth_date=birth_date,
+                tags=",".join(filter(None, [import_tag,
+                    str(row.get("tags") or row.get("etiquetas") or "").strip()])),
+                marketing_consent=consent, consent_source="file_import")
             imported += 1
         except Exception as exc: errors.append({"line": number, "error": str(exc)})
     db.commit()

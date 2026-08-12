@@ -28,3 +28,5 @@ httpx[http2]
 resend
 cloudinary
 firebase-admin
+openpyxl
+xlrd
