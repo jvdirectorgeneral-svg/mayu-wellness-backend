@@ -860,18 +860,24 @@ def make_order_contact(
 
 
 def dedupe_contacts(contacts):
-    seen = set()
+    seen_emails = set()
+    seen_phones = set()
+    seen_fallback = set()
     unique = []
 
     for contact in contacts:
         email = (contact.get("email") or "").strip().lower()
         phone = normalize_whatsapp_phone(contact.get("phone")) or ""
-        key = email or phone or str(contact.get("id"))
-
-        if key in seen:
+        fallback = str(contact.get("id"))
+        if (email and email in seen_emails) or (phone and phone in seen_phones) or (
+            not email and not phone and fallback in seen_fallback
+        ):
             continue
-
-        seen.add(key)
+        if email:
+            seen_emails.add(email)
+        if phone:
+            seen_phones.add(phone)
+        seen_fallback.add(fallback)
         unique.append(contact)
 
     return unique
@@ -910,6 +916,7 @@ def get_audience_users(db: Session, target_group: str, audience_tag: Optional[st
         query = db.query(MarketingContact).filter(
             MarketingContact.marketing_consent == True,
             MarketingContact.unsubscribed_at.is_(None),
+            MarketingContact.archived_at.is_(None),
             MarketingContact.email_status.notin_(["bounced", "complained", "suppressed"]),
         )
         if target_group == "doctor_contacts":
@@ -2458,12 +2465,18 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
     if consent is not None: query = query.filter(MarketingContact.marketing_consent == consent)
     raw_items = query.order_by(MarketingContact.updated_at.desc()).limit(min(max(limit * 2, 1), 1000)).all()
     items = []
-    seen_contacts = set()
+    seen_emails = set()
+    seen_phones = set()
     for item in raw_items:
-        identity = item.normalized_email or item.normalized_phone or f"id:{item.id}"
-        if identity in seen_contacts:
+        email_identity = item.normalized_email
+        phone_identity = item.normalized_phone
+        if ((email_identity and email_identity in seen_emails) or
+            (phone_identity and phone_identity in seen_phones)):
             continue
-        seen_contacts.add(identity)
+        if email_identity:
+            seen_emails.add(email_identity)
+        if phone_identity:
+            seen_phones.add(phone_identity)
         items.append(item)
         if len(items) >= min(max(limit, 1), 500):
             break

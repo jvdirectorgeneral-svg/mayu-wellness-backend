@@ -413,6 +413,7 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                         "key": "commission",
                         "label": "SALDO PENDIENTE",
                         "value": commission_value,
+                        "changeMessage": "Saldo Doctor Prescriptor actualizado: %@",
                     }
                 ],
                 "secondaryFields": [
@@ -423,8 +424,8 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                     },
                     {
                         "key": "rate",
-                        "label": "COMISION",
-                        "value": "30% medico prescriptor",
+                        "label": "BENEFICIOS",
+                        "value": "30% efectivo · 22% tarjeta",
                     },
                 ],
                 "auxiliaryFields": [
@@ -438,6 +439,12 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                     {"key": "email", "label": "Correo", "value": doctor.email},
                     {"key": "phone", "label": "Telefono", "value": doctor.phone},
                     {"key": "web", "label": "Tarjeta web", "value": public_url},
+                    {"key": "rules_cash", "label": "Compra en efectivo",
+                        "value": "30% si compra el doctor o sus pacientes."},
+                    {"key": "rules_card", "label": "Compra con tarjeta de crédito",
+                        "value": "22% si compra el doctor o sus pacientes."},
+                    {"key": "rules_note", "label": "Reglas Farmacia Mayu",
+                        "value": "Información general de afiliación Doctor Prescriptor. Los porcentajes mostrados son informativos."},
                 ],
             },
             "barcode": {
@@ -637,7 +644,7 @@ def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.Doct
                         headers={
                             "apns-topic": pass_type_id,
                             "apns-push-type": "background",
-                            "apns-priority": "10",
+                            "apns-priority": "5",
                         },
                         json={},
                     )
@@ -687,6 +694,9 @@ def register_doctor_apple_wallet_device(
 ):
     doctor = get_doctor_by_apple_serial(db, serial_number)
     verify_doctor_wallet_request(request, doctor)
+    configured_pass_type = os.getenv("APPLE_PASS_TYPE_ID")
+    if configured_pass_type and pass_type_identifier != configured_pass_type:
+        raise HTTPException(status_code=400, detail="Pass Type ID no corresponde a Doctor Prescriptor")
 
     if not payload.pushToken or not payload.pushToken.strip():
         raise HTTPException(status_code=400, detail="pushToken requerido")
@@ -1014,7 +1024,11 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         },
         "textModulesData": [
             {"id": "commission", "header": "Ganancias pendientes", "body": commission_value},
-            {"id": "rate", "header": "Comisión", "body": "30% médico prescriptor"},
+            {"id": "rate", "header": "Beneficios", "body": "30% efectivo · 22% tarjeta"},
+            {"id": "rules_cash", "header": "Compra en efectivo",
+                "body": "30% si compra el doctor o sus pacientes."},
+            {"id": "rules_card", "header": "Compra con tarjeta de crédito",
+                "body": "22% si compra el doctor o sus pacientes."},
             {"id": "code", "header": "Código", "body": doctor.doctor_code},
         ],
         "linksModuleData": {
@@ -1284,6 +1298,29 @@ def list_doctor_prescribers(
     return [doctor_to_dict(doctor, include_transactions=False) for doctor in doctors]
 
 
+@router.post("/admin/wallet/apple/test/{identifier}")
+def test_doctor_apple_wallet_push(
+    identifier: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+    doctor = _find_doctor(db, identifier)
+    if not doctor or not doctor.is_active:
+        raise HTTPException(status_code=404, detail="Doctor Prescriptor no válido")
+    doctor.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(doctor)
+    result = safe_send_doctor_apple_wallet_update_pushes(db, doctor)
+    return {
+        "doctor_id": doctor.id,
+        "doctor_code": doctor.doctor_code,
+        "registered_devices": safe_get_doctor_apple_wallet_registration_count(db, doctor.id),
+        "apple_push": result,
+        "note": "Apple Wallet actualiza el pase; el aviso visible depende de que Notificaciones y Actualizaciones automáticas estén activadas en iOS.",
+    }
+
+
 @router.get("/admin/transactions")
 def list_doctor_commission_transactions(
     db: Session = Depends(get_db),
@@ -1356,9 +1393,11 @@ def mark_doctor_commission_paid(
         )
     db.commit()
     db.refresh(tx)
+    wallet_sync = safe_update_doctor_wallets(db, tx.doctor) if tx.doctor else None
     return {
         "paid": True,
         "message": "OK pagado a Doctor Prescriptor",
+        "wallet_sync": wallet_sync,
         "transaction": {
             "id": tx.id,
             "payout_status": tx.payout_status,
