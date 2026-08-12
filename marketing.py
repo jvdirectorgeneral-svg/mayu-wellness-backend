@@ -2438,7 +2438,15 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
             consent_source="doctor_affiliation_digital_policy",
         )
     db.commit()
-    query = db.query(MarketingContact)
+    internal_user_ids = db.query(User.id).filter(
+        User.role.in_(["admin", "superadmin", "supervisor", "logistics", "marketing", "pharmacy_admin"])
+    )
+    query = db.query(MarketingContact).filter(or_(
+        MarketingContact.user_id.is_(None),
+        MarketingContact.user_id.notin_(internal_user_ids),
+        MarketingContact.sources.ilike("%doctor_prescriber%"),
+        MarketingContact.sources.ilike("%marketplace%"),
+    ))
     if search:
         pattern = f"%{search.strip()}%"
         query = query.filter(or_(MarketingContact.name.ilike(pattern),
@@ -2526,7 +2534,7 @@ async def import_marketing_contacts_csv(file: UploadFile = File(...), import_tag
 @router.post("/contacts/sync")
 def sync_marketing_contacts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_marketing_user(current_user)
-    for user in db.query(User).all():
+    for user in db.query(User).filter(User.role.in_(["member", "ambassador"])).all():
         upsert_marketing_contact(db, name=user.name, email=user.email, phone=user.phone,
             source="mayu_wellness", user_id=user.id,
             marketing_consent=bool(user.accepted_digital_policy), consent_source="digital_policy")
