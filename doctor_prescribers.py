@@ -299,6 +299,17 @@ def doctor_to_dict(doctor: models.DoctorPrescriber, include_transactions: bool =
     return data
 
 
+def doctor_admin_payment_to_dict(doctor: models.DoctorPrescriber):
+    """Datos de pago completos, únicamente para usuarios autorizados de Farmacia."""
+    data = doctor_to_dict(doctor, include_transactions=False)
+    data.update({
+        "bank_account_number": doctor.bank_account_number,
+        "bank_account_holder": doctor.name,
+        "bank_account_identification": doctor.cedula,
+    })
+    return data
+
+
 def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
     doctor_data = doctor_to_dict(doctor, include_transactions=False)
     name = doctor_data.get("name") or "Doctor Prescriptor Mayu"
@@ -1306,7 +1317,7 @@ def resolve_doctor_prescriber(
     doctor = _find_doctor(db, identifier)
     if not doctor or not doctor.is_active:
         raise HTTPException(status_code=404, detail="Doctor Prescriptor no válido")
-    return {"doctor": doctor_to_dict(doctor, include_transactions=False)}
+    return {"doctor": doctor_admin_payment_to_dict(doctor)}
 
 
 @router.get("/admin/doctors")
@@ -1320,7 +1331,7 @@ def list_doctor_prescribers(
         .order_by(models.DoctorPrescriber.created_at.desc())
         .all()
     )
-    return [doctor_to_dict(doctor, include_transactions=False) for doctor in doctors]
+    return [doctor_admin_payment_to_dict(doctor) for doctor in doctors]
 
 
 @router.post("/admin/wallet/apple/test/{identifier}")
