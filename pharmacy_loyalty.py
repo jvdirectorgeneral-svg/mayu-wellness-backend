@@ -62,6 +62,33 @@ POINT_VALUE_CENTS = 1000
 PHARMACY_WALLET_AUTH_PREFIX = "mayu-magistral-wallet"
 
 
+def configured_pharmacy_wallet_locations():
+    """Hasta 10 ubicaciones exactas configuradas en Render mediante JSON."""
+    raw = os.getenv("PHARMACY_WALLET_LOCATIONS_JSON", "").strip()
+    if not raw:
+        return []
+    try:
+        locations = json.loads(raw)
+        if not isinstance(locations, list):
+            return []
+        clean = []
+        for item in locations[:10]:
+            if not isinstance(item, dict):
+                continue
+            latitude = float(item["latitude"])
+            longitude = float(item["longitude"])
+            name = str(item.get("name") or "Farmacia Magistral Mayu cercana").strip()
+            clean.append({
+                "latitude": latitude,
+                "longitude": longitude,
+                "relevantText": name,
+            })
+        return clean
+    except Exception as exc:
+        print(f"[pharmacy-wallet] invalid PHARMACY_WALLET_LOCATIONS_JSON: {exc}")
+        return []
+
+
 class PharmacyCustomerRegister(BaseModel):
     name: str
     email: str
@@ -596,6 +623,12 @@ def sync_marketplace_loyalty_wallet_after_commit(
     wallet_sync = {
         "apple": safe_send_apple_wallet_update_pushes(db, card),
         "google": safe_update_google_wallet_object(customer, card),
+        "google_notification": safe_notify_google_wallet_points(
+            customer,
+            card,
+            "Puntos Mayu Magistral acreditados",
+            f"Tu compra {order_code or ''} sumó {points_earned} punto(s). Saldo actual: {card.points_balance} punto(s).",
+        ),
     }
     loyalty_result["push"] = push_result
     loyalty_result["wallet_sync"] = wallet_sync
@@ -972,14 +1005,32 @@ def test_push_by_pharmacy(
     if not card or not card.active or not card.pharmacy_customer_id:
         raise HTTPException(status_code=404, detail="Tarjeta Mayu Magistral no válida")
 
-    result = safe_send_push_to_pharmacy_customer(
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
+    firebase = safe_send_push_to_pharmacy_customer(
         db=db,
         pharmacy_customer_id=card.pharmacy_customer_id,
         title="🔔 Prueba Mayu Magistral",
         message="Esta es una prueba de notificaciones de tu Tarjeta Mayu Magistral.",
     )
+    apple = safe_send_apple_wallet_update_pushes(db, card)
+    google_update = safe_update_google_wallet_object(customer, card)
+    google_notification = safe_notify_google_wallet_points(
+        customer,
+        card,
+        "Prueba Mayu Magistral",
+        "Las notificaciones y el saldo de tu Tarjeta Mayu Magistral están sincronizados.",
+    )
     db.commit()
-    return {"push": result}
+    return {
+        "firebase": firebase,
+        "apple_wallet": apple,
+        "google_wallet": google_update,
+        "google_notification": google_notification,
+    }
 
 
 @router.post("/admin/redeem-all/{identifier}")
@@ -1039,6 +1090,16 @@ def redeem_all_points_by_pharmacy(
         "apple": safe_send_apple_wallet_update_pushes(db, card),
         "google": safe_update_google_wallet_object(customer, card) if customer else None,
     }
+    wallet_sync["google_notification"] = (
+        safe_notify_google_wallet_points(
+            customer,
+            card,
+            "Puntos Mayu Magistral utilizados",
+            f"Utilizaste {points_used} punto(s). Tu saldo actual es 0 puntos.",
+        )
+        if customer
+        else None
+    )
     db.commit()
     return {
         "redeemed": True,
@@ -1248,6 +1309,12 @@ def credit_by_pharmacy(
         )
         wallet_sync["apple"] = safe_send_apple_wallet_update_pushes(db, card)
         wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
+        wallet_sync["google_notification"] = safe_notify_google_wallet_points(
+            customer,
+            card,
+            "Puntos Mayu Magistral acreditados",
+            f"Sumaste {transaction.points_delta} punto(s). Saldo actual: {card.points_balance} punto(s).",
+        )
         db.commit()
 
     return {
@@ -1543,6 +1610,7 @@ def build_pharmacy_apple_wallet_file(customer, card):
                         "key": "points",
                         "label": "BALANCE EN PUNTOS",
                         "value": str(card.points_balance),
+                        "changeMessage": "Tu saldo Mayu Magistral cambió a %@ puntos.",
                     }
                 ],
                 "secondaryFields": [
@@ -1578,6 +1646,10 @@ def build_pharmacy_apple_wallet_file(customer, card):
                 "altText": card.card_code,
             },
         }
+        wallet_locations = configured_pharmacy_wallet_locations()
+        if wallet_locations:
+            pass_json["locations"] = wallet_locations
+            pass_json["maxDistance"] = 100
 
         with open(os.path.join(pass_dir, "pass.json"), "w", encoding="utf-8") as f:
             json.dump(pass_json, f, ensure_ascii=False, separators=(",", ":"))
@@ -1961,7 +2033,48 @@ def build_pharmacy_google_wallet_object(customer, card, issuer_id: str, class_id
             ]
         },
     }
+    locations = configured_pharmacy_wallet_locations()
+    if locations:
+        generic_object["merchantLocations"] = [
+            {"latitude": item["latitude"], "longitude": item["longitude"]}
+            for item in locations
+        ]
     return generic_object
+
+
+def safe_notify_google_wallet_points(customer, card, header: str, body: str):
+    issuer_id = os.getenv("GOOGLE_WALLET_ISSUER_ID")
+    if not issuer_id:
+        return {"sent": False, "detail": "Falta GOOGLE_WALLET_ISSUER_ID"}
+    try:
+        service_account_info = get_google_wallet_service_account()
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=["https://www.googleapis.com/auth/wallet_object.issuer"],
+        )
+        credentials.refresh(GoogleAuthRequest())
+        object_id = pharmacy_google_object_id(card, issuer_id)
+        response = requests.post(
+            f"https://walletobjects.googleapis.com/walletobjects/v1/genericObject/{object_id}/addMessage",
+            headers={
+                "Authorization": f"Bearer {credentials.token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "message": {
+                    "header": header,
+                    "body": body,
+                    "id": f"points_{card.id}_{int(datetime.utcnow().timestamp())}",
+                    "messageType": "TEXT_AND_NOTIFY",
+                }
+            },
+            timeout=20,
+        )
+        if response.status_code >= 300:
+            return {"sent": False, "status_code": response.status_code, "detail": response.text[:500]}
+        return {"sent": True, "object_id": object_id}
+    except Exception as exc:
+        return {"sent": False, "detail": str(exc)}
 
 
 def safe_update_google_wallet_object(customer, card):
