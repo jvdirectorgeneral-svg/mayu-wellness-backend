@@ -209,6 +209,10 @@ class PayphoneConfirmRequest(BaseModel):
     transactionId: Optional[str] = None
 
 
+class PharmacyTestOrdersCleanupRequest(BaseModel):
+    confirmation: str
+
+
 class PayphoneMarketplaceCartItem(BaseModel):
     product_id: int
     quantity: int = 1
@@ -1199,6 +1203,70 @@ def list_pending_pharmacy_payphone_payments(
             "items": marketplace.get("items") or [],
         })
     return {"items": items, "total": len(items)}
+
+
+@router.delete("/marketplace/admin/test-orders")
+def delete_pharmacy_marketplace_test_orders(
+    payload: PharmacyTestOrdersCleanupRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_payphone_pharmacy_admin(current_user)
+    if payload.confirmation.strip().upper() != "ELIMINAR PEDIDOS FARMACIA":
+        raise HTTPException(
+            status_code=400,
+            detail="Escribe ELIMINAR PEDIDOS FARMACIA para confirmar.",
+        )
+
+    order_ids = [row[0] for row in db.query(models.MarketplaceOrder.id).all()]
+    deleted_tracking = 0
+    deleted_items = 0
+    deleted_orders = 0
+    detached_points_transactions = 0
+    if order_ids:
+        detached_points_transactions = (
+            db.query(models.PharmacyPointsTransaction)
+            .filter(models.PharmacyPointsTransaction.marketplace_order_id.in_(order_ids))
+            .update(
+                {models.PharmacyPointsTransaction.marketplace_order_id: None},
+                synchronize_session=False,
+            )
+        )
+        deleted_tracking = (
+            db.query(models.MarketplaceOrderTrackingHistory)
+            .filter(models.MarketplaceOrderTrackingHistory.marketplace_order_id.in_(order_ids))
+            .delete(synchronize_session=False)
+        )
+        deleted_items = (
+            db.query(models.MarketplaceOrderItem)
+            .filter(models.MarketplaceOrderItem.order_id.in_(order_ids))
+            .delete(synchronize_session=False)
+        )
+        deleted_orders = (
+            db.query(models.MarketplaceOrder)
+            .filter(models.MarketplaceOrder.id.in_(order_ids))
+            .delete(synchronize_session=False)
+        )
+
+    deleted_payphone_requests = (
+        db.query(models.MembershipPayment)
+        .filter(
+            models.MembershipPayment.provider == "payphone",
+            models.MembershipPayment.payment_type == "marketplace_pharmacy",
+            models.MembershipPayment.status.in_(["created", "pending"]),
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return {
+        "message": "Bandejas de Administrador y Logística Farmacia limpiadas.",
+        "deleted_orders": deleted_orders,
+        "deleted_items": deleted_items,
+        "deleted_tracking": deleted_tracking,
+        "deleted_payphone_requests": deleted_payphone_requests,
+        "detached_points_transactions": detached_points_transactions,
+        "financial_balances_preserved": True,
+    }
 
 
 @router.post("/marketplace/admin/payments/{payment_id}/confirm")
