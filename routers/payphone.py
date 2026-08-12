@@ -155,17 +155,28 @@ def safe_set(obj, attr, value):
 
 def extract_payphone_link(data):
     if isinstance(data, str):
-        return data
+        value = data.strip()
+        return value if value.startswith(("http://", "https://")) else None
 
     if isinstance(data, dict):
-        return (
-            data.get("link")
-            or data.get("url")
-            or data.get("paymentUrl")
-            or data.get("payment_url")
-            or data.get("shortUrl")
-            or data.get("short_url")
-        )
+        link_keys = {
+            "link", "url", "paymentUrl", "payment_url", "approvalUrl",
+            "approval_url", "shortUrl", "short_url", "paymentLink", "payment_link",
+        }
+        for key in link_keys:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip().startswith(("http://", "https://")):
+                return value.strip()
+        for value in data.values():
+            nested = extract_payphone_link(value)
+            if nested:
+                return nested
+
+    if isinstance(data, list):
+        for value in data:
+            nested = extract_payphone_link(value)
+            if nested:
+                return nested
 
     return None
 
