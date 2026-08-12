@@ -31,6 +31,7 @@ def _merge_csv(current: Optional[str], value: Optional[str]) -> str:
 def upsert_marketing_contact(db: Session, *, name: Optional[str], email: Optional[str] = None,
     phone: Optional[str] = None, source: str, user_id: Optional[int] = None,
     doctor_prescriber_id: Optional[int] = None, tags: Optional[str] = None,
+    city: Optional[str] = None, birth_date: Optional[datetime] = None,
     marketing_consent: Optional[bool] = None, consent_source: Optional[str] = None,
     **_ignored):
     normalized_email = normalize_email(email)
@@ -69,6 +70,8 @@ def upsert_marketing_contact(db: Session, *, name: Optional[str], email: Optiona
     contact.user_id = user_id or contact.user_id
     contact.doctor_prescriber_id = doctor_prescriber_id or contact.doctor_prescriber_id
     contact.tags = _merge_csv(contact.tags, tags)
+    contact.city = city or contact.city
+    contact.birth_date = birth_date or contact.birth_date
     db.flush()
     return contact
 
@@ -76,9 +79,12 @@ def upsert_marketing_contact(db: Session, *, name: Optional[str], email: Optiona
 def contact_to_dict(contact):
     return {"id": contact.id, "user_id": contact.user_id,
         "doctor_prescriber_id": contact.doctor_prescriber_id, "name": contact.name,
-        "email": contact.email, "phone": contact.phone,
+        "email": contact.email, "phone": contact.phone, "city": contact.city,
+        "birth_date": contact.birth_date,
         "sources": [x for x in (contact.sources or "").split(",") if x],
         "tags": [x for x in (contact.tags or "").split(",") if x],
         "marketing_consent": contact.marketing_consent, "consent_source": contact.consent_source,
         "consent_at": contact.consent_at, "unsubscribed_at": contact.unsubscribed_at,
+        "email_status": contact.email_status, "bounce_count": contact.bounce_count,
+        "complaint_count": contact.complaint_count,
         "created_at": contact.created_at, "updated_at": contact.updated_at}

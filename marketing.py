@@ -6,10 +6,11 @@ import resend
 import requests
 import cloudinary
 import cloudinary.uploader
+from svix.webhooks import Webhook, WebhookVerificationError
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel
@@ -134,10 +135,13 @@ def send_marketing_email(
         </div>
         """
 
-    resend.Emails.send({
+    return resend.Emails.send({
         "from": from_email,
         "to": [to_email],
         "subject": subject,
+        "headers": {
+            "List-Unsubscribe": f"<mailto:{os.getenv('MARKETING_UNSUBSCRIBE_EMAIL', 'privacidad@mayuwellnesclub.com')}?subject=BAJA>",
+        },
         "html": f"""
         <div style="font-family:Arial,sans-serif; max-width:620px; margin:auto; padding:24px;">
             <div style="margin-bottom:24px; text-align:center;">
@@ -688,6 +692,7 @@ class MarketingCampaignCreateRequest(BaseModel):
     image_url: Optional[str] = None
     channel: str = "push"
     target_group: str = "members"
+    audience_tag: Optional[str] = None
     status: str = "draft"
     scheduled_at: Optional[datetime] = None
 
@@ -699,6 +704,7 @@ class MarketingCampaignUpdateRequest(BaseModel):
     image_url: Optional[str] = None
     channel: Optional[str] = None
     target_group: Optional[str] = None
+    audience_tag: Optional[str] = None
     status: Optional[str] = None
     scheduled_at: Optional[datetime] = None
 
@@ -722,6 +728,8 @@ class MarketingContactRequest(BaseModel):
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
+    city: Optional[str] = None
+    birth_date: Optional[datetime] = None
     tags: Optional[str] = None
     marketing_consent: bool = False
     consent_source: Optional[str] = "manual"
@@ -736,6 +744,7 @@ def campaign_to_dict(campaign: MarketingCampaign):
         "image_url": getattr(campaign, "image_url", None),
         "channel": campaign.channel,
         "target_group": campaign.target_group,
+        "audience_tag": campaign.audience_tag,
         "audience": campaign.target_group,
         "status": campaign.status,
         "created_by": campaign.created_by,
@@ -895,16 +904,19 @@ def contact_to_dict(contact, channel: str, message: Optional[str] = None):
     }
 
 
-def get_audience_users(db: Session, target_group: str):
+def get_audience_users(db: Session, target_group: str, audience_tag: Optional[str] = None):
     if target_group in {"mayu_contacts", "doctor_contacts", "external_contacts"}:
         query = db.query(MarketingContact).filter(
             MarketingContact.marketing_consent == True,
             MarketingContact.unsubscribed_at.is_(None),
+            MarketingContact.email_status.notin_(["bounced", "complained", "suppressed"]),
         )
         if target_group == "doctor_contacts":
             query = query.filter(MarketingContact.sources.ilike("%doctor_prescriber%"))
         elif target_group == "external_contacts":
             query = query.filter(MarketingContact.sources.ilike("%external%"))
+        if audience_tag:
+            query = query.filter(MarketingContact.tags.ilike(f"%{audience_tag.strip()}%"))
         return [
             {
                 "id": f"contact:{item.id}", "user_id": item.user_id,
@@ -1052,7 +1064,7 @@ def send_push_to_latest_user_token(
 
 
 def send_campaign_now(db: Session, campaign: MarketingCampaign):
-    contacts = get_audience_users(db, campaign.target_group)
+    contacts = get_audience_users(db, campaign.target_group, campaign.audience_tag)
 
     created_recipients = 0
     total_success = 0
@@ -2413,18 +2425,38 @@ def marketing_dashboard(
 
 @router.get("/contacts")
 def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] = None,
-    consent: Optional[bool] = None, limit: int = 200, db: Session = Depends(get_db),
+    tag: Optional[str] = None, consent: Optional[bool] = None, limit: int = 200, db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)):
     require_marketing_user(current_user)
+    # Backfill legacy doctors every time the CRM opens. This is idempotent and
+    # makes doctors created before the CRM visible without a manual repair.
+    for doctor in db.query(DoctorPrescriber).all():
+        upsert_marketing_contact(
+            db, name=doctor.name, email=doctor.email, phone=doctor.phone,
+            city=doctor.city, source="doctor_prescriber",
+            doctor_prescriber_id=doctor.id,
+        )
+    db.commit()
     query = db.query(MarketingContact)
     if search:
         pattern = f"%{search.strip()}%"
         query = query.filter(or_(MarketingContact.name.ilike(pattern),
             MarketingContact.email.ilike(pattern), MarketingContact.phone.ilike(pattern)))
     if source: query = query.filter(MarketingContact.sources.ilike(f"%{source}%"))
+    if tag: query = query.filter(MarketingContact.tags.ilike(f"%{tag.strip()}%"))
     if consent is not None: query = query.filter(MarketingContact.marketing_consent == consent)
     items = query.order_by(MarketingContact.updated_at.desc()).limit(min(max(limit, 1), 500)).all()
-    return {"total": query.count(), "items": [directory_contact_to_dict(item) for item in items]}
+    total_doctors = db.query(MarketingContact).filter(
+        MarketingContact.sources.ilike("%doctor_prescriber%")
+    ).count()
+    authorized_doctors = db.query(MarketingContact).filter(
+        MarketingContact.sources.ilike("%doctor_prescriber%"),
+        MarketingContact.marketing_consent == True,
+        MarketingContact.unsubscribed_at.is_(None),
+    ).count()
+    return {"total": query.count(), "total_doctors": total_doctors,
+        "authorized_doctors": authorized_doctors,
+        "items": [directory_contact_to_dict(item) for item in items]}
 
 
 @router.post("/contacts")
@@ -2434,7 +2466,8 @@ def create_marketing_contact(payload: MarketingContactRequest, db: Session = Dep
     if not payload.email and not payload.phone:
         raise HTTPException(status_code=400, detail="Ingresa correo o teléfono")
     contact = upsert_marketing_contact(db, name=payload.name, email=payload.email,
-        phone=payload.phone, source="external", tags=payload.tags,
+        phone=payload.phone, source="external", tags=payload.tags, city=payload.city,
+        birth_date=payload.birth_date,
         marketing_consent=payload.marketing_consent, consent_source=payload.consent_source)
     db.commit(); db.refresh(contact)
     return {"message": "Contacto guardado", "contact": directory_contact_to_dict(contact)}
@@ -2447,6 +2480,7 @@ def update_marketing_contact(contact_id: int, payload: MarketingContactRequest,
     contact = db.query(MarketingContact).filter(MarketingContact.id == contact_id).first()
     if not contact: raise HTTPException(status_code=404, detail="Contacto no encontrado")
     contact.name = payload.name.strip(); contact.email = payload.email; contact.phone = payload.phone
+    contact.city = payload.city; contact.birth_date = payload.birth_date
     contact.tags = payload.tags; contact.marketing_consent = payload.marketing_consent
     contact.consent_source = payload.consent_source
     contact.consent_at = contact.consent_at or datetime.utcnow() if payload.marketing_consent else None
@@ -2456,7 +2490,7 @@ def update_marketing_contact(contact_id: int, payload: MarketingContactRequest,
 
 
 @router.post("/contacts/import-csv")
-async def import_marketing_contacts_csv(file: UploadFile = File(...),
+async def import_marketing_contacts_csv(file: UploadFile = File(...), import_tag: str = Form(...),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_marketing_user(current_user)
     content = (await file.read()).decode("utf-8-sig")
@@ -2469,8 +2503,18 @@ async def import_marketing_contacts_csv(file: UploadFile = File(...),
             if not email and not phone: raise ValueError("sin correo ni teléfono")
             consent_value = str(row.get("marketing_consent") or row.get("consentimiento") or "").lower()
             consent = consent_value in {"1", "true", "si", "sí", "yes"}
+            birth_raw = row.get("birth_date") or row.get("cumpleanos") or row.get("fecha_nacimiento")
+            birth_date = None
+            if birth_raw:
+                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+                    try:
+                        birth_date = datetime.strptime(birth_raw.strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
             upsert_marketing_contact(db, name=name, email=email, phone=phone, source="external",
-                tags=row.get("tags") or row.get("etiquetas"), marketing_consent=consent,
+                city=row.get("city") or row.get("ciudad"), birth_date=birth_date,
+                tags=",".join(filter(None, [import_tag, row.get("tags") or row.get("etiquetas")])), marketing_consent=consent,
                 consent_source="csv_import")
             imported += 1
         except Exception as exc: errors.append({"line": number, "error": str(exc)})
@@ -2500,10 +2544,87 @@ def sync_marketing_contacts(db: Session = Depends(get_db), current_user: User = 
     return {"message": "Fuentes Mayu sincronizadas", "total": db.query(MarketingContact).count()}
 
 
+@router.get("/contacts/tags")
+def list_marketing_tags(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    counts = {}
+    for contact in db.query(MarketingContact).all():
+        for tag in [item.strip() for item in (contact.tags or "").split(",") if item.strip()]:
+            counts[tag] = counts.get(tag, 0) + 1
+    return {"total": len(counts), "items": [
+        {"name": name, "contacts": count}
+        for name, count in sorted(counts.items(), key=lambda item: item[0].lower())
+    ]}
+
+
+@router.get("/deliverability-check")
+def marketing_deliverability_check(db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    from_email = os.getenv("FROM_EMAIL", "")
+    own_domain = "@mayuwellnesclub.com" in from_email.lower()
+    suppressed = db.query(MarketingContact).filter(
+        MarketingContact.email_status.in_(["bounced", "complained", "suppressed"])
+    ).count()
+    return {
+        "ready": bool(os.getenv("RESEND_API_KEY")) and own_domain,
+        "from_email": from_email or "No configurado",
+        "checks": {
+            "resend_api_key": bool(os.getenv("RESEND_API_KEY")),
+            "verified_sender_domain": own_domain,
+            "webhook_secret": bool(os.getenv("RESEND_WEBHOOK_SECRET")),
+            "suppressed_contacts": suppressed,
+        },
+        "dns_note": "SPF, DKIM y DMARC se verifican en Resend y Cloudflare DNS.",
+    }
+
+
+@router.post("/webhooks/resend")
+async def receive_resend_event(request: Request, db: Session = Depends(get_db)):
+    secret = os.getenv("RESEND_WEBHOOK_SECRET")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Webhook Resend no configurado")
+    raw_payload = await request.body()
+    try:
+        payload = Webhook(secret).verify(raw_payload, {
+            "svix-id": request.headers.get("svix-id", ""),
+            "svix-timestamp": request.headers.get("svix-timestamp", ""),
+            "svix-signature": request.headers.get("svix-signature", ""),
+        })
+    except WebhookVerificationError:
+        raise HTTPException(status_code=400, detail="Firma de webhook inválida")
+    event_type = str(payload.get("type") or "")
+    data = payload.get("data") or {}
+    recipients = data.get("to") or []
+    if isinstance(recipients, str): recipients = [recipients]
+    status_map = {
+        "email.delivered": "delivered", "email.bounced": "bounced",
+        "email.complained": "complained", "email.suppressed": "suppressed",
+        "email.failed": "failed",
+    }
+    if event_type in status_map:
+        for email in recipients:
+            normalized = str(email).strip().lower()
+            contact = db.query(MarketingContact).filter(
+                MarketingContact.normalized_email == normalized
+            ).first()
+            if not contact: continue
+            contact.email_status = status_map[event_type]
+            contact.last_email_event_at = datetime.utcnow()
+            if event_type == "email.bounced": contact.bounce_count += 1
+            if event_type == "email.complained":
+                contact.complaint_count += 1
+                contact.marketing_consent = False
+                contact.unsubscribed_at = datetime.utcnow()
+    db.commit()
+    return {"received": True}
+
+
 @router.get("/audience-preview")
 def audience_preview(
     channel: str = "email",
     target_group: str = "members",
+    audience_tag: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -2515,7 +2636,7 @@ def audience_preview(
     if target_group not in VALID_TARGET_GROUPS:
         raise HTTPException(status_code=400, detail="Audiencia inválida")
 
-    users = get_audience_users(db, target_group)
+    users = get_audience_users(db, target_group, audience_tag)
 
     return {
         "channel": channel,
@@ -2551,6 +2672,7 @@ def create_campaign(
         image_url=payload.image_url.strip() if payload.image_url else None,
         channel=payload.channel,
         target_group=payload.target_group,
+        audience_tag=payload.audience_tag.strip() if payload.audience_tag else None,
         status=final_status,
         scheduled_at=payload.scheduled_at,
         created_by=current_user.id,

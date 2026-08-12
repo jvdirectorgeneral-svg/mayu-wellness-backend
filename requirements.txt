@@ -26,5 +26,6 @@ requests
 httpx[http2]
 
 resend
+svix
 cloudinary
 firebase-admin

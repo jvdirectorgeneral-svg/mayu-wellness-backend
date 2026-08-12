@@ -919,6 +919,7 @@ class MarketingCampaign(Base):
 
     channel = Column(String, nullable=False, default="email")
     target_group = Column(String, nullable=False, default="members")
+    audience_tag = Column(String, nullable=True)
 
     status = Column(String, nullable=False, default="draft")
 
@@ -1051,6 +1052,8 @@ class MarketingContact(Base):
     name = Column(String, nullable=False, default="Contacto Mayu")
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    birth_date = Column(DateTime, nullable=True)
     normalized_email = Column(String, nullable=True, index=True)
     normalized_phone = Column(String, nullable=True, index=True)
     sources = Column(Text, nullable=False, default="external")
@@ -1059,6 +1062,10 @@ class MarketingContact(Base):
     consent_source = Column(String, nullable=True)
     consent_at = Column(DateTime, nullable=True)
     unsubscribed_at = Column(DateTime, nullable=True)
+    email_status = Column(String, nullable=False, default="unknown", index=True)
+    bounce_count = Column(Integer, nullable=False, default=0)
+    complaint_count = Column(Integer, nullable=False, default=0)
+    last_email_event_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

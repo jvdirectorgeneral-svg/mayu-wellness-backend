@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import engine, Base, SessionLocal
+from sqlalchemy import text
 from renewal_processing import reconcile_all_paid_subscription_renewals
 
 from users import router as users_router
@@ -35,6 +36,20 @@ import models
 
 
 Base.metadata.create_all(bind=engine)
+
+# Small, idempotent compatibility migration for installations that created the
+# marketing tables before CRM fields were added.
+with engine.begin() as connection:
+    for statement in (
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS city VARCHAR",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS birth_date TIMESTAMP",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS email_status VARCHAR NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS bounce_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS complaint_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS last_email_event_at TIMESTAMP",
+        "ALTER TABLE marketing_campaigns ADD COLUMN IF NOT EXISTS audience_tag VARCHAR",
+    ):
+        connection.execute(text(statement))
 
 
 app = FastAPI(
