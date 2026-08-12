@@ -89,6 +89,10 @@ class PharmacyPurchaseCredit(BaseModel):
     note: Optional[str] = None
 
 
+class PharmacyPointsRedemption(BaseModel):
+    note: Optional[str] = None
+
+
 class PharmacyPushTokenRequest(BaseModel):
     token: str
     platform: Optional[str] = None
@@ -976,6 +980,75 @@ def test_push_by_pharmacy(
     )
     db.commit()
     return {"push": result}
+
+
+@router.post("/admin/redeem-all/{identifier}")
+def redeem_all_points_by_pharmacy(
+    identifier: str,
+    payload: PharmacyPointsRedemption,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_pharmacy_admin(current_user)
+    card = (
+        db.query(models.PharmacyLoyaltyCard)
+        .filter(
+            (models.PharmacyLoyaltyCard.qr_token == identifier)
+            | (models.PharmacyLoyaltyCard.card_code == identifier)
+        )
+        .first()
+    )
+    if not card or not card.active or not card.pharmacy_customer_id:
+        raise HTTPException(status_code=404, detail="Tarjeta Mayu Magistral no válida")
+
+    points_used = int(card.points_balance or 0)
+    if points_used <= 0:
+        raise HTTPException(status_code=409, detail="La tarjeta ya tiene saldo de 0 puntos")
+
+    transaction = models.PharmacyPointsTransaction(
+        card_id=card.id,
+        purchase_amount_cents=0,
+        points_delta=-points_used,
+        remainder_after_cents=card.accumulated_cents or 0,
+        source="pharmacy_redemption",
+        reference=f"redemption:{card.id}:{int(datetime.utcnow().timestamp())}",
+        note=(payload.note or "Puntos utilizados en Farmacia Mayu").strip(),
+        created_by=current_user.id,
+    )
+    card.points_balance = 0
+    card.updated_at = datetime.utcnow()
+    db.add(transaction)
+    db.commit()
+    db.refresh(card)
+
+    customer = (
+        db.query(models.PharmacyCustomer)
+        .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
+        .first()
+    )
+    push_result = safe_send_push_to_pharmacy_customer(
+        db=db,
+        pharmacy_customer_id=card.pharmacy_customer_id,
+        title="🎁 Puntos Mayu Magistral utilizados",
+        message=(
+            f"Utilizaste {points_used} punto(s) en Farmacia Mayu. "
+            "Tu saldo actual es 0 puntos."
+        ),
+    )
+    wallet_sync = {
+        "apple": safe_send_apple_wallet_update_pushes(db, card),
+        "google": safe_update_google_wallet_object(customer, card) if customer else None,
+    }
+    db.commit()
+    return {
+        "redeemed": True,
+        "points_used": points_used,
+        "points_balance": 0,
+        "transaction_id": transaction.id,
+        "card": card_to_dict(customer, card),
+        "push": push_result,
+        "wallet_sync": wallet_sync,
+    }
 
 
 def safe_get_apple_wallet_registration_count(db: Session, card_id: int):
