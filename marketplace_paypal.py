@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 import models
+from marketing_contacts import upsert_marketing_contact
 from notification_service import (
     add_tracking_history,
     notify_customer_order,
@@ -509,6 +510,12 @@ def fulfill_pharmacy_payment_if_needed(payment: models.MembershipPayment, db: Se
     db.flush()
     order.whatsapp_message = build_marketplace_whatsapp_message(order)
     db.flush()
+    upsert_marketing_contact(
+        db, name=order.customer_name, email=order.customer_email or order.billing_email,
+        phone=order.customer_phone or order.billing_phone, source="marketplace",
+        user_id=order.user_id, city=order.city, purchase_kind="marketplace",
+        purchase_at=order.paid_at, increment_purchase=True,
+    )
 
     add_tracking_history(
         db,
@@ -668,6 +675,11 @@ def fulfill_education_payment_if_needed(payment: models.MembershipPayment, db: S
 
     db.add(order)
     db.flush()
+    upsert_marketing_contact(
+        db, name=order.buyer_name, email=order.buyer_email, phone=order.buyer_phone,
+        source="education_marketplace", user_id=order.user_id,
+        purchase_kind="education", purchase_at=order.paid_at, increment_purchase=True,
+    )
 
     public_url = os.getenv(
         "MAYU_APP_PUBLIC_URL",

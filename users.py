@@ -7,6 +7,7 @@ from database import SessionLocal
 from auth import hash_password, verify_password, create_access_token
 from dependencies import get_current_user
 import models
+from marketing_contacts import upsert_marketing_contact
 
 import os
 import secrets
@@ -374,6 +375,12 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    upsert_marketing_contact(
+        db, name=new_user.name, email=new_user.email, phone=new_user.phone,
+        source="mayu_wellness", user_id=new_user.id,
+        marketing_consent=True, consent_source="digital_policy",
+    )
+    db.commit()
 
     if ambassador:
         referral = models.AmbassadorReferral(

@@ -46,6 +46,7 @@ from member_cards import (
     zip_pkpass,
 )
 from notification_service import safe_send_email
+from marketing_contacts import upsert_marketing_contact
 import models
 import qrcode
 import jwt as pyjwt
@@ -74,6 +75,7 @@ class DoctorRegisterRequest(BaseModel):
     accepted_terms: bool = True
     accepted_privacy_policy: bool = True
     accepted_digital_policy: bool = True
+    marketing_consent: bool = False
 
 
 class DoctorLoginRequest(BaseModel):
@@ -1167,6 +1169,13 @@ def register_doctor_prescriber(
     db.add(doctor)
     db.commit()
     db.refresh(doctor)
+    upsert_marketing_contact(
+        db, name=doctor.name, email=doctor.email, phone=doctor.phone,
+        source="doctor_prescriber", doctor_prescriber_id=doctor.id, city=doctor.city,
+        marketing_consent=payload.marketing_consent,
+        consent_source="doctor_registration" if payload.marketing_consent else None,
+    )
+    db.commit()
 
     access_token = create_access_token(
         {"sub": f"doctor_prescriber:{doctor.id}", "type": "doctor_prescriber"}

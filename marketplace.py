@@ -10,6 +10,7 @@ import cloudinary.uploader
 from database import SessionLocal
 from dependencies import get_current_user
 import models
+from marketing_contacts import upsert_marketing_contact
 from notification_service import (
     add_tracking_history,
     notify_customer_order,
@@ -998,6 +999,13 @@ def create_marketplace_order(
     db.add(order)
     db.commit()
     db.refresh(order)
+    upsert_marketing_contact(
+        db, name=order.customer_name, email=order.customer_email or order.billing_email,
+        phone=order.customer_phone or order.billing_phone, source="marketplace",
+        user_id=order.user_id, city=order.city, purchase_kind="marketplace",
+        purchase_at=order.created_at, increment_purchase=True,
+    )
+    db.commit()
 
     for item_data in order_items_data:
         product = item_data["product"]

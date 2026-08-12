@@ -1042,6 +1042,27 @@ class MarketingEvent(Base):
     )
 
 
+class MarketingContact(Base):
+    __tablename__ = "marketing_contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    doctor_prescriber_id = Column(Integer, ForeignKey("doctor_prescribers.id"), nullable=True, index=True)
+    name = Column(String, nullable=False, default="Contacto Mayu")
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    normalized_email = Column(String, nullable=True, index=True)
+    normalized_phone = Column(String, nullable=True, index=True)
+    sources = Column(Text, nullable=False, default="external")
+    tags = Column(Text, nullable=True)
+    marketing_consent = Column(Boolean, nullable=False, default=False, index=True)
+    consent_source = Column(String, nullable=True)
+    consent_at = Column(DateTime, nullable=True)
+    unsubscribed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class PushNotificationToken(Base):
     __tablename__ = "push_notification_tokens"
 

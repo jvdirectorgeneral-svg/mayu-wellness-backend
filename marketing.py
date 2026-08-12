@@ -1,5 +1,7 @@
 import os
 import json
+import csv
+import io
 import resend
 import requests
 import cloudinary
@@ -31,7 +33,10 @@ from models import (
     Commission,
     MembershipPayment,
     Order,
+    DoctorPrescriber,
+    MarketingContact,
 )
+from marketing_contacts import contact_to_dict as directory_contact_to_dict, upsert_marketing_contact
 
 router = APIRouter(prefix="/marketing", tags=["marketing"])
 
@@ -56,6 +61,9 @@ VALID_TARGET_GROUPS = {
     "admin",
     "pharmacy_marketplace",
     "education_marketplace",
+    "mayu_contacts",
+    "doctor_contacts",
+    "external_contacts",
 }
 VALID_CAMPAIGN_STATUS = {"draft", "scheduled", "sent"}
 
@@ -710,6 +718,15 @@ class PushTestRequest(BaseModel):
     image_url: Optional[str] = None
 
 
+class MarketingContactRequest(BaseModel):
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    tags: Optional[str] = None
+    marketing_consent: bool = False
+    consent_source: Optional[str] = "manual"
+
+
 def campaign_to_dict(campaign: MarketingCampaign):
     return {
         "id": campaign.id,
@@ -879,6 +896,25 @@ def contact_to_dict(contact, channel: str, message: Optional[str] = None):
 
 
 def get_audience_users(db: Session, target_group: str):
+    if target_group in {"mayu_contacts", "doctor_contacts", "external_contacts"}:
+        query = db.query(MarketingContact).filter(
+            MarketingContact.marketing_consent == True,
+            MarketingContact.unsubscribed_at.is_(None),
+        )
+        if target_group == "doctor_contacts":
+            query = query.filter(MarketingContact.sources.ilike("%doctor_prescriber%"))
+        elif target_group == "external_contacts":
+            query = query.filter(MarketingContact.sources.ilike("%external%"))
+        return [
+            {
+                "id": f"contact:{item.id}", "user_id": item.user_id,
+                "name": item.name, "role": "marketing_contact",
+                "membership_active": None, "email": item.email, "phone": item.phone,
+                "source": item.sources,
+            }
+            for item in query.order_by(MarketingContact.name.asc()).all()
+        ]
+
     if target_group in {"members", "active_members", "inactive_members", "ambassadors"}:
         query = db.query(User).filter(User.is_active == True)
 
@@ -2350,6 +2386,11 @@ def marketing_dashboard(
     total_push_tokens = db.query(PushNotificationToken).filter(
         PushNotificationToken.is_active == True
     ).count()
+    total_contacts = db.query(MarketingContact).count()
+    total_contacts_with_consent = db.query(MarketingContact).filter(
+        MarketingContact.marketing_consent == True,
+        MarketingContact.unsubscribed_at.is_(None),
+    ).count()
 
     return {
         "total_campaigns": total_campaigns,
@@ -2362,10 +2403,101 @@ def marketing_dashboard(
         "total_clicked": total_clicked,
         "total_read": total_read,
         "total_push_tokens": total_push_tokens,
+        "total_contacts": total_contacts,
+        "total_contacts_with_consent": total_contacts_with_consent,
         "open_rate": round((total_opened / total_sent) * 100, 2) if total_sent else 0,
         "click_rate": round((total_clicked / total_sent) * 100, 2) if total_sent else 0,
         "read_rate": round((total_read / total_sent) * 100, 2) if total_sent else 0,
     }
+
+
+@router.get("/contacts")
+def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] = None,
+    consent: Optional[bool] = None, limit: int = 200, db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    query = db.query(MarketingContact)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.filter(or_(MarketingContact.name.ilike(pattern),
+            MarketingContact.email.ilike(pattern), MarketingContact.phone.ilike(pattern)))
+    if source: query = query.filter(MarketingContact.sources.ilike(f"%{source}%"))
+    if consent is not None: query = query.filter(MarketingContact.marketing_consent == consent)
+    items = query.order_by(MarketingContact.updated_at.desc()).limit(min(max(limit, 1), 500)).all()
+    return {"total": query.count(), "items": [directory_contact_to_dict(item) for item in items]}
+
+
+@router.post("/contacts")
+def create_marketing_contact(payload: MarketingContactRequest, db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    if not payload.email and not payload.phone:
+        raise HTTPException(status_code=400, detail="Ingresa correo o teléfono")
+    contact = upsert_marketing_contact(db, name=payload.name, email=payload.email,
+        phone=payload.phone, source="external", tags=payload.tags,
+        marketing_consent=payload.marketing_consent, consent_source=payload.consent_source)
+    db.commit(); db.refresh(contact)
+    return {"message": "Contacto guardado", "contact": directory_contact_to_dict(contact)}
+
+
+@router.put("/contacts/{contact_id}")
+def update_marketing_contact(contact_id: int, payload: MarketingContactRequest,
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    contact = db.query(MarketingContact).filter(MarketingContact.id == contact_id).first()
+    if not contact: raise HTTPException(status_code=404, detail="Contacto no encontrado")
+    contact.name = payload.name.strip(); contact.email = payload.email; contact.phone = payload.phone
+    contact.tags = payload.tags; contact.marketing_consent = payload.marketing_consent
+    contact.consent_source = payload.consent_source
+    contact.consent_at = contact.consent_at or datetime.utcnow() if payload.marketing_consent else None
+    contact.unsubscribed_at = None if payload.marketing_consent else datetime.utcnow()
+    db.commit(); db.refresh(contact)
+    return {"message": "Contacto actualizado", "contact": directory_contact_to_dict(contact)}
+
+
+@router.post("/contacts/import-csv")
+async def import_marketing_contacts_csv(file: UploadFile = File(...),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    content = (await file.read()).decode("utf-8-sig")
+    imported = 0; errors = []
+    for number, row in enumerate(csv.DictReader(io.StringIO(content)), start=2):
+        try:
+            name = row.get("name") or row.get("nombre") or "Contacto Mayu"
+            email = row.get("email") or row.get("correo")
+            phone = row.get("phone") or row.get("telefono") or row.get("celular")
+            if not email and not phone: raise ValueError("sin correo ni teléfono")
+            consent_value = str(row.get("marketing_consent") or row.get("consentimiento") or "").lower()
+            consent = consent_value in {"1", "true", "si", "sí", "yes"}
+            upsert_marketing_contact(db, name=name, email=email, phone=phone, source="external",
+                tags=row.get("tags") or row.get("etiquetas"), marketing_consent=consent,
+                consent_source="csv_import")
+            imported += 1
+        except Exception as exc: errors.append({"line": number, "error": str(exc)})
+    db.commit()
+    return {"message": "Importación completada", "imported": imported, "errors": errors}
+
+
+@router.post("/contacts/sync")
+def sync_marketing_contacts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    for user in db.query(User).all():
+        upsert_marketing_contact(db, name=user.name, email=user.email, phone=user.phone,
+            source="mayu_wellness", user_id=user.id,
+            marketing_consent=bool(user.accepted_digital_policy), consent_source="digital_policy")
+    for doctor in db.query(DoctorPrescriber).all():
+        upsert_marketing_contact(db, name=doctor.name, email=doctor.email, phone=doctor.phone,
+            source="doctor_prescriber", doctor_prescriber_id=doctor.id)
+    for order in db.query(MarketplaceOrder).all():
+        upsert_marketing_contact(db, name=order.customer_name,
+            email=order.customer_email or order.billing_email,
+            phone=order.customer_phone or order.billing_phone, source="marketplace",
+            user_id=order.user_id)
+    for order in db.query(EducationOrder).all():
+        upsert_marketing_contact(db, name=order.buyer_name, email=order.buyer_email,
+            phone=order.buyer_phone, source="education_marketplace", user_id=order.user_id)
+    db.commit()
+    return {"message": "Fuentes Mayu sincronizadas", "total": db.query(MarketingContact).count()}
 
 
 @router.get("/audience-preview")

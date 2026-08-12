@@ -7,6 +7,7 @@ from datetime import datetime
 from database import SessionLocal
 from dependencies import get_current_user
 import models
+from marketing_contacts import upsert_marketing_contact
 
 router = APIRouter(prefix="/education-orders", tags=["education_orders"])
 
@@ -157,6 +158,12 @@ def create_education_order(
     db.add(order)
     db.commit()
     db.refresh(order)
+    upsert_marketing_contact(
+        db, name=order.buyer_name, email=order.buyer_email, phone=order.buyer_phone,
+        source="education_marketplace", user_id=order.user_id,
+        purchase_kind="education", purchase_at=order.created_at, increment_purchase=True,
+    )
+    db.commit()
 
     for item_data in order_items_data:
         resource = item_data["resource"]
