@@ -667,15 +667,15 @@ def sync_marketplace_loyalty_wallet_after_commit(
     if not card or not customer:
         return loyalty_result
 
+    accreditation_message = (
+        f"Se acreditaron {points_earned} puntos. "
+        f"Tu nuevo saldo es {card.points_balance} puntos."
+    )
     push_result = safe_send_push_to_pharmacy_customer(
         db=db,
         pharmacy_customer_id=customer.id,
-        title="⭐ Puntos Mayu Magistral acreditados",
-        message=(
-            f"Tu compra online {order_code or ''} sumó "
-            f"{points_earned} punto(s). "
-            f"Saldo actual: {card.points_balance} punto(s)."
-        ),
+        title="Acreditación de puntos Mayu",
+        message=accreditation_message,
     )
     wallet_sync = {
         "apple": safe_send_apple_wallet_update_pushes(db, card),
@@ -683,8 +683,8 @@ def sync_marketplace_loyalty_wallet_after_commit(
         "google_notification": safe_notify_google_wallet_points(
             customer,
             card,
-            "Puntos Mayu Magistral acreditados",
-            f"Tu compra {order_code or ''} sumó {points_earned} punto(s). Saldo actual: {card.points_balance} punto(s).",
+            "Acreditación de puntos Mayu",
+            accreditation_message,
         ),
     }
     loyalty_result["push"] = push_result
@@ -1149,11 +1149,8 @@ def redeem_all_points_by_pharmacy(
     push_result = safe_send_push_to_pharmacy_customer(
         db=db,
         pharmacy_customer_id=card.pharmacy_customer_id,
-        title="🎁 Puntos Mayu Magistral utilizados",
-        message=(
-            f"Utilizaste {points_used} punto(s) en Farmacia Mayu. "
-            "Tu saldo actual es 0 puntos."
-        ),
+        title="Utilización de puntos Mayu",
+        message=f"Utilizaste {points_used} puntos. Tu nuevo saldo es 0 puntos.",
     )
     wallet_sync = {
         "apple": safe_send_apple_wallet_update_pushes(db, card),
@@ -1163,8 +1160,8 @@ def redeem_all_points_by_pharmacy(
         safe_notify_google_wallet_points(
             customer,
             card,
-            "Puntos Mayu Magistral utilizados",
-            f"Utilizaste {points_used} punto(s). Tu saldo actual es 0 puntos.",
+            "Utilización de puntos Mayu",
+            f"Utilizaste {points_used} puntos. Tu nuevo saldo es 0 puntos.",
         )
         if customer
         else None
@@ -1367,22 +1364,23 @@ def credit_by_pharmacy(
         "google": None,
     }
     if created and transaction.points_delta > 0:
+        accreditation_message = (
+            f"Se acreditaron {transaction.points_delta} puntos. "
+            f"Tu nuevo saldo es {card.points_balance} puntos."
+        )
         push_result = safe_send_push_to_pharmacy_customer(
             db=db,
             pharmacy_customer_id=card.pharmacy_customer_id,
-            title="⭐ Puntos Farmacia Mayu acreditados",
-            message=(
-                f"Sumaste {transaction.points_delta} punto(s). "
-                f"Saldo actual: {card.points_balance} punto(s)."
-            ),
+            title="Acreditación de puntos Mayu",
+            message=accreditation_message,
         )
         wallet_sync["apple"] = safe_send_apple_wallet_update_pushes(db, card)
         wallet_sync["google"] = safe_update_google_wallet_object(customer, card)
         wallet_sync["google_notification"] = safe_notify_google_wallet_points(
             customer,
             card,
-            "Puntos Mayu Magistral acreditados",
-            f"Sumaste {transaction.points_delta} punto(s). Saldo actual: {card.points_balance} punto(s).",
+            "Acreditación de puntos Mayu",
+            accreditation_message,
         )
         db.commit()
 
@@ -1642,6 +1640,21 @@ def build_pharmacy_apple_wallet_file(customer, card):
     team_id = os.getenv("APPLE_TEAM_ID")
     organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Mayu Magistral")
 
+    latest_transaction = card.transactions[0] if card.transactions else None
+    points_delta = int(latest_transaction.points_delta or 0) if latest_transaction else 0
+    if points_delta > 0:
+        points_change_message = (
+            f"Acreditación de puntos Mayu: se acreditaron {points_delta} puntos. "
+            "Tu nuevo saldo es %@ puntos."
+        )
+    elif points_delta < 0:
+        points_change_message = (
+            f"Utilización de puntos Mayu: utilizaste {abs(points_delta)} puntos. "
+            "Tu nuevo saldo es %@ puntos."
+        )
+    else:
+        points_change_message = "Tu saldo Mayu es ahora %@ puntos."
+
     if not pass_type_id:
         raise HTTPException(status_code=500, detail="Falta APPLE_PASS_TYPE_ID")
     if not team_id:
@@ -1679,7 +1692,7 @@ def build_pharmacy_apple_wallet_file(customer, card):
                         "key": "points",
                         "label": "BALANCE EN PUNTOS",
                         "value": str(card.points_balance),
-                        "changeMessage": "Tu saldo Mayu Magistral cambió a %@ puntos.",
+                        "changeMessage": points_change_message,
                     }
                 ],
                 "secondaryFields": [
