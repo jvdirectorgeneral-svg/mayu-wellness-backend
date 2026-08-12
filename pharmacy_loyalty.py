@@ -1067,6 +1067,14 @@ def test_push_by_pharmacy(
         .filter(models.PharmacyCustomer.id == card.pharmacy_customer_id)
         .first()
     )
+    # Un push de PassKit es una señal silenciosa para que Wallet descargue el
+    # pase actualizado. Cambiamos y confirmamos primero una marca visible del
+    # pase para que la prueba produzca una actualización real y Apple pueda
+    # mostrar el changeMessage al usuario.
+    card.updated_at = datetime.utcnow()
+    db.add(card)
+    db.commit()
+    db.refresh(card)
     firebase = safe_send_push_to_pharmacy_customer(
         db=db,
         pharmacy_customer_id=card.pharmacy_customer_id,
@@ -1261,7 +1269,7 @@ def safe_send_apple_wallet_update_pushes(db: Session, card):
                         headers={
                             "apns-topic": pass_type_id,
                             "apns-push-type": "background",
-                            "apns-priority": "10",
+                            "apns-priority": "5",
                         },
                         json={},
                     )
@@ -1694,6 +1702,14 @@ def build_pharmacy_apple_wallet_file(customer, card):
                     }
                 ],
                 "backFields": [
+                    {
+                        "key": "last_sync",
+                        "label": "ÚLTIMA SINCRONIZACIÓN",
+                        "value": (card.updated_at or datetime.utcnow()).strftime(
+                            "%d/%m/%Y %H:%M:%S UTC"
+                        ),
+                        "changeMessage": "Tu Tarjeta Mayu Magistral fue actualizada.",
+                    },
                     {"key": "email", "label": "Correo", "value": customer.email},
                     {"key": "phone", "label": "Teléfono", "value": customer.phone},
                     {"key": "city", "label": "Ciudad", "value": customer.city or "-"},
