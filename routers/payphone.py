@@ -26,7 +26,12 @@ from marketplace import (
     validate_doctor_prescriber_identifier,
     validate_member_discount_code,
 )
-from notification_service import mayu_email_header, safe_send_email
+from notification_service import (
+    add_tracking_history,
+    mayu_email_header,
+    safe_send_email,
+    safe_send_push_to_roles,
+)
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -48,9 +53,68 @@ PAYPHONE_WEB_RETURN_URL = os.getenv(
 
 DEFAULT_PHARMACY_ORDER_ALERT_EMAILS = (
     "auxfarmaciaquito@gmail.com,"
-    "auxiliarcontablefarmacia@gmail.com,"
-    "juliovicencio@icloud.com"
+    "auxiliarcontablefarmacia@gmail.com"
 )
+
+
+def pharmacy_order_product_rows(items: list) -> str:
+    return "".join(
+        f"<li>{html.escape(str(item.get('title') or 'Producto'))} "
+        f"x{int(item.get('quantity') or 0)} — "
+        f"${float(item.get('total') or 0):.2f} USD</li>"
+        for item in items
+    )
+
+
+def send_pharmacy_order_received_email(
+    client_transaction_id: str,
+    buyer_name: str,
+    buyer_email: str,
+    total: float,
+    items: list,
+    city: Optional[str],
+    address: Optional[str],
+):
+    """Correo comercial para el comprador, sin instrucciones administrativas."""
+    if not buyer_email or not buyer_email.strip():
+        return {"sent": False, "detail": "Compra sin correo del cliente"}
+
+    product_rows = pharmacy_order_product_rows(items)
+    delivery_rows = ""
+    if city or address:
+        delivery_rows = f"""
+        <h3>Datos de entrega</h3>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><td><strong>Ciudad</strong></td><td>{html.escape(city or '-')}</td></tr>
+          <tr><td><strong>Dirección</strong></td><td>{html.escape(address or '-')}</td></tr>
+        </table>
+        """
+    body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#17201f">
+      {mayu_email_header("Compra recibida · Marketplace Mayu")}
+      <div style="padding:24px;border:1px solid #d9e4e1;border-top:0">
+        <h2 style="margin-top:0">Hemos recibido tu compra</h2>
+        <p>Hola {html.escape(buyer_name or 'Cliente')},</p>
+        <p>Estamos verificando el pago de tu pedido. Te enviaremos un nuevo correo
+        cuando la compra esté confirmada y entre a preparación.</p>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><td><strong>Pedido</strong></td><td>{html.escape(client_transaction_id)}</td></tr>
+          <tr><td><strong>Estado</strong></td><td>Pago en verificación</td></tr>
+          <tr><td><strong>Total</strong></td><td>${total:.2f} USD</td></tr>
+        </table>
+        <h3>Resumen de tu compra</h3><ul>{product_rows}</ul>
+        {delivery_rows}
+        <p>Cuando el pedido sea enviado recibirás la transportadora, el número de
+        guía y el enlace de seguimiento.</p>
+        <p>Gracias por comprar en Marketplace Mayu.</p>
+      </div>
+    </div>
+    """
+    return safe_send_email(
+        buyer_email.strip(),
+        f"Recibimos tu compra · {client_transaction_id}",
+        body,
+    )
 
 
 def send_pharmacy_payphone_request_alert(
@@ -70,12 +134,7 @@ def send_pharmacy_payphone_request_alert(
         ).split(",")
         if email.strip()
     ]
-    product_rows = "".join(
-        f"<li>{html.escape(str(item.get('title') or 'Producto'))} "
-        f"x{int(item.get('quantity') or 0)} — "
-        f"${float(item.get('total') or 0):.2f} USD</li>"
-        for item in items
-    )
+    product_rows = pharmacy_order_product_rows(items)
     body = f"""
     <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#17201f">
       {mayu_email_header("Nueva solicitud PayPhone · Farmacia")}
@@ -813,7 +872,17 @@ def build_marketplace_payphone_payment(
     db.refresh(payment)
 
     pharmacy_alerts = None
+    buyer_order_email = None
     if clean_item_type == "pharmacy":
+        buyer_order_email = send_pharmacy_order_received_email(
+            client_transaction_id=client_transaction_id,
+            buyer_name=buyer_name,
+            buyer_email=buyer_email,
+            total=total,
+            items=items_data,
+            city=payload.city,
+            address=payload.address,
+        )
         pharmacy_alerts = send_pharmacy_payphone_request_alert(
             client_transaction_id=client_transaction_id,
             buyer_name=buyer_name,
@@ -845,6 +914,7 @@ def build_marketplace_payphone_payment(
         "buyer_name": buyer_name,
         "buyer_phone": buyer_phone,
         "buyer_email": buyer_email,
+        "buyer_order_email": buyer_order_email,
         "pharmacy_alerts": pharmacy_alerts,
         "payment_url": payphone_data.get("link"),
         "payphone": payphone_data,
@@ -854,6 +924,7 @@ def build_marketplace_payphone_payment(
 def confirm_marketplace_payphone_payment(
     payload: PayphoneConfirmRequest,
     db: Session,
+    approved_by: Optional[int] = None,
 ):
     payment = find_local_payment(
         db=db,
@@ -891,6 +962,41 @@ def confirm_marketplace_payphone_payment(
     pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
     education_fulfillment = fulfill_education_payment_if_needed(payment, db)
 
+    # Cuando Farmacia confirma manualmente un cobro PayPhone, esa misma acción
+    # constituye la aprobación administrativa. La orden debe quedar visible de
+    # inmediato en Logística, sin exigir un segundo botón oculto en otro panel.
+    logistics_notified = False
+    if pharmacy_fulfillment and approved_by:
+        order_id = pharmacy_fulfillment.get("marketplace_order_id")
+        order = (
+            db.query(models.MarketplaceOrder)
+            .filter(models.MarketplaceOrder.id == order_id)
+            .first()
+        )
+        if order:
+            was_approved = bool(order.admin_verified) and order.status == "admin_approved"
+            order.admin_verified = True
+            order.admin_verified_at = datetime.utcnow()
+            order.admin_verified_by = approved_by
+            order.approved_at = order.approved_at or datetime.utcnow()
+            order.payment_status = "paid"
+            order.status = "admin_approved"
+            if not was_approved:
+                add_tracking_history(
+                    db,
+                    order,
+                    "admin_approved",
+                    "Pago PayPhone verificado por Farmacia. Pedido enviado a Logística.",
+                    approved_by,
+                )
+                safe_send_push_to_roles(
+                    db,
+                    {"pharmacy_logistics", "logistics"},
+                    "Pedido listo para preparar",
+                    f"El pedido {order.order_code} fue aprobado por Farmacia.",
+                )
+                logistics_notified = True
+
     db.commit()
     db.refresh(payment)
 
@@ -921,6 +1027,7 @@ def confirm_marketplace_payphone_payment(
         "currency": payment.currency,
         "pharmacy_fulfillment": pharmacy_fulfillment,
         "education_fulfillment": education_fulfillment,
+        "logistics_notified": logistics_notified,
     }
 
 
@@ -1125,8 +1232,11 @@ def admin_confirm_pharmacy_payphone_payment(
         })
         db.commit()
     return confirm_marketplace_payphone_payment(
-        PayphoneConfirmRequest(clientTransactionId=payment.payment_reference or payment.paypal_order_id),
+        PayphoneConfirmRequest(
+            clientTransactionId=payment.payment_reference or payment.paypal_order_id
+        ),
         db,
+        approved_by=current_user.id,
     )
 
 
