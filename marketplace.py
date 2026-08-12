@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import os
+import html
 import cloudinary
 import cloudinary.uploader
 
@@ -402,6 +403,9 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
 
     if getattr(order, "pharmacy_loyalty_identifier", None):
         lines.append(f"Tarjeta Mayu Magistral: {order.pharmacy_loyalty_identifier}")
+        lines.append(
+            "Regla de puntos: se acreditan cuando Farmacia Mayu confirma la compra."
+        )
     if getattr(order, "doctor_prescriber_identifier", None):
         lines.append(f"Doctor Prescriptor Mayu: {order.doctor_prescriber_identifier}")
         estimated_commission = round(float(order.total or 0) * 0.30, 2)
@@ -420,6 +424,54 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
     lines.append("Gracias, quedo atento/a a la confirmación.")
 
     return "\n".join(lines)
+
+
+def send_marketplace_order_received_email(order: models.MarketplaceOrder):
+    email = (order.customer_email or order.billing_email or "").strip()
+    if not email:
+        return {"sent": False, "detail": "Pedido sin correo"}
+    benefits = []
+    if order.doctor_prescriber_identifier:
+        benefits.append(
+            "Doctor Prescriptor: 30% por pedido WhatsApp/efectivo; se acredita "
+            "al doctor cuando Farmacia confirma la compra."
+        )
+    if order.pharmacy_loyalty_identifier:
+        benefits.append(
+            "Tarjeta de puntos Mayu: los puntos se acreditan cuando Farmacia "
+            "confirma la compra."
+        )
+    if order.discount_code:
+        benefits.append(
+            f"Socio Mayu Wellness Club: descuento del 10% aplicado "
+            f"(${float(order.discount_amount or 0):.2f} USD)."
+        )
+    if not benefits:
+        benefits.append("Compra directa sin afiliaciones.")
+    products = "".join(
+        f"<li>{html.escape(item.product_name_snapshot)} x{item.quantity} — "
+        f"${float(item.total_snapshot or 0):.2f} USD</li>"
+        for item in order.items
+    )
+    benefit_rows = "".join(f"<li>{html.escape(text)}</li>" for text in benefits)
+    return safe_send_email(
+        email,
+        f"Recibimos tu pedido · {order.order_code}",
+        f"""
+        <div style="max-width:680px;margin:auto;font-family:Arial,sans-serif;color:#17201f">
+          {mayu_email_header("Pedido recibido · Marketplace Mayu")}
+          <div style="padding:24px;border:1px solid #d9e4e1;border-top:0">
+            <p>Hola <strong>{html.escape(order.customer_name)}</strong>,</p>
+            <p>Recibimos tu pedido <strong>{html.escape(order.order_code)}</strong>.
+            Farmacia Mayu verificará y confirmará la compra antes de prepararla.</p>
+            <h3>Productos</h3><ul>{products}</ul>
+            <h3>Beneficios y reglas</h3><ul>{benefit_rows}</ul>
+            <p><strong>Total:</strong> ${float(order.total or 0):.2f} USD</p>
+            <p>Cuando sea enviado recibirás la transportadora, guía y tracking.</p>
+          </div>
+        </div>
+        """,
+    )
 
 
 def generate_order_code():
@@ -1173,9 +1225,12 @@ def create_marketplace_order(
     db.commit()
     db.refresh(order)
 
+    buyer_email = send_marketplace_order_received_email(order)
+
     return {
         "message": "Orden creada correctamente",
         "order": order_to_dict(order),
+        "buyer_email": buyer_email,
     }
 
 

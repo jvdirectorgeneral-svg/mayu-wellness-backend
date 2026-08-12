@@ -74,6 +74,10 @@ def send_pharmacy_order_received_email(
     items: list,
     city: Optional[str],
     address: Optional[str],
+    doctor_identifier: Optional[str] = None,
+    pharmacy_loyalty_identifier: Optional[str] = None,
+    wellness_code: Optional[str] = None,
+    discount_amount: float = 0,
 ):
     """Correo comercial para el comprador, sin instrucciones administrativas."""
     if not buyer_email or not buyer_email.strip():
@@ -89,6 +93,28 @@ def send_pharmacy_order_received_email(
           <tr><td><strong>Dirección</strong></td><td>{html.escape(address or '-')}</td></tr>
         </table>
         """
+    benefit_rows = []
+    if doctor_identifier:
+        benefit_rows.append(
+            "<li><strong>Doctor Prescriptor:</strong> 22% por pago con "
+            "PayPhone/tarjeta. Se acredita al doctor cuando Farmacia confirma "
+            "el pago; no reduce el total del cliente.</li>"
+        )
+    if pharmacy_loyalty_identifier:
+        benefit_rows.append(
+            "<li><strong>Tarjeta de puntos Mayu:</strong> los puntos se acreditan "
+            "cuando Farmacia confirma el pago.</li>"
+        )
+    if wellness_code:
+        benefit_rows.append(
+            f"<li><strong>Socio Mayu Wellness Club:</strong> descuento del 10% "
+            f"aplicado (${float(discount_amount or 0):.2f} USD).</li>"
+        )
+    benefits_section = (
+        "<h3>Beneficios aplicados</h3><ul>" + "".join(benefit_rows) + "</ul>"
+        if benefit_rows
+        else "<p><strong>Modalidad:</strong> compra directa sin afiliaciones.</p>"
+    )
     body = f"""
     <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#17201f">
       {mayu_email_header("Compra recibida · Marketplace Mayu")}
@@ -103,6 +129,7 @@ def send_pharmacy_order_received_email(
           <tr><td><strong>Total</strong></td><td>${total:.2f} USD</td></tr>
         </table>
         <h3>Resumen de tu compra</h3><ul>{product_rows}</ul>
+        {benefits_section}
         {delivery_rows}
         <p>Cuando el pedido sea enviado recibirás la transportadora, el número de
         guía y el enlace de seguimiento.</p>
@@ -886,6 +913,17 @@ def build_marketplace_payphone_payment(
             items=items_data,
             city=payload.city,
             address=payload.address,
+            doctor_identifier=(
+                doctor_info["doctor_prescriber_identifier"] if doctor_info else None
+            ),
+            pharmacy_loyalty_identifier=(
+                payload.pharmacy_loyalty_identifier.strip()
+                if payload.pharmacy_loyalty_identifier
+                and payload.pharmacy_loyalty_identifier.strip()
+                else None
+            ),
+            wellness_code=discount_code,
+            discount_amount=discount_amount,
         )
         pharmacy_alerts = send_pharmacy_payphone_request_alert(
             client_transaction_id=client_transaction_id,
