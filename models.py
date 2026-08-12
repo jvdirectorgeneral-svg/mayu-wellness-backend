@@ -661,31 +661,6 @@ class DoctorAppleWalletRegistration(Base):
     )
 
 
-class LuxuryCard(Base):
-    __tablename__ = "luxury_cards"
-
-    id = Column(Integer, primary_key=True, index=True)
-    holder_name = Column(String, nullable=False)
-    email = Column(String, unique=True, nullable=False, index=True)
-    phone = Column(String, nullable=True)
-    company = Column(String, nullable=True)
-    position = Column(String, nullable=True)
-    alert_region = Column(String, nullable=False, default="Ecuador")
-    card_code = Column(String, unique=True, nullable=False, index=True)
-    qr_token = Column(String, unique=True, nullable=False, index=True)
-    is_active = Column(Boolean, nullable=False, default=True)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
-    creator = relationship("User", foreign_keys=[created_by])
-
-
 class DoctorCommissionTransaction(Base):
     __tablename__ = "doctor_commission_transactions"
 
