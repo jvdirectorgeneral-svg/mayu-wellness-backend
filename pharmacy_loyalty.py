@@ -61,12 +61,69 @@ security = HTTPBearer()
 POINT_VALUE_CENTS = 1000
 PHARMACY_WALLET_AUTH_PREFIX = "mayu-magistral-wallet"
 
+# Apple Wallet y Google Wallet admiten hasta 10 ubicaciones de relevancia por
+# tarjeta/objeto. Estas son las ubicaciones iniciales aprobadas para la tarjeta
+# de puntos de Farmacia Mayu. Render todavía puede sustituir la lista completa
+# mediante PHARMACY_WALLET_LOCATIONS_JSON sin necesidad de publicar código.
+DEFAULT_PHARMACY_WALLET_LOCATIONS = [
+    {
+        "name": "Estás cerca de Farmacia Mayu Quito. Revisa tus puntos y beneficios.",
+        "latitude": -0.182462,
+        "longitude": -78.482439,
+    },
+    {
+        "name": "Estás cerca de Farmacia Mayu Cuenca. Revisa tus puntos y beneficios.",
+        "latitude": -2.902350,
+        "longitude": -79.014920,
+    },
+    {
+        "name": "Estás cerca de Megamaxi El Condado. Revisa tus beneficios Mayu.",
+        "latitude": -0.104340,
+        "longitude": -78.490690,
+    },
+    {
+        "name": "Estás cerca de Megamaxi 6 de Diciembre. Revisa tus beneficios Mayu.",
+        "latitude": -0.180370,
+        "longitude": -78.477450,
+    },
+    {
+        "name": "Estás cerca de Megamaxi Quicentro Sur. Revisa tus beneficios Mayu.",
+        "latitude": -0.285990,
+        "longitude": -78.543180,
+    },
+    {
+        "name": "Estás cerca de Megamaxi Scala Shopping. Revisa tus beneficios Mayu.",
+        "latitude": -0.207820,
+        "longitude": -78.425620,
+    },
+    {
+        "name": "Estás cerca de Megamaxi Mall del Sol. Revisa tus beneficios Mayu.",
+        "latitude": -2.155040,
+        "longitude": -79.892670,
+    },
+    {
+        "name": "Estás cerca de Megamaxi Los Ceibos. Revisa tus beneficios Mayu.",
+        "latitude": -2.173720,
+        "longitude": -79.939850,
+    },
+    {
+        "name": "Estás cerca de Supermaxi Las Américas. Revisa tus beneficios Mayu.",
+        "latitude": -2.889670,
+        "longitude": -79.024260,
+    },
+    {
+        "name": "Estás cerca de Supermaxi La Plaza Shopping. Revisa tus beneficios Mayu.",
+        "latitude": 0.345910,
+        "longitude": -78.136350,
+    },
+]
+
 
 def configured_pharmacy_wallet_locations():
-    """Hasta 10 ubicaciones exactas configuradas en Render mediante JSON."""
+    """Devuelve hasta 10 ubicaciones; Render puede reemplazar las predeterminadas."""
     raw = os.getenv("PHARMACY_WALLET_LOCATIONS_JSON", "").strip()
     if not raw:
-        return []
+        return [dict(item) for item in DEFAULT_PHARMACY_WALLET_LOCATIONS]
     try:
         locations = json.loads(raw)
         if not isinstance(locations, list):
@@ -1030,6 +1087,10 @@ def test_push_by_pharmacy(
         "apple_wallet": apple,
         "google_wallet": google_update,
         "google_notification": google_notification,
+        "proximity_locations": {
+            "configured": len(configured_pharmacy_wallet_locations()),
+            "apple_max_distance_m": 100,
+        },
     }
 
 
