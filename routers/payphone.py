@@ -235,13 +235,18 @@ def create_payphone_link(
         )
 
     if response.status_code not in [200, 201]:
+        provider_message = response.text.lower()
+        if response.status_code in {401, 403} or "no está autorizada" in provider_message:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "PayPhone requiere credenciales WEB habilitadas para completar "
+                    "el pago y regresar automáticamente a Mayu. Contacta al administrador."
+                ),
+            )
         raise HTTPException(
-            status_code=response.status_code,
-            detail={
-                "message": "PayPhone rechazó la creación del link",
-                "payphone_response": response.text,
-                "sent_body": body,
-            },
+            status_code=502,
+            detail="PayPhone no pudo iniciar el pago. Intenta nuevamente.",
         )
 
     try:
@@ -269,9 +274,18 @@ def confirm_payphone_button_transaction(payphone_id: int, client_transaction_id:
         raise HTTPException(status_code=502, detail=f"Error confirmando PayPhone: {exc}")
 
     if response.status_code not in [200, 201]:
+        provider_message = response.text.lower()
+        if response.status_code in {401, 403} or "no está autorizada" in provider_message:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "PayPhone requiere credenciales WEB habilitadas para completar "
+                    "el pago y regresar automáticamente a Mayu. Contacta al administrador."
+                ),
+            )
         raise HTTPException(
-            status_code=response.status_code,
-            detail={"message": "PayPhone rechazó la confirmación", "payphone_response": response.text},
+            status_code=502,
+            detail="PayPhone no pudo confirmar la transacción. Intenta nuevamente.",
         )
     try:
         return response.json()

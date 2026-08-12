@@ -282,7 +282,7 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
     lines = [
         f"Hola Mayu, deseo confirmar mi pedido {order.order_code}.",
         "",
-        "🛒 Productos:",
+        "PRODUCTOS:",
     ]
 
     for item in order.items:
@@ -294,7 +294,7 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
     lines.extend(
         [
             "",
-            "🚚 Datos de entrega:",
+            "DATOS DE ENTREGA:",
             f"Cliente: {order.customer_name}",
             f"Teléfono: {order.customer_phone}",
         ]
@@ -310,7 +310,7 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
         lines.append(f"Notas de entrega: {order.delivery_notes}")
 
     if getattr(order, "billing_name", None) or getattr(order, "billing_identification", None):
-        lines.extend(["", "🧾 Datos de facturación:"])
+        lines.extend(["", "DATOS DE FACTURACIÓN:"])
         if order.billing_name:
             lines.append(f"Nombre/Razón social: {order.billing_name}")
         if order.billing_identification:
@@ -334,6 +334,16 @@ def build_marketplace_whatsapp_message(order: models.MarketplaceOrder) -> str:
         lines.append(f"Tarjeta Mayu Magistral: {order.pharmacy_loyalty_identifier}")
     if getattr(order, "doctor_prescriber_identifier", None):
         lines.append(f"Doctor Prescriptor Mayu: {order.doctor_prescriber_identifier}")
+        estimated_commission = round(float(order.total or 0) * 0.30, 2)
+        lines.append(
+            f"Beneficio Doctor Prescriptor: 30% (${estimated_commission:.2f} USD)."
+        )
+        lines.append(
+            "Se acreditará al saldo del doctor después de que Farmacia Mayu confirme la compra."
+        )
+        lines.append(
+            "Este beneficio no reduce el total pagado por el cliente."
+        )
 
     lines.append(f"Total: ${float(order.total or 0):.2f} USD")
     lines.append("")
