@@ -261,9 +261,6 @@ def is_payphone_paid(data: dict) -> bool:
     ]:
         return True
 
-    if data.get("authorizationCode") or data.get("transactionId"):
-        return True
-
     return False
 
 
@@ -731,6 +728,15 @@ def confirm_marketplace_payphone_payment(
     if payment.payment_type not in {"marketplace_pharmacy", "marketplace_education"}:
         raise HTTPException(status_code=400, detail="Este pago no pertenece a Marketplace")
 
+    if payment.status not in ["paid", "verified"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "PayPhone todavía no confirmó el pago. Completa el checkout "
+                "en PayPhone y espera la confirmación automática."
+            ),
+        )
+
     payphone_payload = {
         "id": payload.id,
         "clientTransactionId": payload.clientTransactionId or payment.payment_reference,
@@ -741,20 +747,6 @@ def confirm_marketplace_payphone_payment(
             "Se procesa el pedido marketplace, puntos y Wallet."
         ),
     }
-
-    if payment.status not in ["paid", "verified"]:
-        previous_payload = payment.raw_payload
-        payment.status = "paid"
-        payment.paid_at = datetime.utcnow()
-        payment.admin_verified = True
-        payment.admin_verified_at = datetime.utcnow()
-        payment.raw_payload = json.dumps({
-            "previous_payload": previous_payload,
-            "payphone": payphone_payload,
-        })
-
-        if payload.transactionId:
-            payment.payment_reference = payload.transactionId
 
     pharmacy_fulfillment = fulfill_pharmacy_payment_if_needed(payment, db)
     education_fulfillment = fulfill_education_payment_if_needed(payment, db)
@@ -991,6 +983,18 @@ async def payphone_webhook(
 
     if is_payphone_paid(payload):
         if payment.payment_type in {"marketplace_pharmacy", "marketplace_education"}:
+            previous_payload = payment.raw_payload
+            payment.status = "paid"
+            payment.paid_at = datetime.utcnow()
+            payment.admin_verified = True
+            payment.admin_verified_at = datetime.utcnow()
+            payment.raw_payload = json.dumps({
+                "previous_payload": previous_payload,
+                "payphone_webhook": payload,
+            })
+            if payload.get("transactionId"):
+                payment.payment_reference = payload.get("transactionId")
+            db.commit()
             confirm_payload = PayphoneConfirmRequest(
                 id=payload.get("id"),
                 clientTransactionId=client_transaction_id,
