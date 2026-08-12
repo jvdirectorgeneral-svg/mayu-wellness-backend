@@ -1007,6 +1007,7 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         "id": doctor_google_object_id(doctor, issuer_id),
         "classId": class_id,
         "state": "ACTIVE" if doctor.is_active else "INACTIVE",
+        "notifyPreference": "NOTIFY_ON_UPDATE",
         "hexBackgroundColor": "#006054",
         "logo": {
             "sourceUri": {"uri": logo_url},

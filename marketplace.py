@@ -554,9 +554,23 @@ def sync_marketplace_doctor_wallet_after_commit(
 
     google_sync = safe_update_doctor_google_wallet_object(doctor)
     apple_sync = safe_send_doctor_apple_wallet_update_pushes(db, doctor)
+    commission = float(doctor_result.get("commission_earned") or 0)
+    balance = round((doctor.commission_balance_cents or 0) / 100, 2)
     doctor_result["wallet_sync"] = {
         "google": google_sync,
         "apple": apple_sync,
+    }
+    doctor_result["wallet_notification"] = {
+        "event": "doctor_commission_credited",
+        "title": "Nueva comisión Doctor Prescriptor",
+        "message": (
+            f"Se acreditaron ${commission:.2f} por el pedido {order_code or '-'}. "
+            f"Saldo pendiente: ${balance:.2f}."
+        ),
+        "apple_sent": int((apple_sync or {}).get("sent") or 0)
+        if isinstance(apple_sync, dict) else 0,
+        "google_updated": bool((google_sync or {}).get("updated"))
+        if isinstance(google_sync, dict) else False,
     }
     doctor_result["doctor_code"] = doctor.doctor_code
     doctor_result["order_code"] = order_code
