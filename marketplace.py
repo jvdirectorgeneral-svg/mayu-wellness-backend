@@ -487,7 +487,10 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
     if sale_cents <= 0:
         return {"credited": False, "detail": "El total del pedido no permite acreditar comisión"}
 
-    gross_commission_cents = int(round(sale_cents * doctor.commission_rate_bps / 10000))
+    payment_method = (getattr(order, "payment_method", "") or "").strip().lower()
+    is_card_payment = payment_method in {"payphone", "card", "credit_card", "tarjeta"}
+    applied_rate_bps = 2200 if is_card_payment else 3000
+    gross_commission_cents = int(round(sale_cents * applied_rate_bps / 10000))
     transaction = models.DoctorCommissionTransaction(
         doctor_prescriber_id=doctor.id,
         sale_amount_cents=sale_cents,
@@ -495,10 +498,12 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
         deduction_bps=0,
         deduction_cents=0,
         commission_cents=gross_commission_cents,
-        commission_rate_bps=doctor.commission_rate_bps,
-        source="marketplace_online",
+        commission_rate_bps=applied_rate_bps,
+        source="marketplace_payphone" if is_card_payment else "marketplace_cash_whatsapp",
         reference=reference,
-        note="Compra online Marketplace Farmacia con código/QR Doctor Prescriptor",
+        note=("Compra Marketplace con tarjeta PayPhone: beneficio Doctor Prescriptor 22%"
+            if is_card_payment else
+            "Compra Marketplace efectivo/WhatsApp: beneficio Doctor Prescriptor 30%"),
     )
     doctor.total_sales_cents += sale_cents
     doctor.commission_balance_cents += gross_commission_cents
@@ -511,7 +516,8 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
         "credited": True,
         "doctor_id": doctor.id,
         "doctor_code": doctor.doctor_code,
-        "commission_rate_percent": doctor.commission_rate_bps / 100,
+        "commission_rate_percent": applied_rate_bps / 100,
+        "payment_method": payment_method,
         "sale_amount": round(sale_cents / 100, 2),
         "commission_earned": round(gross_commission_cents / 100, 2),
         "transaction_id": transaction.id,

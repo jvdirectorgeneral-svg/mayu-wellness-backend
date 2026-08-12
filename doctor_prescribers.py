@@ -650,6 +650,13 @@ def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.Doct
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
+                        print(json.dumps({
+                            "event": "doctor_wallet_apns_accepted",
+                            "doctor_id": doctor.id,
+                            "registration_id": registration.id,
+                            "status_code": response.status_code,
+                            "apns_id": response.headers.get("apns-id"),
+                        }), flush=True)
                     elif response.status_code == 410:
                         (
                             db.query(models.DoctorAppleWalletRegistration)
@@ -658,6 +665,13 @@ def safe_send_doctor_apple_wallet_update_pushes(db: Session, doctor: models.Doct
                         )
                         db.commit()
                     else:
+                        print(json.dumps({
+                            "event": "doctor_wallet_apns_rejected",
+                            "doctor_id": doctor.id,
+                            "registration_id": registration.id,
+                            "status_code": response.status_code,
+                            "detail": response.text[:300],
+                        }), flush=True)
                         errors.append(
                             {
                                 "registration_id": registration.id,
