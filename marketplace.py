@@ -436,6 +436,24 @@ def validate_doctor_prescriber_identifier(db: Session, identifier: Optional[str]
     }
 
 
+@router.get("/doctor-prescriber/validate/{identifier}")
+def validate_marketplace_doctor_prescriber(identifier: str, db: Session = Depends(get_db)):
+    doctor_info = validate_doctor_prescriber_identifier(db, identifier)
+    doctor = doctor_info["doctor"]
+    return {
+        "valid": True,
+        "doctor": {
+            "name": doctor.name,
+            "doctor_code": doctor.doctor_code,
+        },
+        "benefits": {
+            "cash_whatsapp_percent": 30.0,
+            "credit_card_payphone_percent": 22.0,
+        },
+        "note": "Beneficio informativo del Doctor Prescriptor; no reduce el total del cliente.",
+    }
+
+
 def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = True):
     payment_status = (getattr(order, "payment_status", "") or "").strip().lower()
     if payment_status != "paid":
