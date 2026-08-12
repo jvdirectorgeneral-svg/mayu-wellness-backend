@@ -604,6 +604,18 @@ def credit_marketplace_order_if_paid(db: Session, order, sync_wallet: bool = Tru
     if payment_status != "paid":
         return {"credited": False, "detail": "El pedido aún no está pagado"}
 
+    loyalty_identifier = (
+        getattr(order, "pharmacy_loyalty_identifier", None)
+        or getattr(order, "mayu_magistral_identifier", None)
+        or getattr(order, "pharmacy_card_code", None)
+    )
+    if not str(loyalty_identifier or "").strip():
+        return {
+            "credited": False,
+            "not_applicable": True,
+            "detail": "Compra directa sin código de tarjeta Farmacia; no genera puntos.",
+        }
+
     existing = (
         db.query(models.PharmacyPointsTransaction)
         .filter(models.PharmacyPointsTransaction.marketplace_order_id == order.id)
