@@ -2434,6 +2434,8 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
             db, name=doctor.name, email=doctor.email, phone=doctor.phone,
             city=doctor.city, source="doctor_prescriber",
             doctor_prescriber_id=doctor.id,
+            marketing_consent=True,
+            consent_source="doctor_affiliation_digital_policy",
         )
     db.commit()
     query = db.query(MarketingContact)
@@ -2530,7 +2532,10 @@ def sync_marketing_contacts(db: Session = Depends(get_db), current_user: User = 
             marketing_consent=bool(user.accepted_digital_policy), consent_source="digital_policy")
     for doctor in db.query(DoctorPrescriber).all():
         upsert_marketing_contact(db, name=doctor.name, email=doctor.email, phone=doctor.phone,
-            source="doctor_prescriber", doctor_prescriber_id=doctor.id)
+            source="doctor_prescriber", doctor_prescriber_id=doctor.id,
+            city=doctor.city, birth_date=doctor.birth_date,
+            marketing_consent=True,
+            consent_source="doctor_affiliation_digital_policy")
     for order in db.query(MarketplaceOrder).all():
         upsert_marketing_contact(db, name=order.customer_name,
             email=order.customer_email or order.billing_email,

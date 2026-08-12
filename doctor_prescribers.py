@@ -1172,8 +1172,8 @@ def register_doctor_prescriber(
     upsert_marketing_contact(
         db, name=doctor.name, email=doctor.email, phone=doctor.phone,
         source="doctor_prescriber", doctor_prescriber_id=doctor.id, city=doctor.city,
-        marketing_consent=payload.marketing_consent,
-        consent_source="doctor_registration" if payload.marketing_consent else None,
+        marketing_consent=bool(payload.marketing_consent or payload.accepted_digital_policy),
+        consent_source="doctor_digital_policy",
     )
     db.commit()
 
