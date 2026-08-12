@@ -6,7 +6,6 @@ import resend
 import requests
 import cloudinary
 import cloudinary.uploader
-from svix.webhooks import Webhook, WebhookVerificationError
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
@@ -2577,47 +2576,6 @@ def marketing_deliverability_check(db: Session = Depends(get_db),
         },
         "dns_note": "SPF, DKIM y DMARC se verifican en Resend y Cloudflare DNS.",
     }
-
-
-@router.post("/webhooks/resend")
-async def receive_resend_event(request: Request, db: Session = Depends(get_db)):
-    secret = os.getenv("RESEND_WEBHOOK_SECRET")
-    if not secret:
-        raise HTTPException(status_code=503, detail="Webhook Resend no configurado")
-    raw_payload = await request.body()
-    try:
-        payload = Webhook(secret).verify(raw_payload, {
-            "svix-id": request.headers.get("svix-id", ""),
-            "svix-timestamp": request.headers.get("svix-timestamp", ""),
-            "svix-signature": request.headers.get("svix-signature", ""),
-        })
-    except WebhookVerificationError:
-        raise HTTPException(status_code=400, detail="Firma de webhook inválida")
-    event_type = str(payload.get("type") or "")
-    data = payload.get("data") or {}
-    recipients = data.get("to") or []
-    if isinstance(recipients, str): recipients = [recipients]
-    status_map = {
-        "email.delivered": "delivered", "email.bounced": "bounced",
-        "email.complained": "complained", "email.suppressed": "suppressed",
-        "email.failed": "failed",
-    }
-    if event_type in status_map:
-        for email in recipients:
-            normalized = str(email).strip().lower()
-            contact = db.query(MarketingContact).filter(
-                MarketingContact.normalized_email == normalized
-            ).first()
-            if not contact: continue
-            contact.email_status = status_map[event_type]
-            contact.last_email_event_at = datetime.utcnow()
-            if event_type == "email.bounced": contact.bounce_count += 1
-            if event_type == "email.complained":
-                contact.complaint_count += 1
-                contact.marketing_consent = False
-                contact.unsubscribed_at = datetime.utcnow()
-    db.commit()
-    return {"received": True}
 
 
 @router.get("/audience-preview")
