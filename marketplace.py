@@ -220,6 +220,62 @@ def order_to_dict(order: models.MarketplaceOrder):
     pharmacy_code = getattr(order, "pharmacy_loyalty_identifier", None)
     doctor_code = getattr(order, "doctor_prescriber_identifier", None)
     wellness_code = getattr(order, "discount_code", None)
+    billing_requested = bool(
+        getattr(order, "billing_identification", None)
+        or getattr(order, "billing_name", None)
+        or getattr(order, "billing_email", None)
+        or getattr(order, "billing_phone", None)
+        or getattr(order, "billing_address", None)
+    )
+    affiliation_summary = {
+        "purchase_type": (
+            "direct"
+            if not pharmacy_code and not doctor_code and not wellness_code
+            else "with_benefits"
+        ),
+        "pharmacy_loyalty": {
+            "applies": bool(pharmacy_code),
+            "identifier": pharmacy_code,
+            "description": (
+                "Acumula puntos cuando Farmacia confirma el pago."
+                if pharmacy_code
+                else "No vinculada."
+            ),
+        },
+        "doctor_prescriber": {
+            "applies": bool(doctor_code),
+            "identifier": doctor_code,
+            "commission_percent": doctor_percent if doctor_code else 0,
+            "commission_amount": (
+                round(total * doctor_percent / 100, 2) if doctor_code else 0
+            ),
+            "description": (
+                f"Beneficio Doctor Prescriptor {doctor_percent:.0f}% por "
+                f"{'PayPhone/tarjeta' if doctor_percent == 22 else 'WhatsApp/efectivo'}."
+                if doctor_code
+                else "No vinculado."
+            ),
+        },
+        "mayu_wellness": {
+            "applies": bool(wellness_code),
+            "identifier": wellness_code,
+            "discount_percent": discount_percent if wellness_code else 0,
+            "discount_amount": round(discount_amount, 2) if wellness_code else 0,
+            "description": (
+                f"Descuento socio Mayu Wellness Club {discount_percent:.0f}% aplicado."
+                if wellness_code
+                else "No vinculado."
+            ),
+        },
+        "billing": {
+            "requested": billing_requested,
+            "description": (
+                "Cliente solicitó factura; revisar los datos completos."
+                if billing_requested
+                else "Compra sin datos adicionales de facturación."
+            ),
+        },
+    }
     return {
         "id": order.id,
         "order_code": order.order_code,
@@ -235,10 +291,12 @@ def order_to_dict(order: models.MarketplaceOrder):
         "billing_email": getattr(order, "billing_email", None),
         "billing_phone": getattr(order, "billing_phone", None),
         "billing_address": getattr(order, "billing_address", None),
+        "billing_requested": billing_requested,
         "subtotal": order.subtotal,
         "discount_code": getattr(order, "discount_code", None),
         "pharmacy_loyalty_identifier": getattr(order, "pharmacy_loyalty_identifier", None),
         "doctor_prescriber_identifier": getattr(order, "doctor_prescriber_identifier", None),
+        "affiliation_summary": affiliation_summary,
         "discount_percent": getattr(order, "discount_percent", 0),
         "discount_amount": getattr(order, "discount_amount", 0),
         "total": order.total,
@@ -471,45 +529,6 @@ def validate_marketplace_doctor_prescriber(identifier: str, db: Session = Depend
         "benefits": {
             "cash_whatsapp_percent": 30.0,
             "credit_card_payphone_percent": 22.0,
-        },
-        "affiliation_summary": {
-            "purchase_type": (
-                "direct"
-                if not pharmacy_code and not doctor_code and not wellness_code
-                else "with_benefits"
-            ),
-            "pharmacy_loyalty": {
-                "applies": bool(pharmacy_code),
-                "identifier": pharmacy_code,
-                "description": (
-                    "Acumula puntos en Tarjeta Farmacia después de confirmar el pago."
-                    if pharmacy_code
-                    else "No aplica: compra sin código de Tarjeta Farmacia."
-                ),
-            },
-            "doctor_prescriber": {
-                "applies": bool(doctor_code),
-                "identifier": doctor_code,
-                "commission_percent": doctor_percent if doctor_code else 0,
-                "commission_amount": round(total * doctor_percent / 100, 2) if doctor_code else 0,
-                "description": (
-                    f"Beneficio Doctor Prescriptor {doctor_percent:.0f}% por "
-                    f"{'PayPhone/tarjeta' if doctor_percent == 22 else 'WhatsApp/efectivo'}."
-                    if doctor_code
-                    else "No aplica: pedido sin Doctor Prescriptor."
-                ),
-            },
-            "mayu_wellness": {
-                "applies": bool(wellness_code),
-                "identifier": wellness_code,
-                "discount_percent": discount_percent if wellness_code else 0,
-                "discount_amount": round(discount_amount, 2) if wellness_code else 0,
-                "description": (
-                    f"Descuento socio Mayu Wellness Club {discount_percent:.0f}% aplicado."
-                    if wellness_code
-                    else "No aplica: compra sin código de socio Mayu Wellness Club."
-                ),
-            },
         },
         "note": "Beneficio informativo del Doctor Prescriptor; no reduce el total del cliente.",
     }
