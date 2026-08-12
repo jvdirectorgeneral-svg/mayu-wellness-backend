@@ -47,6 +47,7 @@ with engine.begin() as connection:
         "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS bounce_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS complaint_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS last_email_event_at TIMESTAMP",
+        "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
         "ALTER TABLE marketing_campaigns ADD COLUMN IF NOT EXISTS audience_tag VARCHAR",
     ):
         connection.execute(text(statement))

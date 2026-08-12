@@ -1066,6 +1066,7 @@ class MarketingContact(Base):
     bounce_count = Column(Integer, nullable=False, default=0)
     complaint_count = Column(Integer, nullable=False, default=0)
     last_email_event_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

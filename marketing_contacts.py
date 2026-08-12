@@ -87,4 +87,5 @@ def contact_to_dict(contact):
         "consent_at": contact.consent_at, "unsubscribed_at": contact.unsubscribed_at,
         "email_status": contact.email_status, "bounce_count": contact.bounce_count,
         "complaint_count": contact.complaint_count,
+        "archived_at": contact.archived_at,
         "created_at": contact.created_at, "updated_at": contact.updated_at}

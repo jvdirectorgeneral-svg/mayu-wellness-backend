@@ -2446,7 +2446,7 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
         MarketingContact.user_id.notin_(internal_user_ids),
         MarketingContact.sources.ilike("%doctor_prescriber%"),
         MarketingContact.sources.ilike("%marketplace%"),
-    ))
+    ), MarketingContact.archived_at.is_(None))
     if search:
         pattern = f"%{search.strip()}%"
         query = query.filter(or_(MarketingContact.name.ilike(pattern),
@@ -2466,7 +2466,8 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
         if len(items) >= min(max(limit, 1), 500):
             break
     doctor_rows = db.query(MarketingContact).filter(
-        MarketingContact.sources.ilike("%doctor_prescriber%")
+        MarketingContact.sources.ilike("%doctor_prescriber%"),
+        MarketingContact.archived_at.is_(None),
     ).all()
     total_doctors = len({
         item.normalized_email or item.normalized_phone or f"id:{item.id}"
@@ -2476,6 +2477,7 @@ def list_marketing_contacts(search: Optional[str] = None, source: Optional[str] 
         MarketingContact.sources.ilike("%doctor_prescriber%"),
         MarketingContact.marketing_consent == True,
         MarketingContact.unsubscribed_at.is_(None),
+        MarketingContact.archived_at.is_(None),
     ).all()
     authorized_doctors = len({
         item.normalized_email or item.normalized_phone or f"id:{item.id}"
@@ -2514,6 +2516,28 @@ def update_marketing_contact(contact_id: int, payload: MarketingContactRequest,
     contact.unsubscribed_at = None if payload.marketing_consent else datetime.utcnow()
     db.commit(); db.refresh(contact)
     return {"message": "Contacto actualizado", "contact": directory_contact_to_dict(contact)}
+
+
+@router.delete("/contacts/{contact_id}")
+def archive_marketing_contact(contact_id: int, db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)):
+    require_marketing_user(current_user)
+    contact = db.query(MarketingContact).filter(MarketingContact.id == contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contacto no encontrado")
+    identity_filters = []
+    if contact.normalized_email:
+        identity_filters.append(MarketingContact.normalized_email == contact.normalized_email)
+    if contact.normalized_phone:
+        identity_filters.append(MarketingContact.normalized_phone == contact.normalized_phone)
+    contacts = db.query(MarketingContact).filter(or_(*identity_filters)).all() \
+        if identity_filters else [contact]
+    archived_at = datetime.utcnow()
+    for matching_contact in contacts:
+        matching_contact.archived_at = archived_at
+    db.commit()
+    return {"message": "Contacto eliminado del CRM", "id": contact_id,
+        "archived_records": len(contacts)}
 
 
 @router.post("/contacts/import-csv")
@@ -2578,7 +2602,7 @@ def sync_marketing_contacts(db: Session = Depends(get_db), current_user: User = 
 def list_marketing_tags(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     require_marketing_user(current_user)
     counts = {}
-    for contact in db.query(MarketingContact).all():
+    for contact in db.query(MarketingContact).filter(MarketingContact.archived_at.is_(None)).all():
         for tag in [item.strip() for item in (contact.tags or "").split(",") if item.strip()]:
             counts[tag] = counts.get(tag, 0) + 1
     return {"total": len(counts), "items": [
