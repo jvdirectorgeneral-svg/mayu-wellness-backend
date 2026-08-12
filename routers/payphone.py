@@ -17,6 +17,7 @@ from member_cards import get_or_create_card
 from marketplace_paypal import (
     fulfill_education_payment_if_needed,
     fulfill_pharmacy_payment_if_needed,
+    get_original_payment_payload,
 )
 from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
 from marketplace import (
@@ -50,6 +51,13 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def require_payphone_pharmacy_admin(user: models.User):
+    if not user or not getattr(user, "is_active", True):
+        raise HTTPException(status_code=403, detail="Usuario no autorizado")
+    if user.role not in {"superadmin", "admin", "pharmacy_admin"}:
+        raise HTTPException(status_code=403, detail="Acceso solo para Farmacia Mayu")
 
 
 class PayphoneCreateLinkRequest(BaseModel):
@@ -968,6 +976,79 @@ def confirm_marketplace_payphone_order(
     db: Session = Depends(get_db),
 ):
     return confirm_marketplace_payphone_payment(payload, db)
+
+
+@router.get("/marketplace/admin/pending-pharmacy")
+def list_pending_pharmacy_payphone_payments(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_payphone_pharmacy_admin(current_user)
+    payments = (
+        db.query(models.MembershipPayment)
+        .filter(
+            models.MembershipPayment.provider == "payphone",
+            models.MembershipPayment.payment_type == "marketplace_pharmacy",
+            models.MembershipPayment.status.in_(["created", "pending"]),
+        )
+        .order_by(models.MembershipPayment.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    items = []
+    for payment in payments:
+        original = get_original_payment_payload(payment)
+        buyer = original.get("buyer", {}) or {}
+        marketplace = original.get("marketplace", {}) or {}
+        items.append({
+            "payment_id": payment.id,
+            "client_transaction_id": payment.payment_reference or payment.paypal_order_id,
+            "created_at": payment.created_at,
+            "amount": float(payment.amount or 0),
+            "currency": payment.currency,
+            "buyer_name": buyer.get("name"),
+            "buyer_phone": buyer.get("phone"),
+            "buyer_email": buyer.get("email"),
+            "doctor_prescriber_identifier": marketplace.get("doctor_prescriber_identifier"),
+            "items": marketplace.get("items") or [],
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/marketplace/admin/payments/{payment_id}/confirm")
+def admin_confirm_pharmacy_payphone_payment(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    require_payphone_pharmacy_admin(current_user)
+    payment = (
+        db.query(models.MembershipPayment)
+        .filter(models.MembershipPayment.id == payment_id)
+        .first()
+    )
+    if not payment or payment.payment_type != "marketplace_pharmacy" or payment.provider != "payphone":
+        raise HTTPException(status_code=404, detail="Pago PayPhone de Farmacia no encontrado")
+    if payment.status not in {"paid", "verified"}:
+        payment.status = "paid"
+        payment.paid_at = datetime.utcnow()
+        payment.admin_verified = True
+        payment.admin_verified_at = datetime.utcnow()
+        payment.admin_verified_by = current_user.id
+        previous_payload = payment.raw_payload
+        payment.raw_payload = json.dumps({
+            "previous_payload": previous_payload,
+            "manual_pharmacy_confirmation": {
+                "confirmed_by": current_user.id,
+                "confirmed_at": datetime.utcnow().isoformat(),
+                "note": "Pago comprobado manualmente en PayPhone Business",
+            },
+        })
+        db.commit()
+    return confirm_marketplace_payphone_payment(
+        PayphoneConfirmRequest(clientTransactionId=payment.payment_reference or payment.paypal_order_id),
+        db,
+    )
 
 
 @router.post("/confirm")
