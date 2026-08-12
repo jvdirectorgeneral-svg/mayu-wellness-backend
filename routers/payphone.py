@@ -6,6 +6,7 @@ from typing import Optional, Literal, List
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -36,6 +37,10 @@ PAYPHONE_BASE_URL = os.getenv(
 PAYPHONE_RESPONSE_URL = os.getenv(
     "PAYPHONE_RESPONSE_URL",
     "https://mayu-wellness-backend-v1.onrender.com/payphone/response",
+)
+PAYPHONE_WEB_RETURN_URL = os.getenv(
+    "PAYPHONE_WEB_RETURN_URL",
+    "https://mayuwellnesclub.com/marketplacefarmaciamayu",
 )
 
 
@@ -162,6 +167,7 @@ def extract_payphone_link(data):
         link_keys = {
             "link", "url", "paymentUrl", "payment_url", "approvalUrl",
             "approval_url", "shortUrl", "short_url", "paymentLink", "payment_link",
+            "payWithPayPhone", "payWithCard",
         }
         for key in link_keys:
             value = data.get(key)
@@ -209,12 +215,11 @@ def create_payphone_link(
         "clientTransactionId": client_transaction_id,
         "storeId": str(PAYPHONE_STORE_ID),
         "additionalData": description,
-        "oneTime": True,
-        "expireIn": 0,
-        "isAmountEditable": False,
+        "responseUrl": PAYPHONE_RESPONSE_URL,
+        "cancellationUrl": PAYPHONE_WEB_RETURN_URL,
     }
 
-    url = f"{PAYPHONE_BASE_URL}/Links"
+    url = f"{PAYPHONE_BASE_URL}/button/Prepare"
 
     try:
         response = requests.post(
@@ -250,6 +255,28 @@ def create_payphone_link(
         "clientTransactionId": client_transaction_id,
         "sent_body": body,
     }
+
+
+def confirm_payphone_button_transaction(payphone_id: int, client_transaction_id: str):
+    try:
+        response = requests.post(
+            f"{PAYPHONE_BASE_URL}/button/V2/Confirm",
+            json={"id": payphone_id, "clientTxId": client_transaction_id},
+            headers=payphone_headers(),
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Error confirmando PayPhone: {exc}")
+
+    if response.status_code not in [200, 201]:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "PayPhone rechazó la confirmación", "payphone_response": response.text},
+        )
+    try:
+        return response.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="PayPhone devolvió una confirmación inválida")
 
 
 def is_payphone_paid(data: dict) -> bool:
@@ -1037,14 +1064,59 @@ async def payphone_webhook(
 
 @router.get("/response")
 def payphone_response(
-    id: Optional[str] = None,
+    id: Optional[int] = None,
     clientTransactionId: Optional[str] = None,
+    clientTransactionID: Optional[str] = None,
     transactionId: Optional[str] = None,
+    db: Session = Depends(get_db),
 ):
-    return {
-        "success": True,
-        "message": "Respuesta recibida desde PayPhone",
-        "id": id,
-        "clientTransactionId": clientTransactionId,
-        "transactionId": transactionId,
-    }
+    clientTransactionId = clientTransactionId or clientTransactionID
+    if not id or not clientTransactionId:
+        return RedirectResponse(f"{PAYPHONE_WEB_RETURN_URL}?payphone=invalid", status_code=302)
+
+    payment = find_local_payment(
+        db=db,
+        client_transaction_id=clientTransactionId,
+        transaction_id=transactionId,
+        payphone_id=id,
+    )
+    if not payment:
+        return RedirectResponse(f"{PAYPHONE_WEB_RETURN_URL}?payphone=not_found", status_code=302)
+
+    confirmation = confirm_payphone_button_transaction(id, clientTransactionId)
+    if not is_payphone_paid(confirmation):
+        previous_payload = payment.raw_payload
+        payment.status = "failed"
+        payment.raw_payload = json.dumps({
+            "previous_payload": previous_payload,
+            "payphone_confirmation": confirmation,
+        })
+        db.commit()
+        return RedirectResponse(f"{PAYPHONE_WEB_RETURN_URL}?payphone=failed", status_code=302)
+
+    previous_payload = payment.raw_payload
+    payment.status = "paid"
+    payment.paid_at = datetime.utcnow()
+    payment.admin_verified = True
+    payment.admin_verified_at = datetime.utcnow()
+    payment.raw_payload = json.dumps({
+        "previous_payload": previous_payload,
+        "payphone_confirmation": confirmation,
+    })
+    if confirmation.get("transactionId"):
+        payment.payment_reference = str(confirmation.get("transactionId"))
+    db.commit()
+
+    if payment.payment_type in {"marketplace_pharmacy", "marketplace_education"}:
+        confirm_marketplace_payphone_payment(
+            PayphoneConfirmRequest(
+                id=id,
+                clientTransactionId=clientTransactionId,
+                transactionId=str(confirmation.get("transactionId") or transactionId or ""),
+            ),
+            db,
+        )
+    else:
+        activate_membership_from_payment(db=db, payment=payment, payphone_payload=confirmation)
+
+    return RedirectResponse(f"{PAYPHONE_WEB_RETURN_URL}?payphone=success", status_code=302)
