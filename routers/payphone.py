@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import html
 from datetime import datetime
 from typing import Optional, Literal, List
 
@@ -25,6 +26,7 @@ from marketplace import (
     validate_doctor_prescriber_identifier,
     validate_member_discount_code,
 )
+from notification_service import mayu_email_header, safe_send_email
 
 router = APIRouter(prefix="/payphone", tags=["payphone"])
 
@@ -43,6 +45,68 @@ PAYPHONE_WEB_RETURN_URL = os.getenv(
     "PAYPHONE_WEB_RETURN_URL",
     "https://mayuwellnesclub.com/marketplacefarmaciamayu",
 )
+
+DEFAULT_PHARMACY_ORDER_ALERT_EMAILS = (
+    "auxfarmaciaquito@gmail.com,"
+    "auxiliarcontablefarmacia@gmail.com,"
+    "juliovicencio@icloud.com"
+)
+
+
+def send_pharmacy_payphone_request_alert(
+    client_transaction_id: str,
+    buyer_name: str,
+    buyer_email: str,
+    buyer_phone: str,
+    total: float,
+    items: list,
+    doctor_identifier: Optional[str],
+):
+    recipients = [
+        email.strip()
+        for email in os.getenv(
+            "PHARMACY_ORDER_ALERT_EMAILS",
+            DEFAULT_PHARMACY_ORDER_ALERT_EMAILS,
+        ).split(",")
+        if email.strip()
+    ]
+    product_rows = "".join(
+        f"<li>{html.escape(str(item.get('title') or 'Producto'))} "
+        f"x{int(item.get('quantity') or 0)} — "
+        f"${float(item.get('total') or 0):.2f} USD</li>"
+        for item in items
+    )
+    body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#17201f">
+      {mayu_email_header("Nueva solicitud PayPhone · Farmacia")}
+      <div style="padding:24px;border:1px solid #d9e4e1;border-top:0">
+        <h2 style="margin-top:0">Tienes una compra reciente por verificar</h2>
+        <p>Se generó una solicitud PayPhone para Marketplace Farmacia.</p>
+        <p><strong>No la confirmes todavía:</strong> primero comprueba que la referencia
+        figure efectivamente cobrada en PayPhone Business.</p>
+        <table style="width:100%;border-collapse:collapse">
+          <tr><td><strong>Referencia</strong></td><td>{html.escape(client_transaction_id)}</td></tr>
+          <tr><td><strong>Cliente</strong></td><td>{html.escape(buyer_name)}</td></tr>
+          <tr><td><strong>Correo</strong></td><td>{html.escape(buyer_email)}</td></tr>
+          <tr><td><strong>Teléfono</strong></td><td>{html.escape(buyer_phone)}</td></tr>
+          <tr><td><strong>Total</strong></td><td>${total:.2f} USD</td></tr>
+          <tr><td><strong>Doctor</strong></td><td>{html.escape(doctor_identifier or 'No vinculado')}</td></tr>
+        </table>
+        <h3>Productos</h3><ul>{product_rows}</ul>
+        <p>Después de verificar el cobro, ingresa al panel Administrador Farmacia
+        y pulsa <strong>Confirmar</strong> sobre esta misma referencia para procesar
+        el pedido y enviarlo a Logística.</p>
+      </div>
+    </div>
+    """
+    return {
+        recipient: safe_send_email(
+            recipient,
+            f"Compra PayPhone por verificar · {client_transaction_id}",
+            body,
+        )
+        for recipient in recipients
+    }
 
 
 def get_db():
@@ -748,6 +812,20 @@ def build_marketplace_payphone_payment(
     db.commit()
     db.refresh(payment)
 
+    pharmacy_alerts = None
+    if clean_item_type == "pharmacy":
+        pharmacy_alerts = send_pharmacy_payphone_request_alert(
+            client_transaction_id=client_transaction_id,
+            buyer_name=buyer_name,
+            buyer_email=buyer_email,
+            buyer_phone=buyer_phone,
+            total=total,
+            items=items_data,
+            doctor_identifier=(
+                doctor_info["doctor_prescriber_identifier"] if doctor_info else None
+            ),
+        )
+
     return {
         "message": (
             "Link PayPhone carrito educación creado"
@@ -767,6 +845,7 @@ def build_marketplace_payphone_payment(
         "buyer_name": buyer_name,
         "buyer_phone": buyer_phone,
         "buyer_email": buyer_email,
+        "pharmacy_alerts": pharmacy_alerts,
         "payment_url": payphone_data.get("link"),
         "payphone": payphone_data,
     }
