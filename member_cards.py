@@ -1120,10 +1120,20 @@ def build_member_apple_wallet_file(
                         [
                             {
                                 "key": "marketing_notice",
-                                "label": card.wallet_notification_title or "Mayu Wellness Club",
-                                "value": card.wallet_notification_message,
+                                "label": "NOVEDAD MAYU",
+                                "value": (
+                                    f"{card.wallet_notification_title or 'Mayu Wellness Club'}: "
+                                    f"{card.wallet_notification_message}"
+                                ),
                                 "changeMessage": "%@",
-                            }
+                            },
+                            {
+                                # Fuerza a Wallet a reconocer campañas sucesivas,
+                                # incluso cuando se repita el mismo mensaje.
+                                "key": "marketing_notice_version",
+                                "label": "ACTUALIZACIÓN",
+                                "value": str(card.wallet_notification_nonce or 0),
+                            },
                         ]
                         if card.wallet_notification_message
                         else []
