@@ -36,6 +36,7 @@ from models import (
     MembershipPayment,
     Order,
     DoctorPrescriber,
+    MemberCard,
     MarketingContact,
 )
 from marketing_contacts import contact_to_dict as directory_contact_to_dict, upsert_marketing_contact
@@ -828,6 +829,7 @@ def make_user_contact(user: User, source: str = "mayu_wellness"):
         "email": user.email,
         "phone": user.phone,
         "source": source,
+        "member_card_id": user.member_card.id if user.member_card else None,
     }
 
 
@@ -876,7 +878,10 @@ def dedupe_contacts(contacts):
             # Legacy CRM rows may represent the same person several times. Keep
             # one recipient, but retain any app or Wallet linkage found in the
             # duplicates so push delivery is not lost during deduplication.
-            for field in ("user_id", "doctor_prescriber_id", "email", "phone", "name"):
+            for field in (
+                "user_id", "member_card_id", "doctor_prescriber_id",
+                "email", "phone", "name",
+            ):
                 if not existing.get(field) and contact.get(field):
                     existing[field] = contact.get(field)
             sources = {
@@ -918,7 +923,10 @@ def contact_to_dict(contact, channel: str, message: Optional[str] = None):
         "push_delivery": [
             channel for channel, enabled in (
                 ("app", bool(contact.get("user_id"))),
-                ("wallet", bool(contact.get("doctor_prescriber_id"))),
+                ("wallet", bool(
+                    contact.get("doctor_prescriber_id")
+                    or contact.get("member_card_id")
+                )),
             ) if enabled
         ],
         "order_id": contact.get("order_id"),
@@ -1157,6 +1165,37 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                         push_results.append("app")
                     except Exception as exc:
                         push_errors.append(f"app: {exc}")
+                    member_card = db.query(MemberCard).filter(
+                        MemberCard.user_id == user_id,
+                    ).first()
+                    if member_card:
+                        member_user = db.query(User).filter(User.id == user_id).first()
+                        member_card.wallet_notification_title = campaign.title[:120]
+                        member_card.wallet_notification_message = campaign.message[:500]
+                        member_card.wallet_notification_nonce = int(
+                            member_card.wallet_notification_nonce or 0
+                        ) + 1
+                        member_card.wallet_notification_updated_at = datetime.utcnow()
+                        db.flush()
+                        try:
+                            from member_cards import safe_update_member_wallets
+                            wallet_result = safe_update_member_wallets(
+                                db, member_user, member_card
+                            )
+                            apple_sent = int(
+                                (wallet_result.get("apple") or {}).get("sent") or 0
+                            )
+                            google_updated = bool(
+                                (wallet_result.get("google") or {}).get("updated")
+                            )
+                            if apple_sent or google_updated:
+                                push_results.append("wallet")
+                            else:
+                                push_errors.append(
+                                    "wallet: tarjeta sin dispositivo registrado o actualización rechazada"
+                                )
+                        except Exception as exc:
+                            push_errors.append(f"wallet: {exc}")
                 if doctor_prescriber_id:
                     doctor = db.query(DoctorPrescriber).filter(
                         DoctorPrescriber.id == doctor_prescriber_id,

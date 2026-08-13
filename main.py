@@ -53,6 +53,10 @@ with engine.begin() as connection:
         "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_title VARCHAR",
         "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_message TEXT",
         "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_nonce INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE member_cards ADD COLUMN IF NOT EXISTS wallet_notification_title VARCHAR",
+        "ALTER TABLE member_cards ADD COLUMN IF NOT EXISTS wallet_notification_message TEXT",
+        "ALTER TABLE member_cards ADD COLUMN IF NOT EXISTS wallet_notification_nonce INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE member_cards ADD COLUMN IF NOT EXISTS wallet_notification_updated_at TIMESTAMP",
     ):
         connection.execute(text(statement))
     connection.execute(text(

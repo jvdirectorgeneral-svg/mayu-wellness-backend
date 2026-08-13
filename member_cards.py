@@ -397,6 +397,9 @@ def verify_member_wallet_request(request: FastAPIRequest, card):
 def member_apple_last_updated(db: Session, user, card):
     summary = ambassador_commission_summary(db, user)
     latest = summary.get("latest_commission_at") if summary else None
+    notification_latest = getattr(card, "wallet_notification_updated_at", None)
+    if notification_latest and (latest is None or notification_latest > latest):
+        latest = notification_latest
     order = latest_membership_order(db, user.id)
     if order:
         order_latest = order.delivered_at or order.shipped_at or order.prepared_at or order.created_at
@@ -1116,6 +1119,18 @@ def build_member_apple_wallet_file(
                     *(
                         [
                             {
+                                "key": "marketing_notice",
+                                "label": card.wallet_notification_title or "Mayu Wellness Club",
+                                "value": card.wallet_notification_message,
+                                "changeMessage": "%@",
+                            }
+                        ]
+                        if card.wallet_notification_message
+                        else []
+                    ),
+                    *(
+                        [
+                            {
                                 "key": "pending_back",
                                 "label": "Próxima comisión",
                                 "value": pending_value,
@@ -1317,6 +1332,15 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
         ]
     elif db:
         text_modules.extend(wallet_order_fields(db, user.id))
+
+    if card.wallet_notification_message:
+        text_modules.append(
+            {
+                "id": "marketing_notice",
+                "header": card.wallet_notification_title or "Mayu Wellness Club",
+                "body": card.wallet_notification_message,
+            }
+        )
 
     return {
         "id": object_id,

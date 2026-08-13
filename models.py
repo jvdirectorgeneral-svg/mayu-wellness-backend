@@ -383,6 +383,10 @@ class MemberCard(Base):
     level_snapshot = Column(Integer, nullable=False)
     status = Column(String, default="active", nullable=False)
     expires_at = Column(String, nullable=True)
+    wallet_notification_title = Column(String, nullable=True)
+    wallet_notification_message = Column(Text, nullable=True)
+    wallet_notification_nonce = Column(Integer, nullable=False, default=0)
+    wallet_notification_updated_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="member_card")
     apple_wallet_registrations = relationship(
