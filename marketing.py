@@ -860,24 +860,38 @@ def make_order_contact(
 
 
 def dedupe_contacts(contacts):
-    seen_emails = set()
-    seen_phones = set()
-    seen_fallback = set()
+    by_email = {}
+    by_phone = {}
+    by_fallback = {}
     unique = []
 
     for contact in contacts:
         email = (contact.get("email") or "").strip().lower()
         phone = normalize_whatsapp_phone(contact.get("phone")) or ""
         fallback = str(contact.get("id"))
-        if (email and email in seen_emails) or (phone and phone in seen_phones) or (
-            not email and not phone and fallback in seen_fallback
-        ):
+        existing = by_email.get(email) if email else None
+        existing = existing or (by_phone.get(phone) if phone else None)
+        existing = existing or (by_fallback.get(fallback) if not email and not phone else None)
+        if existing is not None:
+            # Legacy CRM rows may represent the same person several times. Keep
+            # one recipient, but retain any app or Wallet linkage found in the
+            # duplicates so push delivery is not lost during deduplication.
+            for field in ("user_id", "doctor_prescriber_id", "email", "phone", "name"):
+                if not existing.get(field) and contact.get(field):
+                    existing[field] = contact.get(field)
+            sources = {
+                item.strip()
+                for value in (existing.get("source"), contact.get("source"))
+                for item in str(value or "").split(",")
+                if item.strip()
+            }
+            existing["source"] = ",".join(sorted(sources))
             continue
         if email:
-            seen_emails.add(email)
+            by_email[email] = contact
         if phone:
-            seen_phones.add(phone)
-        seen_fallback.add(fallback)
+            by_phone[phone] = contact
+        by_fallback[fallback] = contact
         unique.append(contact)
 
     return unique
@@ -931,7 +945,7 @@ def get_audience_users(db: Session, target_group: str, audience_tag: Optional[st
             query = query.filter(MarketingContact.sources.ilike("%external%"))
         if audience_tag:
             query = query.filter(MarketingContact.tags.ilike(f"%{audience_tag.strip()}%"))
-        return [
+        contacts = [
             {
                 "id": f"contact:{item.id}", "user_id": item.user_id,
                 "doctor_prescriber_id": item.doctor_prescriber_id,
@@ -939,8 +953,9 @@ def get_audience_users(db: Session, target_group: str, audience_tag: Optional[st
                 "membership_active": None, "email": item.email, "phone": item.phone,
                 "source": item.sources,
             }
-            for item in query.order_by(MarketingContact.name.asc()).all()
+            for item in query.order_by(MarketingContact.updated_at.desc()).all()
         ]
+        return dedupe_contacts(contacts)
 
     if target_group in {"members", "active_members", "inactive_members", "ambassadors"}:
         query = db.query(User).filter(User.is_active == True)

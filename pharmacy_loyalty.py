@@ -60,6 +60,10 @@ router = APIRouter(prefix="/pharmacy-loyalty", tags=["Pharmacy Loyalty"])
 security = HTTPBearer()
 POINT_VALUE_CENTS = 1000
 PHARMACY_WALLET_AUTH_PREFIX = "mayu-magistral-wallet"
+PHARMACY_PROXIMITY_MESSAGE = (
+    "Mayu Ecuador — Ciencia vegetal que transforma tu vida. "
+    "¡Visítanos, estás cerca!"
+)
 
 # Apple Wallet y Google Wallet admiten hasta 10 ubicaciones de relevancia por
 # tarjeta/objeto. Estas son las ubicaciones iniciales aprobadas para la tarjeta
@@ -122,10 +126,8 @@ DEFAULT_PHARMACY_WALLET_LOCATIONS = [
 def configured_pharmacy_wallet_locations():
     """Devuelve hasta 10 ubicaciones; Render puede reemplazar las predeterminadas."""
     raw = os.getenv("PHARMACY_WALLET_LOCATIONS_JSON", "").strip()
-    if not raw:
-        return [dict(item) for item in DEFAULT_PHARMACY_WALLET_LOCATIONS]
     try:
-        locations = json.loads(raw)
+        locations = json.loads(raw) if raw else DEFAULT_PHARMACY_WALLET_LOCATIONS
         if not isinstance(locations, list):
             return []
         clean = []
@@ -134,11 +136,10 @@ def configured_pharmacy_wallet_locations():
                 continue
             latitude = float(item["latitude"])
             longitude = float(item["longitude"])
-            name = str(item.get("name") or "Farmacia Magistral Mayu cercana").strip()
             clean.append({
                 "latitude": latitude,
                 "longitude": longitude,
-                "relevantText": name,
+                "relevantText": PHARMACY_PROXIMITY_MESSAGE,
             })
         return clean
     except Exception as exc:
