@@ -48,6 +48,10 @@ MAYU_EMAIL_LOGO_URL = os.getenv(
     "MAYU_EMAIL_LOGO_URL",
     "https://mayuwellnesclub.com/mayu-email-logo.png",
 )
+MAYU_PUSH_LOGO_URL = os.getenv(
+    "MAYU_PUSH_LOGO_URL",
+    "https://mayuwellnesclub.com/mayu-email-logo.png",
+)
 
 MEMBERSHIP_MONTHLY_PRICES = {
     1: 42.00,
@@ -629,7 +633,7 @@ def send_push_notification(
         raise Exception("Token push vacío")
 
     access_token = get_firebase_access_token()
-    communication_image_url = image_url or MAYU_EMAIL_LOGO_URL
+    communication_image_url = image_url or MAYU_PUSH_LOGO_URL
 
     url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
 
@@ -664,6 +668,16 @@ def send_push_notification(
                         "sound": "default",
                         "badge": 1,
                     }
+                },
+            },
+            "webpush": {
+                "notification": {
+                    "icon": MAYU_PUSH_LOGO_URL,
+                    "badge": MAYU_PUSH_LOGO_URL,
+                    "image": communication_image_url,
+                },
+                "fcm_options": {
+                    "link": "https://mayuwellnesclub.com/",
                 },
             },
         }
@@ -2919,6 +2933,50 @@ def get_campaign_detail(
         "recipients": [recipient_to_dict(r) for r in recipients],
         "logs": [recipient_to_dict(r) for r in recipients],
     }
+
+
+@router.delete("/campaigns/sent/all")
+def delete_all_sent_campaigns(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    campaigns = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.status == "sent")
+        .all()
+    )
+    deleted = len(campaigns)
+    for campaign in campaigns:
+        db.delete(campaign)
+    db.commit()
+
+    return {
+        "message": "Historial de campañas enviadas eliminado",
+        "deleted": deleted,
+    }
+
+
+@router.delete("/campaigns/{campaign_id}")
+def delete_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    require_marketing_user(current_user)
+
+    campaign = (
+        db.query(MarketingCampaign)
+        .filter(MarketingCampaign.id == campaign_id)
+        .first()
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    db.delete(campaign)
+    db.commit()
+    return {"message": "Campaña eliminada correctamente", "campaign_id": campaign_id}
 
 
 @router.put("/campaigns/{campaign_id}")
