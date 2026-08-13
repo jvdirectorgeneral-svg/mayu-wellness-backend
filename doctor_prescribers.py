@@ -41,6 +41,7 @@ from member_cards import (
     cover_image_to_canvas,
     create_wallet_icon,
     fit_image_to_canvas,
+    fit_transparent_image_to_canvas,
     get_google_wallet_service_account,
     sign_manifest,
     zip_pkpass,
@@ -347,7 +348,7 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
 
 def copy_or_create_doctor_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+    logo_path = os.path.join(base_dir, "assets", "logo_farmacia.png")
     background_path = os.path.join(base_dir, "assets", "doctor_prescriber_card_bg.png")
     bg_color = (0, 96, 84)
 
@@ -357,7 +358,7 @@ def copy_or_create_doctor_wallet_images(pass_dir: str):
     ]:
         target = os.path.join(pass_dir, filename)
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, bg_color)
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -367,7 +368,7 @@ def copy_or_create_doctor_wallet_images(pass_dir: str):
     ]:
         target = os.path.join(pass_dir, filename)
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, bg_color)
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -514,6 +515,14 @@ def get_doctor_prescriber_card_background():
     file_path = os.path.join(base_dir, "assets", "doctor_prescriber_card_bg.png")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="No existe fondo Doctor Prescriptor")
+    return FileResponse(file_path, media_type="image/png")
+
+
+@router.get("/assets/logo_farmacia.png")
+def get_doctor_prescriber_logo():
+    file_path = os.path.join(os.path.dirname(__file__), "assets", "logo_farmacia.png")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="No existe logo Farmacia")
     return FileResponse(file_path, media_type="image/png")
 
 
@@ -1024,7 +1033,7 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
     public_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/qr/{doctor.qr_token}"
     qr_image_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/qr/{doctor.qr_token}/image"
     bg_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/assets/doctor_prescriber_card_bg.png"
-    logo_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/assets/doctor_prescriber_card_bg.png"
+    logo_url = f"{BASE_PUBLIC_URL}/doctor-prescribers/assets/logo_farmacia.png?v=20260813"
     commission_value = f"${round((doctor.commission_balance_cents or 0) / 100, 2)}"
 
     return {

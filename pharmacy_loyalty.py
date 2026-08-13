@@ -46,6 +46,7 @@ from member_cards import (
     cover_image_to_canvas,
     create_wallet_icon,
     fit_image_to_canvas,
+    fit_transparent_image_to_canvas,
     get_google_wallet_service_account,
     sign_manifest,
     zip_pkpass,
@@ -1590,10 +1591,26 @@ def get_pharmacy_wallet_asset():
     )
 
 
+@router.get("/assets/tarjeta_sociosfarmacia_43.png")
+def get_pharmacy_wallet_asset_43():
+    file_path = os.path.join(os.path.dirname(__file__), "assets", "tarjeta_sociosfarmacia_43.png")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="No existe fondo Tarjeta Mayu Magistral")
+    return FileResponse(file_path, media_type="image/png")
+
+
+@router.get("/assets/logo_farmacia.png")
+def get_pharmacy_wallet_logo():
+    file_path = os.path.join(os.path.dirname(__file__), "assets", "logo_farmacia.png")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="No existe logo Farmacia")
+    return FileResponse(file_path, media_type="image/png")
+
+
 def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
-    wallet_image_path = os.path.join(base_dir, "assets", "tarjeta_sociosfarmacia.jpg")
+    logo_path = os.path.join(base_dir, "assets", "logo_farmacia.png")
+    wallet_image_path = os.path.join(base_dir, "assets", "tarjeta_sociosfarmacia_43.png")
     bg_color = (0, 96, 84)
 
     for filename, size in [
@@ -1602,7 +1619,7 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     ]:
         target = os.path.join(pass_dir, filename)
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, bg_color)
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -1612,7 +1629,7 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     ]:
         target = os.path.join(pass_dir, filename)
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, bg_color)
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -2073,9 +2090,9 @@ def build_pharmacy_google_wallet_object(customer, card, issuer_id: str, class_id
     object_id = pharmacy_google_object_id(card, issuer_id)
     public_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}"
     qr_image_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/qr/{card.qr_token}/image"
-    logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
+    logo_url = f"{BASE_PUBLIC_URL}/pharmacy-loyalty/assets/logo_farmacia.png?v=20260813"
     pharmacy_card_asset_url = (
-        f"{BASE_PUBLIC_URL}/pharmacy-loyalty/assets/tarjeta_sociosfarmacia.jpg"
+        f"{BASE_PUBLIC_URL}/pharmacy-loyalty/assets/tarjeta_sociosfarmacia_43.png?v=20260813"
     )
 
     generic_object = {

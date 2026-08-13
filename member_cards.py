@@ -528,6 +528,7 @@ def get_wallet_asset(filename: str):
         "wallet_oro.png",
         "wallet_embajador.png",
         "logo_mayu.png",
+        "logo_wellneswallet.png",
         "card_cobre.jpg",
         "card_plata.jpg",
         "card_oro.jpg",
@@ -837,6 +838,18 @@ def fit_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_colo
     canvas.convert("RGB").save(target_path)
 
 
+def fit_transparent_image_to_canvas(source_path: str, target_path: str, size: tuple):
+    """Preserve logo transparency so Wallet does not draw a rectangular tile."""
+    img = Image.open(source_path).convert("RGBA")
+    img.thumbnail(size, Image.LANCZOS)
+    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+    canvas.alpha_composite(
+        img,
+        ((size[0] - img.size[0]) // 2, (size[1] - img.size[1]) // 2),
+    )
+    canvas.save(target_path, format="PNG")
+
+
 def cover_image_object_to_canvas(img: Image.Image, target_path: str, size: tuple, bg_color=(15, 23, 42)):
     img = img.convert("RGB")
     img_ratio = img.width / img.height
@@ -866,7 +879,7 @@ def cover_image_to_canvas(source_path: str, target_path: str, size: tuple, bg_co
 
 def copy_or_create_wallet_images(pass_dir: str, user, card):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "assets", "logo_mayu.png")
+    logo_path = os.path.join(base_dir, "assets", "logo_wellneswallet.png")
 
     visual = get_card_visual_data(None, user, card)
     wallet_image_path = os.path.join(base_dir, "assets", visual["wallet_file"])
@@ -878,7 +891,7 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
         target = os.path.join(pass_dir, filename)
 
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -889,7 +902,7 @@ def copy_or_create_wallet_images(pass_dir: str, user, card):
         target = os.path.join(pass_dir, filename)
 
         if os.path.exists(logo_path):
-            fit_image_to_canvas(logo_path, target, size, visual["fallback_color"])
+            fit_transparent_image_to_canvas(logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -1261,7 +1274,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
 
     validate_url = f"{BASE_PUBLIC_URL}/member-cards/validate/{card.qr_token}"
     full_card_image_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/image?v={card.id}-{card.level_snapshot}-{card.status}-{wallet_visual_version}-{uuid.uuid4()}"
-    logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_mayu.png"
+    logo_url = f"{BASE_PUBLIC_URL}/member-cards/assets/logo_wellneswallet.png?v=20260813"
     card_web_url = f"{BASE_PUBLIC_URL}/member-cards/user/{user.id}/web"
 
     ambassador_summary = ambassador_commission_summary(None, user)
