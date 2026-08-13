@@ -1666,12 +1666,20 @@ def safe_send_member_apple_wallet_update_pushes(db: Session, card):
                         headers={
                             "apns-topic": pass_type_id,
                             "apns-push-type": "background",
-                            "apns-priority": "10",
+                            "apns-priority": "5",
                         },
                         json={},
                     )
                     if response.status_code in {200, 201}:
                         sent += 1
+                        print(json.dumps({
+                            "event": "member_wallet_apns_accepted",
+                            "card_id": card.id,
+                            "user_id": card.user_id,
+                            "registration_id": registration.id,
+                            "status_code": response.status_code,
+                            "apns_id": response.headers.get("apns-id"),
+                        }), flush=True)
                     elif response.status_code == 410:
                         (
                             db.query(models.MemberAppleWalletRegistration)
@@ -1680,6 +1688,14 @@ def safe_send_member_apple_wallet_update_pushes(db: Session, card):
                         )
                         db.commit()
                     else:
+                        print(json.dumps({
+                            "event": "member_wallet_apns_rejected",
+                            "card_id": card.id,
+                            "user_id": card.user_id,
+                            "registration_id": registration.id,
+                            "status_code": response.status_code,
+                            "detail": response.text[:300],
+                        }), flush=True)
                         errors.append(
                             {
                                 "registration_id": registration.id,

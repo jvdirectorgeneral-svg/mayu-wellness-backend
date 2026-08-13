@@ -1182,6 +1182,14 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                             wallet_result = safe_update_member_wallets(
                                 db, member_user, member_card
                             )
+                            print(json.dumps({
+                                "event": "marketing_member_wallet_result",
+                                "campaign_id": campaign.id,
+                                "user_id": user_id,
+                                "card_id": member_card.id,
+                                "role": member_user.role if member_user else None,
+                                "result": wallet_result,
+                            }, default=str), flush=True)
                             apple_sent = int(
                                 (wallet_result.get("apple") or {}).get("sent") or 0
                             )
