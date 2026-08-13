@@ -610,6 +610,9 @@ class DoctorPrescriber(Base):
     total_sales_cents = Column(Integer, nullable=False, default=0)
     commission_balance_cents = Column(Integer, nullable=False, default=0)
     lifetime_commission_cents = Column(Integer, nullable=False, default=0)
+    wallet_notification_title = Column(String, nullable=True)
+    wallet_notification_message = Column(Text, nullable=True)
+    wallet_notification_nonce = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(

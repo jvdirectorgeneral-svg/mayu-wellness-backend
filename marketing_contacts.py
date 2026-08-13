@@ -88,4 +88,10 @@ def contact_to_dict(contact):
         "email_status": contact.email_status, "bounce_count": contact.bounce_count,
         "complaint_count": contact.complaint_count,
         "archived_at": contact.archived_at,
+        "push_channels": [
+            channel for channel, enabled in (
+                ("app", bool(contact.user_id)),
+                ("wallet", bool(contact.doctor_prescriber_id)),
+            ) if enabled
+        ],
         "created_at": contact.created_at, "updated_at": contact.updated_at}

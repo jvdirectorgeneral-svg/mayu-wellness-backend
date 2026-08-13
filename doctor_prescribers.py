@@ -454,7 +454,13 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                         "key": "code",
                         "label": "CODIGO",
                         "value": doctor.doctor_code,
-                    }
+                    },
+                    *([{
+                        "key": "marketing_notice",
+                        "label": doctor.wallet_notification_title or "NOVEDAD MAYU",
+                        "value": f"{doctor.wallet_notification_message} · {doctor.wallet_notification_nonce}",
+                        "changeMessage": "%@",
+                    }] if doctor.wallet_notification_message else []),
                 ],
                 "backFields": [
                     {"key": "email", "label": "Correo", "value": doctor.email},
@@ -1066,6 +1072,10 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
             {"id": "rules_card", "header": "Compra con tarjeta de crédito",
                 "body": "22% si compra el doctor o sus pacientes."},
             {"id": "code", "header": "Código", "body": doctor.doctor_code},
+            *([{"id": "marketing_notice",
+                "header": doctor.wallet_notification_title or "Novedad Mayu",
+                "body": doctor.wallet_notification_message}]
+              if doctor.wallet_notification_message else []),
         ],
         "linksModuleData": {
             "uris": [

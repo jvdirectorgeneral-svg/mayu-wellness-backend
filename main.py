@@ -50,6 +50,9 @@ with engine.begin() as connection:
         "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS last_email_event_at TIMESTAMP",
         "ALTER TABLE marketing_contacts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
         "ALTER TABLE marketing_campaigns ADD COLUMN IF NOT EXISTS audience_tag VARCHAR",
+        "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_title VARCHAR",
+        "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_message TEXT",
+        "ALTER TABLE doctor_prescribers ADD COLUMN IF NOT EXISTS wallet_notification_nonce INTEGER NOT NULL DEFAULT 0",
     ):
         connection.execute(text(statement))
     connection.execute(text(

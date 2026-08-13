@@ -901,6 +901,12 @@ def contact_to_dict(contact, channel: str, message: Optional[str] = None):
         "contact": email if channel == "email" else phone,
         "channel": channel,
         "source": contact.get("source"),
+        "push_delivery": [
+            channel for channel, enabled in (
+                ("app", bool(contact.get("user_id"))),
+                ("wallet", bool(contact.get("doctor_prescriber_id"))),
+            ) if enabled
+        ],
         "order_id": contact.get("order_id"),
         "order_code": contact.get("order_code"),
         "total": contact.get("total"),
@@ -928,6 +934,7 @@ def get_audience_users(db: Session, target_group: str, audience_tag: Optional[st
         return [
             {
                 "id": f"contact:{item.id}", "user_id": item.user_id,
+                "doctor_prescriber_id": item.doctor_prescriber_id,
                 "name": item.name, "role": "marketing_contact",
                 "membership_active": None, "email": item.email, "phone": item.phone,
                 "source": item.sources,
@@ -1080,6 +1087,7 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
 
     for contact in contacts:
         user_id = contact.get("user_id")
+        doctor_prescriber_id = contact.get("doctor_prescriber_id")
         email = contact.get("email")
         phone = contact.get("phone")
         name = contact.get("name") or "Cliente Mayu"
@@ -1122,18 +1130,58 @@ def send_campaign_now(db: Session, campaign: MarketingCampaign):
                 total_success += 1
 
             elif campaign.channel == "push":
-                if not user_id:
-                    raise Exception(
-                        "Este contacto no está enlazado a usuario de app con token push"
+                push_results = []
+                push_errors = []
+                if user_id:
+                    try:
+                        send_push_to_latest_user_token(
+                            db=db, user_id=user_id, title=campaign.title,
+                            message=campaign.message,
+                            image_url=getattr(campaign, "image_url", None),
+                        )
+                        push_results.append("app")
+                    except Exception as exc:
+                        push_errors.append(f"app: {exc}")
+                if doctor_prescriber_id:
+                    doctor = db.query(DoctorPrescriber).filter(
+                        DoctorPrescriber.id == doctor_prescriber_id,
+                        DoctorPrescriber.is_active == True,
+                    ).first()
+                    if doctor:
+                        doctor.wallet_notification_title = campaign.title[:120]
+                        doctor.wallet_notification_message = campaign.message[:500]
+                        doctor.wallet_notification_nonce = int(
+                            doctor.wallet_notification_nonce or 0
+                        ) + 1
+                        doctor.updated_at = datetime.utcnow()
+                        db.flush()
+                        try:
+                            # Importación local para evitar un ciclo entre el módulo
+                            # de Wallet y el servicio general de notificaciones.
+                            from doctor_prescribers import safe_update_doctor_wallets
+                            wallet_result = safe_update_doctor_wallets(db, doctor)
+                            apple_sent = int(
+                                (wallet_result.get("apple") or {}).get("sent") or 0
+                            )
+                            google_updated = bool(
+                                (wallet_result.get("google") or {}).get("updated")
+                            )
+                            if apple_sent or google_updated:
+                                push_results.append("wallet")
+                            else:
+                                push_errors.append(
+                                    "wallet: tarjeta sin dispositivo registrado o actualización rechazada"
+                                )
+                        except Exception as exc:
+                            push_errors.append(f"wallet: {exc}")
+                if not push_results:
+                    raise Exception(" | ".join(push_errors) or
+                                    "Contacto sin app ni tarjeta Wallet enlazada")
+                if push_errors:
+                    error_message = (
+                        "Enviado por " + ", ".join(push_results)
+                        + "; avisos: " + " | ".join(push_errors)
                     )
-
-                send_push_to_latest_user_token(
-                    db=db,
-                    user_id=user_id,
-                    title=campaign.title,
-                    message=campaign.message,
-                    image_url=getattr(campaign, "image_url", None),
-                )
                 total_success += 1
 
             elif campaign.channel == "whatsapp":
