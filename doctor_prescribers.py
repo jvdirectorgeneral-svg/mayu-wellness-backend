@@ -424,8 +424,8 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
             "webServiceURL": f"{BASE_PUBLIC_URL}/doctor-prescribers/wallet/apple",
             "authenticationToken": doctor_wallet_auth_token(doctor),
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(0,96,84)",
-            "labelColor": "rgb(210,245,238)",
+            "backgroundColor": "rgb(0,0,0)",
+            "labelColor": "rgb(255,255,255)",
             "suppressStripShine": True,
             "sharingProhibited": False,
             "storeCard": {
@@ -998,7 +998,7 @@ def ensure_doctor_google_wallet_class(service_account_info: dict, class_id: str)
         "id": class_id,
         "issuerName": "Mayu Doctor Prescriptor",
         "reviewStatus": "UNDER_REVIEW",
-        "hexBackgroundColor": "#006054",
+        "hexBackgroundColor": "#000000",
         "localizedIssuerName": {
             "defaultValue": {"language": "es", "value": "Mayu Doctor Prescriptor"}
         },
@@ -1032,7 +1032,7 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         "classId": class_id,
         "state": "ACTIVE" if doctor.is_active else "INACTIVE",
         "notifyPreference": "NOTIFY_ON_UPDATE",
-        "hexBackgroundColor": "#006054",
+        "hexBackgroundColor": "#000000",
         "logo": {
             "sourceUri": {"uri": logo_url},
             "contentDescription": {

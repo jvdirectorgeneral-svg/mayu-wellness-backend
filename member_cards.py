@@ -1059,8 +1059,8 @@ def build_member_apple_wallet_file(
             "webServiceURL": f"{BASE_PUBLIC_URL}/member-cards/wallet/apple",
             "authenticationToken": member_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(15,23,42)",
-            "labelColor": "rgb(255,236,170)",
+            "backgroundColor": "rgb(0,0,0)",
+            "labelColor": "rgb(255,255,255)",
             "suppressStripShine": True,
             "sharingProhibited": False,
             "storeCard": {
@@ -1215,7 +1215,7 @@ def ensure_member_google_wallet_class(service_account_info: dict, class_id: str)
         "id": class_id,
         "issuerName": CLUB_NAME,
         "reviewStatus": "UNDER_REVIEW",
-        "hexBackgroundColor": "#0F172A",
+        "hexBackgroundColor": "#000000",
         "localizedIssuerName": {
             "defaultValue": {"language": "es", "value": CLUB_NAME}
         },
@@ -1309,7 +1309,7 @@ def build_google_wallet_object_body(user, card, issuer_id: str, class_id: str, d
         "id": object_id,
         "classId": class_id,
         "state": "ACTIVE" if card.status == "active" else "INACTIVE",
-        "hexBackgroundColor": visual["hex_color"],
+        "hexBackgroundColor": "#000000",
         "logo": {
             "sourceUri": {"uri": logo_url},
             "contentDescription": {"defaultValue": {"language": "es", "value": CLUB_NAME}},

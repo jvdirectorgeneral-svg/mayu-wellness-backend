@@ -1683,8 +1683,8 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple",
             "authenticationToken": pharmacy_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
-            "backgroundColor": "rgb(0,96,84)",
-            "labelColor": "rgb(210,245,238)",
+            "backgroundColor": "rgb(0,0,0)",
+            "labelColor": "rgb(255,255,255)",
             "suppressStripShine": True,
             "sharingProhibited": False,
             "storeCard": {
@@ -2039,7 +2039,7 @@ def ensure_pharmacy_google_wallet_class(service_account_info: dict, class_id: st
         "id": class_id,
         "issuerName": "Mayu Magistral",
         "reviewStatus": "UNDER_REVIEW",
-        "hexBackgroundColor": "#006054",
+        "hexBackgroundColor": "#000000",
         "localizedIssuerName": {
             "defaultValue": {"language": "es", "value": "Mayu Magistral"}
         },
@@ -2082,7 +2082,7 @@ def build_pharmacy_google_wallet_object(customer, card, issuer_id: str, class_id
         "id": object_id,
         "classId": class_id,
         "state": "ACTIVE",
-        "hexBackgroundColor": "#006054",
+        "hexBackgroundColor": "#000000",
         "logo": {
             "sourceUri": {"uri": logo_url},
             "contentDescription": {"defaultValue": {"language": "es", "value": "Mayu Magistral"}},
