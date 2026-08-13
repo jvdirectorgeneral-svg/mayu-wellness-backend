@@ -455,14 +455,21 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                         "label": "CODIGO",
                         "value": doctor.doctor_code,
                     },
+                ],
+                "backFields": [
                     *([{
                         "key": "marketing_notice",
                         "label": doctor.wallet_notification_title or "NOVEDAD MAYU",
-                        "value": f"{doctor.wallet_notification_message} · {doctor.wallet_notification_nonce}",
+                        "value": doctor.wallet_notification_message,
                         "changeMessage": "%@",
+                    }, {
+                        # Cambia en cada envío para que Wallet detecte incluso
+                        # campañas consecutivas con el mismo texto. No lleva
+                        # changeMessage, por lo que no genera un segundo aviso.
+                        "key": "marketing_notice_version",
+                        "label": "ACTUALIZACIÓN",
+                        "value": str(doctor.wallet_notification_nonce or 0),
                     }] if doctor.wallet_notification_message else []),
-                ],
-                "backFields": [
                     {"key": "email", "label": "Correo", "value": doctor.email},
                     {"key": "phone", "label": "Telefono", "value": doctor.phone},
                     {"key": "web", "label": "Tarjeta web", "value": public_url},
