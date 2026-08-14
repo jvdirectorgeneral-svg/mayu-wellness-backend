@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List, Any
@@ -9,6 +9,11 @@ from datetime import datetime
 import secrets
 import string
 import os
+import re
+import unicodedata
+from urllib.parse import urlencode, urlparse
+
+import requests
 
 import cloudinary
 import cloudinary.uploader
@@ -314,6 +319,68 @@ def cloudinary_video_mp4_url(url: str):
     return url.replace("/upload/", "/upload/f_mp4,q_auto/")
 
 
+def education_pdf_filename(title: Optional[str]):
+    normalized = unicodedata.normalize("NFKD", title or "contenido-mayu")
+    ascii_title = normalized.encode("ascii", "ignore").decode("ascii")
+    safe_title = re.sub(r"[^A-Za-z0-9_-]+", "-", ascii_title).strip("-_")
+    return f"{safe_title or 'contenido-mayu'}.pdf"
+
+
+@router.get("/resources/{resource_id}/download-pdf")
+def download_protected_pdf(
+    resource_id: int,
+    token: Optional[str] = Query(default=None),
+    access_code: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    current_user = get_user_from_token_param(token, db)
+
+    if current_user:
+        require_active_member_or_team(current_user)
+    elif not get_valid_access_code(db, resource_id, access_code):
+        raise HTTPException(status_code=401, detail="Acceso no autorizado o código caducado")
+
+    resource = (
+        db.query(models.EducationResource)
+        .filter(models.EducationResource.id == resource_id)
+        .filter(models.EducationResource.active == True)
+        .first()
+    )
+
+    if not resource or not resource.download_pdf_url:
+        raise HTTPException(status_code=404, detail="PDF complementario no encontrado")
+
+    parsed_url = urlparse(resource.download_pdf_url)
+    if parsed_url.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Enlace de PDF no válido")
+
+    try:
+        upstream = requests.get(resource.download_pdf_url, stream=True, timeout=(10, 90))
+        upstream.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail="No se pudo descargar el PDF almacenado") from exc
+
+    filename = education_pdf_filename(resource.title)
+
+    def stream_pdf():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return StreamingResponse(
+        stream_pdf(),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/categories")
 def get_public_categories(db: Session = Depends(get_db)):
     categories = (
@@ -612,10 +679,16 @@ def view_protected_resource(
         """
 
     if resource.download_pdf_url:
+        download_query = urlencode(
+            {key: value for key, value in {"token": token, "access_code": access_code}.items() if value}
+        )
+        download_url = f"/education/resources/{resource_id}/download-pdf"
+        if download_query:
+            download_url += f"?{download_query}"
         extra_content_html += f"""
         <div class="box">
           <h3>PDF descargable</h3>
-          <p><a href="{escape(resource.download_pdf_url)}" target="_blank">Descargar PDF complementario</a></p>
+          <p><a href="{escape(download_url)}">Descargar PDF complementario</a></p>
         </div>
         """
 
