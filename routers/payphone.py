@@ -19,6 +19,7 @@ from marketplace_paypal import (
     fulfill_education_payment_if_needed,
     fulfill_pharmacy_payment_if_needed,
     get_original_payment_payload,
+    resolve_marketplace_buyer_user,
 )
 from pharmacy_loyalty import sync_marketplace_loyalty_wallet_after_commit
 from marketplace import (
@@ -247,7 +248,7 @@ class PayphoneMarketplaceCartItem(BaseModel):
 
 class PayphoneMarketplaceCartRequest(BaseModel):
     item_type: str = "pharmacy"
-    user_id: int
+    user_id: Optional[int] = None
     buyer_name: Optional[str] = None
     buyer_phone: Optional[str] = None
     buyer_email: Optional[str] = None
@@ -720,10 +721,13 @@ def build_marketplace_payphone_payment(
     if not payload.items:
         raise HTTPException(status_code=400, detail="El carrito está vacío")
 
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user = resolve_marketplace_buyer_user(
+        db,
+        payload.user_id,
+        payload.buyer_name,
+        payload.buyer_phone,
+        payload.buyer_email,
+    )
 
     buyer_name = (payload.buyer_name or user.name or "").strip()
     buyer_phone = (payload.buyer_phone or user.phone or "").strip()

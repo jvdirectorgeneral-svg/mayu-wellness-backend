@@ -8,15 +8,18 @@ from datetime import datetime
 from typing import Optional, List
 import secrets
 import string
+import uuid
 
 import resend
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
 import models
+from auth import hash_password
 from marketing_contacts import upsert_marketing_contact
 from notification_service import (
     add_tracking_history,
@@ -93,7 +96,7 @@ class MarketplaceCartItemCreate(BaseModel):
 
 class MarketplacePayPalCreateCartOrderRequest(BaseModel):
     item_type: str = "pharmacy"
-    user_id: int
+    user_id: Optional[int] = None
     buyer_name: Optional[str] = None
     buyer_phone: Optional[str] = None
     buyer_email: Optional[str] = None
@@ -121,6 +124,56 @@ class MarketplacePayPalCaptureRequest(BaseModel):
 def generate_access_code():
     alphabet = string.ascii_uppercase + string.digits
     return "MAYU-EDU-" + "".join(secrets.choice(alphabet) for _ in range(10))
+
+
+def resolve_marketplace_buyer_user(
+    db: Session,
+    user_id: Optional[int],
+    buyer_name: Optional[str],
+    buyer_phone: Optional[str],
+    buyer_email: Optional[str],
+):
+    user = None
+    if user_id:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    normalized_email = (buyer_email or "").strip().lower()
+    if not user and normalized_email:
+        user = (
+            db.query(models.User)
+            .filter(func.lower(models.User.email) == normalized_email)
+            .first()
+        )
+
+    if user:
+        return user
+
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="El email es obligatorio")
+
+    guest_token = uuid.uuid4().hex
+    user = models.User(
+        name=(buyer_name or "Comprador Mayu Educación").strip(),
+        email=normalized_email,
+        password=hash_password(guest_token),
+        phone=(buyer_phone or "Sin teléfono").strip(),
+        cedula=f"EDU-{guest_token[:20]}",
+        city="No registrada",
+        address="Compra digital",
+        reference="Marketplace Educación",
+        delivery_notes="Entrega digital por email",
+        accepted_terms=False,
+        accepted_privacy_policy=False,
+        accepted_digital_policy=False,
+        status="education_buyer",
+        membership_active=False,
+        is_active=True,
+        role="education_buyer",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 def generate_education_order_code():
@@ -932,10 +985,13 @@ def create_marketplace_paypal_cart_order(
     if not payload.items:
         raise HTTPException(status_code=400, detail="El carrito está vacío")
 
-    user = db.query(models.User).filter(models.User.id == payload.user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    user = resolve_marketplace_buyer_user(
+        db,
+        payload.user_id,
+        payload.buyer_name,
+        payload.buyer_phone,
+        payload.buyer_email,
+    )
 
     buyer_name = (payload.buyer_name or user.name or "").strip()
     buyer_phone = (payload.buyer_phone or user.phone or "").strip()
