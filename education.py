@@ -211,9 +211,6 @@ def require_active_member_or_team(current_user: models.User):
     if is_team_user(current_user):
         return
 
-    if current_user.role not in {"member", "ambassador"}:
-        raise HTTPException(status_code=403, detail="Acceso solo para socios Mayu")
-
     if not getattr(current_user, "membership_active", False):
         raise HTTPException(status_code=403, detail="Tu membresía no está activa")
 
