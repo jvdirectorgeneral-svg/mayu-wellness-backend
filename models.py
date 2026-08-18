@@ -897,6 +897,84 @@ class MembershipPayment(Base):
         foreign_keys=[admin_verified_by],
     )
 
+
+class NuveiMembershipCard(Base):
+    __tablename__ = "nuvei_membership_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    token = Column(String, nullable=False, unique=True, index=True)
+    status = Column(String, nullable=False, default="valid")
+    is_default = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    holder_name = Column(String, nullable=True)
+    bin = Column(String, nullable=True)
+    last4 = Column(String, nullable=True)
+    card_type = Column(String, nullable=True)
+    expiry_month = Column(String, nullable=True)
+    expiry_year = Column(String, nullable=True)
+    origin = Column(String, nullable=True)
+    transaction_reference = Column(String, nullable=True, index=True)
+
+    raw_payload = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    deleted_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class NuveiRecurringAttempt(Base):
+    __tablename__ = "nuvei_recurring_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    card_id = Column(
+        Integer,
+        ForeignKey("nuvei_membership_cards.id"),
+        nullable=True,
+        index=True,
+    )
+    membership_payment_id = Column(
+        Integer,
+        ForeignKey("membership_payments.id"),
+        nullable=True,
+        index=True,
+    )
+
+    dev_reference = Column(String, nullable=False, unique=True, index=True)
+    transaction_id = Column(String, nullable=True, unique=True, index=True)
+    authorization_code = Column(String, nullable=True)
+
+    amount = Column(Float, nullable=False)
+    currency = Column(String, nullable=False, default="USD")
+    attempt_type = Column(String, nullable=False, default="subscription_renewal")
+    status = Column(String, nullable=False, default="pending")
+    status_detail = Column(Integer, nullable=True)
+    message = Column(Text, nullable=True)
+
+    request_payload = Column(Text, nullable=True)
+    response_payload = Column(Text, nullable=True)
+
+    due_date = Column(DateTime, nullable=True)
+    charged_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", foreign_keys=[user_id])
+    card = relationship("NuveiMembershipCard", foreign_keys=[card_id])
+    membership_payment = relationship(
+        "MembershipPayment",
+        foreign_keys=[membership_payment_id],
+    )
+
+
 class PasswordResetCode(Base):
     __tablename__ = "password_reset_codes"
 

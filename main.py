@@ -31,6 +31,7 @@ from routers.payphone import router as payphone_router
 from marketplace_paypal import router as marketplace_paypal_router
 from pharmacy_loyalty import router as pharmacy_loyalty_router
 from doctor_prescribers import router as doctor_prescribers_router
+from nuvei_membership import router as nuvei_membership_router
 
 from dependencies import get_current_user
 import models
@@ -213,6 +214,7 @@ app.include_router(payphone_router)
 app.include_router(marketplace_paypal_router)
 app.include_router(pharmacy_loyalty_router)
 app.include_router(doctor_prescribers_router)
+app.include_router(nuvei_membership_router)
 
 
 @app.get("/")
