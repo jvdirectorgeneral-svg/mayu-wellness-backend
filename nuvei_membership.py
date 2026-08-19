@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -10,7 +11,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -42,7 +43,7 @@ MONTHLY_PRICES = {
 }
 
 SUCCESS_STATUS_DETAILS = {"3", 3}
-SUCCESS_STATUSES = {"success", "1", 1, "approved", "APPROVED"}
+SUCCESS_STATUSES = {"success", "1", 1}
 
 
 class RegisterTokenRequest(BaseModel):
@@ -52,7 +53,6 @@ class RegisterTokenRequest(BaseModel):
     holder_name: Optional[str] = None
     bin: Optional[str] = None
     last4: Optional[str] = None
-    number: Optional[str] = None
     card_type: Optional[str] = None
     expiry_month: Optional[str] = None
     expiry_year: Optional[str] = None
@@ -60,17 +60,6 @@ class RegisterTokenRequest(BaseModel):
     transaction_reference: Optional[str] = None
     make_default: bool = True
     charge_initial: bool = False
-    raw_payload: Optional[dict] = None
-
-
-class AddCardServerRequest(BaseModel):
-    user_id: Optional[int] = None
-    number: str
-    holder_name: str
-    expiry_month: int
-    expiry_year: int
-    cvc: str
-    card_type: Optional[str] = None
 
 
 class DebitRequest(BaseModel):
@@ -152,6 +141,17 @@ def get_client_app_key():
 
 def get_cron_secret():
     return os.getenv("NUVEI_CRON_SECRET") or os.getenv("MARKETING_CRON_SECRET")
+
+
+def get_callback_url():
+    return os.getenv(
+        "NUVEI_CALLBACK_URL",
+        "https://mayu-wellness-backend-v1.onrender.com/payments/nuvei/membership/webhook",
+    ).strip()
+
+
+def get_max_retry_attempts():
+    return max(1, int(os.getenv("NUVEI_MAX_RETRY_ATTEMPTS", "3")))
 
 
 def auth_token():
@@ -262,8 +262,13 @@ def has_successful_payment_for_cycle(db: Session, user_id: int, month: int, year
         db.query(MembershipPayment)
         .filter(
             MembershipPayment.user_id == user_id,
-            MembershipPayment.provider == "nuvei",
-            MembershipPayment.payment_type == "subscription_renewal",
+            # La deduplicacion es por ciclo de membresia, no por proveedor.
+            # Esto evita cobrar Nuvei en un mes que ya fue pagado por PayPal
+            # durante la migracion del metodo de pago.
+            MembershipPayment.provider.in_(["nuvei", "paypal"]),
+            MembershipPayment.payment_type.in_(
+                ["subscription", "subscription_renewal", "membership_initial"]
+            ),
             MembershipPayment.status.in_(["subscription_paid", "verified"]),
             MembershipPayment.monthly_selection.has(
                 MonthlySelection.month == month,
@@ -325,14 +330,42 @@ def is_nuvei_success(response: dict):
     return status in SUCCESS_STATUSES and status_detail in SUCCESS_STATUS_DETAILS
 
 
+def status_detail_as_int(value):
+    try:
+        return int(value) if value is not None and str(value) != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_webhook_signature(transaction: dict, user_id):
+    transaction_id = str(transaction.get("id") or "")
+    stoken = transaction.get("stoken")
+    configured_app_code = get_server_app_code()
+    app_code = transaction.get("application_code")
+    app_key = get_server_app_key()
+    if configured_app_code and app_code != configured_app_code:
+        raise HTTPException(status_code=203, detail="application_code Nuvei invalido")
+    expected = None
+    if transaction_id and app_code and user_id and app_key:
+        expected = hashlib.md5(
+            f"{transaction_id}_{app_code}_{user_id}_{app_key}".encode("utf-8")
+        ).hexdigest()
+    if not expected or not stoken or not hmac.compare_digest(str(stoken), expected):
+        raise HTTPException(status_code=203, detail="stoken Nuvei inválido")
+
+
 def normalize_card_payload(payload: dict):
     card = payload.get("card") or payload
+    raw_last4 = str(card.get("last4") or "")
+    last4 = "".join(character for character in raw_last4 if character.isdigit())[-4:]
+    raw_bin = str(card.get("bin") or "")
+    card_bin = "".join(character for character in raw_bin if character.isdigit())[:8]
     return {
         "token": str(card.get("token") or "").strip(),
         "status": str(card.get("status") or "valid").strip(),
         "holder_name": card.get("holder_name"),
-        "bin": card.get("bin"),
-        "last4": card.get("number") or card.get("last4"),
+        "bin": card_bin or None,
+        "last4": last4 or None,
         "card_type": card.get("type"),
         "expiry_month": str(card.get("expiry_month") or "") or None,
         "expiry_year": str(card.get("expiry_year") or "") or None,
@@ -356,6 +389,9 @@ def card_to_dict(card: NuveiMembershipCard):
         "expiry_year": card.expiry_year,
         "origin": card.origin,
         "transaction_reference": card.transaction_reference,
+        "next_debit_at": card.next_debit_at,
+        "last_debit_at": card.last_debit_at,
+        "failed_attempts": card.failed_attempts,
         "created_at": card.created_at,
         "updated_at": card.updated_at,
     }
@@ -377,8 +413,9 @@ def attempt_to_dict(attempt: NuveiRecurringAttempt):
         "attempt_type": attempt.attempt_type,
         "status": attempt.status,
         "status_detail": attempt.status_detail,
-        "response_message": attempt.response_message,
-        "processed_at": attempt.processed_at,
+        "response_message": attempt.message,
+        "processed_at": attempt.charged_at,
+        "next_retry_at": attempt.next_retry_at,
         "created_at": attempt.created_at,
     }
 
@@ -411,13 +448,35 @@ def save_card_from_payload(
             setattr(card, key, value)
     card.is_active = True
     card.is_default = make_default or card.is_default
-    card.raw_payload = json.dumps(payload)
+    # Persistimos únicamente metadatos permitidos. PAN y CVV nunca deben llegar
+    # al backend MAYU; la tokenización ocurre exclusivamente en el SDK Nuvei.
+    card.raw_payload = json.dumps({"card": {"token_received": True, **card_data}})
 
     if not existing:
         db.add(card)
 
     db.flush()
+    if not card.next_debit_at:
+        card.next_debit_at = datetime.combine(next_debit_date_for_user(db, user), datetime.min.time())
     return card
+
+
+def advance_card_after_success(card: NuveiMembershipCard, charged_at: Optional[datetime] = None):
+    charged_at = charged_at or datetime.utcnow()
+    scheduled = card.next_debit_at.date() if card.next_debit_at else charged_at.date()
+    if scheduled < charged_at.date():
+        scheduled = charged_at.date()
+    card.last_debit_at = charged_at
+    card.next_debit_at = datetime.combine(add_months(scheduled, 1), datetime.min.time())
+    card.failed_attempts = 0
+
+
+def schedule_card_retry(card: NuveiMembershipCard):
+    card.failed_attempts = int(card.failed_attempts or 0) + 1
+    card.next_debit_at = datetime.combine(
+        datetime.utcnow().date() + timedelta(days=1),
+        datetime.min.time(),
+    )
 
 
 def create_payment_from_success(
@@ -514,10 +573,10 @@ def run_nuvei_debit(
     force: bool = False,
     attempt_type: str = "subscription_renewal",
 ):
-    if attempt_type == "subscription_renewal" and not force and has_successful_payment_for_cycle(db, user.id, month, year):
+    if not force and has_successful_payment_for_cycle(db, user.id, month, year):
         return {
             "skipped": True,
-            "reason": "Ya existe pago Nuvei exitoso para este ciclo",
+            "reason": "Ya existe un pago exitoso para este ciclo",
             "user_id": user.id,
             "month": month,
             "year": year,
@@ -552,20 +611,21 @@ def run_nuvei_debit(
         year=year,
         attempt_type=attempt_type,
         status="created",
-        raw_request=json.dumps(request_body),
+        request_payload=json.dumps(request_body),
+        due_date=datetime(year, month, 1),
     )
     db.add(attempt)
     db.flush()
 
     response = nuvei_request("POST", "/v2/transaction/debit/", request_body)
     transaction = response.get("transaction") or response
-    attempt.raw_response = json.dumps(response)
+    attempt.response_payload = json.dumps(response)
     attempt.transaction_id = transaction.get("id")
     attempt.authorization_code = transaction.get("authorization_code")
     attempt.status = str(transaction.get("status") or "unknown")
-    attempt.status_detail = str(transaction.get("status_detail") or "")
-    attempt.response_message = transaction.get("message")
-    attempt.processed_at = datetime.utcnow()
+    attempt.status_detail = status_detail_as_int(transaction.get("status_detail"))
+    attempt.message = transaction.get("message")
+    attempt.charged_at = datetime.utcnow()
 
     payment = None
     commission_sync = None
@@ -573,6 +633,7 @@ def run_nuvei_debit(
 
     if is_nuvei_success(response):
         payment = create_payment_from_success(db, user, attempt, response)
+        advance_card_after_success(card, attempt.charged_at)
         commission_sync = sync_referral_commission_for_payment(db, user, month, year)
         try:
             trigger = (
@@ -590,8 +651,10 @@ def run_nuvei_debit(
         except Exception as exc:
             admin_email_sync = {"sent": False, "error": str(exc)}
     else:
-        user.membership_active = False
+        # Un rechazo no cancela la membresia en el primer intento. El cron la
+        # reintenta y el estado final se administra con la politica de cobro.
         attempt.next_retry_at = datetime.utcnow() + timedelta(days=1)
+        schedule_card_retry(card)
 
     db.commit()
 
@@ -617,9 +680,8 @@ def debug(current_user: User = Depends(get_current_user)):
         "has_client_app_code": bool(get_client_app_code()),
         "has_client_app_key": bool(get_client_app_key()),
         "has_cron_secret": bool(get_cron_secret()),
-        "allow_server_card_add": os.getenv("NUVEI_ALLOW_SERVER_CARD_ADD") == "true",
         "monthly_prices": MONTHLY_PRICES,
-        "callback_url": "https://mayu-wellness-backend-v1.onrender.com/payments/nuvei/membership/webhook",
+        "callback_url": get_callback_url(),
     }
 
 
@@ -636,7 +698,7 @@ def client_config(current_user: User = Depends(get_current_user)):
             "email": current_user.email,
             "phone": current_user.phone,
         },
-        "callback_url": "https://mayu-wellness-backend-v1.onrender.com/payments/nuvei/membership/webhook",
+        "callback_url": get_callback_url(),
     }
 
 
@@ -647,13 +709,13 @@ def register_token(
     current_user: User = Depends(get_current_user),
 ):
     user = resolve_user(db, current_user, payload.user_id)
-    raw = payload.raw_payload or {
+    raw = {
         "card": {
             "token": payload.token,
             "status": payload.status,
             "holder_name": payload.holder_name,
             "bin": payload.bin,
-            "number": payload.last4 or payload.number,
+            "last4": payload.last4,
             "type": payload.card_type,
             "expiry_month": payload.expiry_month,
             "expiry_year": payload.expiry_year,
@@ -694,46 +756,11 @@ def register_token(
     return {
         "message": "Tarjeta Nuvei asociada al socio",
         "card": card_to_dict(card),
-        "next_debit_date": next_debit_date_for_user(db, user).isoformat(),
+        "next_debit_date": card.next_debit_at.date().isoformat(),
         "monthly_amount": monthly_amount_for_user(user),
         "initial_debit": initial_debit,
         "welcome_notifications": welcome_sync,
     }
-
-
-@router.post("/cards/add-server")
-def add_card_server(
-    payload: AddCardServerRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if os.getenv("NUVEI_ALLOW_SERVER_CARD_ADD") != "true":
-        raise HTTPException(
-            status_code=403,
-            detail="Add Card directo está apagado. Usar SDK Nuvei para tokenizar sin tocar PAN/CVV en MAYU.",
-        )
-    user = resolve_user(db, current_user, payload.user_id)
-    body = {
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-            "phone": user.phone,
-            "fiscal_number": user.cedula,
-        },
-        "card": {
-            "number": payload.number,
-            "holder_name": payload.holder_name,
-            "expiry_month": payload.expiry_month,
-            "expiry_year": payload.expiry_year,
-            "cvc": payload.cvc,
-            "type": payload.card_type,
-        },
-    }
-    response = nuvei_request("POST", "/v2/card/add", body)
-    card = save_card_from_payload(db, user, response, make_default=True)
-    db.commit()
-    db.refresh(card)
-    return {"message": "Tarjeta agregada en Nuvei", "card": card_to_dict(card), "nuvei": response}
 
 
 @router.get("/cards")
@@ -758,10 +785,15 @@ def list_cards(
         .order_by(NuveiMembershipCard.is_default.desc(), NuveiMembershipCard.id.desc())
         .all()
     )
+    default_card = get_default_card(db, user.id)
     return {
         "items": [card_to_dict(card) for card in cards],
         "remote": remote,
-        "next_debit_date": next_debit_date_for_user(db, user).isoformat(),
+        "next_debit_date": (
+            default_card.next_debit_at.date().isoformat()
+            if default_card and default_card.next_debit_at
+            else next_debit_date_for_user(db, user).isoformat()
+        ),
         "monthly_amount": monthly_amount_for_user(user),
     }
 
@@ -826,44 +858,56 @@ def debit_run(
 
 @router.post("/cron/run")
 def cron_run(
-    secret: str = Query(...),
+    x_cron_secret: Optional[str] = Header(None, alias="X-Cron-Secret"),
     dry_run: bool = False,
-    limit: int = 50,
+    limit: int = 200,
     db: Session = Depends(get_db),
 ):
     expected = get_cron_secret()
-    if not expected or secret != expected:
+    if not expected or not x_cron_secret or not hmac.compare_digest(x_cron_secret, expected):
         raise HTTPException(status_code=403, detail="Secret inválido")
 
     today = datetime.utcnow().date()
-    users = (
-        db.query(User)
+    safe_limit = max(1, min(int(limit), 500))
+    due_cards = (
+        db.query(NuveiMembershipCard)
+        .join(User, User.id == NuveiMembershipCard.user_id)
         .filter(
+            NuveiMembershipCard.is_active == True,
+            NuveiMembershipCard.is_default == True,
+            NuveiMembershipCard.status.in_(["valid", "review"]),
             User.role == "member",
             User.is_active == True,
             User.membership_active == True,
             User.membership_level.in_([1, 2, 3]),
         )
-        .order_by(User.id.asc())
-        .limit(limit)
+        .order_by(
+            NuveiMembershipCard.next_debit_at.asc().nullsfirst(),
+            NuveiMembershipCard.id.asc(),
+        )
+        .limit(safe_limit)
         .all()
     )
 
     results = []
-    for user in users:
-        card = get_default_card(db, user.id)
-        due_date = next_debit_date_for_user(db, user)
+    for card in due_cards:
+        user = card.user
+        due_date = (
+            card.next_debit_at.date()
+            if card.next_debit_at
+            else next_debit_date_for_user(db, user)
+        )
         month, year = cycle_from_date(due_date)
         item = {
             "user_id": user.id,
             "user_name": user.name,
             "due_date": due_date.isoformat(),
             "monthly_amount": monthly_amount_for_user(user),
-            "has_card": card is not None,
+            "has_card": True,
             "due_today": due_date <= today,
         }
-        if not card:
-            item["status"] = "skipped_no_card"
+        if int(card.failed_attempts or 0) >= get_max_retry_attempts():
+            item["status"] = "skipped_retry_limit"
         elif due_date > today:
             item["status"] = "skipped_not_due"
         elif dry_run:
@@ -880,11 +924,6 @@ def cron_run(
         results.append(item)
 
     return {"message": "Cron Nuvei procesado", "dry_run": dry_run, "items": results}
-
-
-@router.get("/cron/run")
-def cron_run_get(secret: str = Query(...), dry_run: bool = False, limit: int = 50, db: Session = Depends(get_db)):
-    return cron_run(secret=secret, dry_run=dry_run, limit=limit, db=db)
 
 
 @router.post("/refund")
@@ -914,7 +953,7 @@ def refund(
 
     response = nuvei_request("POST", "/v2/transaction/refund/", body)
 
-    if payment:
+    if payment and is_nuvei_success(response):
         payment.status = "refunded"
         payment.raw_payload = json.dumps({"last_refund": response})
         db.commit()
@@ -950,17 +989,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     dev_reference = str(transaction.get("dev_reference") or "")
     user_id = user_payload.get("id")
 
-    if os.getenv("NUVEI_VALIDATE_WEBHOOK_STOKEN") == "true":
-        stoken = transaction.get("stoken")
-        app_code = transaction.get("application_code") or get_server_app_code()
-        app_key = get_server_app_key()
-        expected = None
-        if transaction_id and app_code and user_id and app_key:
-            expected = hashlib.md5(
-                f"{transaction_id}_{app_code}_{user_id}_{app_key}".encode("utf-8")
-            ).hexdigest()
-        if not expected or stoken != expected:
-            raise HTTPException(status_code=403, detail="stoken Nuvei inválido")
+    validate_webhook_signature(transaction, user_id)
 
     attempt = None
     if dev_reference:
@@ -976,44 +1005,40 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             .first()
         )
 
-    user = None
-    if attempt:
-        user = db.query(User).filter(User.id == attempt.user_id).first()
-        attempt.raw_response = json.dumps(event)
+    if not attempt:
+        # Este endpoint procesa exclusivamente cobros de membresia creados por
+        # MAYU. Otros productos Nuvei no pueden activar socios por callback.
+        return {
+            "status": "ignored",
+            "reason": "membership_attempt_not_found",
+            "transaction_id": transaction_id or None,
+        }
+
+    user = db.query(User).filter(User.id == attempt.user_id).first()
+    callback_was_already_processed = False
+    if user:
+        callback_was_already_processed = bool(
+            attempt.response_payload and attempt.next_retry_at
+        )
+        attempt.response_payload = json.dumps(event)
         attempt.transaction_id = transaction_id or attempt.transaction_id
         attempt.authorization_code = transaction.get("authorization_code")
         attempt.status = str(transaction.get("status") or attempt.status)
-        attempt.status_detail = str(transaction.get("status_detail") or attempt.status_detail or "")
-        attempt.response_message = transaction.get("message")
-        attempt.processed_at = datetime.utcnow()
-    elif user_id:
-        try:
-            user = db.query(User).filter(User.id == int(user_id)).first()
-        except Exception:
-            user = None
+        attempt.status_detail = status_detail_as_int(
+            transaction.get("status_detail") or attempt.status_detail
+        )
+        attempt.message = transaction.get("message")
+        attempt.charged_at = datetime.utcnow()
 
     payment = None
     if user and is_nuvei_success({"transaction": transaction}):
-        if not attempt:
-            month, year = current_cycle()
-            attempt = NuveiRecurringAttempt(
-                user_id=user.id,
-                card_id=None,
-                dev_reference=dev_reference or f"NUVEI-WEBHOOK-{transaction_id}",
-                transaction_id=transaction_id,
-                amount=float(transaction.get("amount") or monthly_amount_for_user(user)),
-                currency="USD",
-                month=month,
-                year=year,
-                attempt_type="subscription_renewal",
-                status=str(transaction.get("status") or "success"),
-                status_detail=str(transaction.get("status_detail") or "3"),
-                raw_response=json.dumps(event),
-                processed_at=datetime.utcnow(),
-            )
-            db.add(attempt)
-            db.flush()
+        callback_amount = round(float(transaction.get("amount") or 0), 2)
+        if callback_amount != round(float(attempt.amount), 2):
+            raise HTTPException(status_code=409, detail="Monto del webhook no coincide")
+        was_already_reconciled = attempt.membership_payment_id is not None
         payment = create_payment_from_success(db, user, attempt, {"transaction": transaction})
+        if attempt.card and not was_already_reconciled:
+            advance_card_after_success(attempt.card, attempt.charged_at)
         sync_referral_commission_for_payment(db, user, attempt.month, attempt.year)
         try:
             notify_admin_member_payment_event(
@@ -1026,7 +1051,9 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
     elif user and attempt:
-        user.membership_active = False
+        attempt.next_retry_at = datetime.utcnow() + timedelta(days=1)
+        if attempt.card and not callback_was_already_processed:
+            schedule_card_retry(attempt.card)
 
     db.commit()
     return {

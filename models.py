@@ -918,6 +918,10 @@ class NuveiMembershipCard(Base):
     origin = Column(String, nullable=True)
     transaction_reference = Column(String, nullable=True, index=True)
 
+    next_debit_at = Column(DateTime, nullable=True, index=True)
+    last_debit_at = Column(DateTime, nullable=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+
     raw_payload = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(
@@ -955,6 +959,8 @@ class NuveiRecurringAttempt(Base):
 
     amount = Column(Float, nullable=False)
     currency = Column(String, nullable=False, default="USD")
+    month = Column(Integer, nullable=False, index=True)
+    year = Column(Integer, nullable=False, index=True)
     attempt_type = Column(String, nullable=False, default="subscription_renewal")
     status = Column(String, nullable=False, default="pending")
     status_detail = Column(Integer, nullable=True)
@@ -964,6 +970,7 @@ class NuveiRecurringAttempt(Base):
     response_payload = Column(Text, nullable=True)
 
     due_date = Column(DateTime, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
     charged_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
