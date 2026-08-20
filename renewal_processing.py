@@ -170,6 +170,7 @@ def _ensure_logistics_order(
         return None, "Selección mensual sin productos: revisar antes de despacho"
 
     paid_at = payment.paid_at or payment.created_at or datetime.utcnow()
+    provider = (getattr(payment, "provider", None) or "pago recurrente").strip().upper()
     order = models.Order(
         order_code=(
             f"MWC-{selection.year}{selection.month:02d}-U{user.id}-"
@@ -187,7 +188,7 @@ def _ensure_logistics_order(
         delivery_notes_snapshot=getattr(user, "delivery_notes", None) or "",
         status="approved_for_logistics",
         logistics_notes=(
-            f"RENOVACIÓN PAYPAL CONFIRMADA | Pago #{payment.id} | "
+            f"RENOVACIÓN {provider} CONFIRMADA | Pago #{payment.id} | "
             f"Ciclo {selection.month:02d}/{selection.year} | "
             "Crear un solo despacho; no duplicar esta orden."
         ),
@@ -213,7 +214,7 @@ def _ensure_logistics_order(
             order_id=order.id,
             status="approved_for_logistics",
             note=(
-                f"Pago recurrente PayPal #{payment.id} confirmado automáticamente. "
+                f"Pago recurrente {provider} #{payment.id} confirmado automáticamente. "
                 f"Despacho correspondiente únicamente al ciclo "
                 f"{selection.month:02d}/{selection.year}."
             ),

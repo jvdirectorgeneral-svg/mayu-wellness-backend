@@ -3,7 +3,7 @@ import hashlib
 import os
 import unittest
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -122,6 +122,71 @@ class NuveiMembershipTests(unittest.TestCase):
         ):
             nuvei_membership.advance_card_after_success(live_card, charged_at)
         self.assertEqual(live_card.next_debit_at.date().isoformat(), "2026-09-20")
+
+    def test_successful_renewal_uses_shared_operational_circuit(self):
+        db = MagicMock()
+        user = type(
+            "FakeUser",
+            (),
+            {
+                "id": 42,
+                "email": "socio@example.com",
+                "phone": "0999999999",
+                "membership_level": 1,
+            },
+        )()
+        card = type(
+            "FakeCard",
+            (),
+            {
+                "id": 7,
+                "token": "card-token",
+                "next_debit_at": None,
+                "last_debit_at": None,
+                "failed_attempts": 0,
+            },
+        )()
+        payment = type(
+            "FakePayment",
+            (),
+            {
+                "id": 99,
+                "payment_type": "subscription_renewal",
+                "order_id": 123,
+            },
+        )()
+        response = {
+            "transaction": {
+                "id": "NUVEI-TX-99",
+                "status": "success",
+                "status_detail": 3,
+                "amount": 42.0,
+            }
+        }
+
+        with patch.object(nuvei_membership, "nuvei_request", return_value=response), patch.object(
+            nuvei_membership, "create_payment_from_success", return_value=payment
+        ), patch.object(
+            nuvei_membership,
+            "reconcile_subscription_renewal",
+            return_value={"processed": True, "order_id": 123},
+        ) as reconcile, patch.object(
+            nuvei_membership,
+            "notify_admin_member_payment_event",
+            return_value={"sent": True},
+        ):
+            result = nuvei_membership.run_nuvei_debit(
+                db=db,
+                user=user,
+                card=card,
+                month=8,
+                year=2026,
+                force=True,
+            )
+
+        reconcile.assert_called_once_with(db=db, payment=payment, sync_wallet=True)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["renewal_processing"]["processed"])
 
 
 if __name__ == "__main__":

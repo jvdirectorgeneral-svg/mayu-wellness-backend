@@ -15,13 +15,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from commissions import ensure_current_month_pending_commissions_for_ambassador, sync_ambassador_wallets
 from database import get_db
 from dependencies import get_current_user
 from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
+from renewal_processing import reconcile_subscription_renewal
 from models import (
-    Ambassador,
-    AmbassadorReferral,
     MembershipPayment,
     MonthlySelection,
     NuveiMembershipCard,
@@ -554,42 +552,6 @@ def create_payment_from_success(
     return payment
 
 
-def sync_referral_commission_for_payment(db: Session, user: User, month: int, year: int):
-    referral = (
-        db.query(AmbassadorReferral)
-        .filter(
-            AmbassadorReferral.user_id == user.id,
-            AmbassadorReferral.status == "active",
-        )
-        .first()
-    )
-    if not referral:
-        return {"referral_found": False}
-
-    ambassador = (
-        db.query(Ambassador)
-        .filter(Ambassador.id == referral.ambassador_id)
-        .first()
-    )
-    if not ambassador or not ambassador.is_active or ambassador.status != "active":
-        return {"referral_found": True, "ambassador_active": False}
-
-    created = ensure_current_month_pending_commissions_for_ambassador(
-        db,
-        ambassador,
-        month=month,
-        year=year,
-    )
-    db.flush()
-    wallet_sync = sync_ambassador_wallets(db, ambassador.id)
-    return {
-        "referral_found": True,
-        "ambassador_id": ambassador.id,
-        "created_count": len(created),
-        "wallet_sync": wallet_sync,
-    }
-
-
 def run_nuvei_debit(
     db: Session,
     user: User,
@@ -656,13 +618,21 @@ def run_nuvei_debit(
     attempt.charged_at = datetime.utcnow()
 
     payment = None
-    commission_sync = None
+    renewal_sync = None
     admin_email_sync = None
 
     if is_nuvei_success(response):
         payment = create_payment_from_success(db, user, attempt, response)
         advance_card_after_success(card, attempt.charged_at)
-        commission_sync = sync_referral_commission_for_payment(db, user, month, year)
+        if payment.payment_type == "subscription_renewal":
+            # Nuvei debe recorrer exactamente el mismo circuito operativo que
+            # una renovación PayPal: socio activo, orden de logística,
+            # comisión del embajador, Wallet y notificaciones.
+            renewal_sync = reconcile_subscription_renewal(
+                db=db,
+                payment=payment,
+                sync_wallet=True,
+            )
         try:
             trigger = (
                 "nuvei_subscription_activation"
@@ -673,7 +643,11 @@ def run_nuvei_debit(
                 db=db,
                 user=user,
                 payment=payment,
-                order=None,
+                order=(
+                    db.query(Order).filter(Order.id == payment.order_id).first()
+                    if payment.order_id
+                    else None
+                ),
                 trigger=trigger,
             )
         except Exception as exc:
@@ -691,7 +665,7 @@ def run_nuvei_debit(
         "success": is_nuvei_success(response),
         "attempt": attempt_to_dict(attempt),
         "payment_id": payment.id if payment else None,
-        "commission_sync": commission_sync,
+        "renewal_processing": renewal_sync,
         "admin_email_notification": admin_email_sync,
         "nuvei_response": response,
     }
@@ -1072,13 +1046,18 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         payment = create_payment_from_success(db, user, attempt, {"transaction": transaction})
         if attempt.card and not was_already_reconciled:
             advance_card_after_success(attempt.card, attempt.charged_at)
-        sync_referral_commission_for_payment(db, user, attempt.month, attempt.year)
+        if payment.payment_type == "subscription_renewal" and not payment.admin_verified:
+            reconcile_subscription_renewal(db, payment, sync_wallet=True)
         try:
             notify_admin_member_payment_event(
                 db=db,
                 user=user,
                 payment=payment,
-                order=None,
+                order=(
+                    db.query(Order).filter(Order.id == payment.order_id).first()
+                    if payment.order_id
+                    else None
+                ),
                 trigger="nuvei_webhook_payment",
             )
         except Exception:
