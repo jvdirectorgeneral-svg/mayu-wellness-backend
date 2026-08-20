@@ -80,7 +80,10 @@ class NuveiMembershipTests(unittest.TestCase):
     def test_success_advances_schedule_and_failure_retries_tomorrow(self):
         card = FakeCard()
         charged_at = datetime(2026, 8, 19, 12, 0, 0)
-        nuvei_membership.advance_card_after_success(card, charged_at)
+        with patch.dict(os.environ, {"NUVEI_MODE": "sandbox"}, clear=False), patch.dict(
+            os.environ, {"NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS": ""}, clear=False
+        ):
+            nuvei_membership.advance_card_after_success(card, charged_at)
         self.assertEqual(card.last_debit_at, charged_at)
         self.assertEqual(card.next_debit_at.date().isoformat(), "2026-09-19")
         self.assertEqual(card.failed_attempts, 0)
@@ -88,6 +91,37 @@ class NuveiMembershipTests(unittest.TestCase):
         nuvei_membership.schedule_card_retry(card)
         self.assertEqual(card.failed_attempts, 1)
         self.assertGreater(card.next_debit_at, charged_at)
+
+    def test_all_three_membership_plan_prices(self):
+        for level, expected in ((1, 42.0), (2, 52.0), (3, 62.0)):
+            user = type("FakeUser", (), {"membership_level": level})()
+            self.assertEqual(nuvei_membership.monthly_amount_for_user(user), expected)
+
+    def test_sandbox_can_renew_in_two_days_but_live_cannot(self):
+        charged_at = datetime(2026, 8, 20, 15, 0, 0)
+        sandbox_card = FakeCard()
+        with patch.dict(
+            os.environ,
+            {
+                "NUVEI_MODE": "sandbox",
+                "NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS": "2",
+            },
+            clear=False,
+        ):
+            nuvei_membership.advance_card_after_success(sandbox_card, charged_at)
+        self.assertEqual(sandbox_card.next_debit_at.date().isoformat(), "2026-08-22")
+
+        live_card = FakeCard()
+        with patch.dict(
+            os.environ,
+            {
+                "NUVEI_MODE": "live",
+                "NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS": "2",
+            },
+            clear=False,
+        ):
+            nuvei_membership.advance_card_after_success(live_card, charged_at)
+        self.assertEqual(live_card.next_debit_at.date().isoformat(), "2026-09-20")
 
 
 if __name__ == "__main__":

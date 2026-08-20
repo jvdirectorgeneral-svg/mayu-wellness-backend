@@ -154,6 +154,22 @@ def get_max_retry_attempts():
     return max(1, int(os.getenv("NUVEI_MAX_RETRY_ATTEMPTS", "3")))
 
 
+def get_sandbox_renewal_interval_days() -> Optional[int]:
+    """Return an accelerated renewal interval only outside production."""
+    if get_nuvei_mode() in {"production", "live"}:
+        return None
+    raw = os.getenv("NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, min(int(raw), 28))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS debe ser un entero entre 1 y 28",
+        ) from exc
+
+
 def auth_token():
     app_code = get_server_app_code()
     app_key = get_server_app_key()
@@ -238,6 +254,12 @@ def latest_successful_membership_payment(db: Session, user_id: int):
 
 
 def next_debit_date_for_user(db: Session, user: User) -> date:
+    sandbox_days = get_sandbox_renewal_interval_days()
+    if sandbox_days:
+        latest = latest_successful_membership_payment(db, user.id)
+        base_dt = latest.paid_at or latest.created_at if latest else datetime.utcnow()
+        return (base_dt or datetime.utcnow()).date() + timedelta(days=sandbox_days)
+
     fixed_day = os.getenv("NUVEI_RECURRING_FIXED_DAY")
     if fixed_day:
         day = max(1, min(28, int(fixed_day)))
@@ -467,7 +489,13 @@ def advance_card_after_success(card: NuveiMembershipCard, charged_at: Optional[d
     if scheduled < charged_at.date():
         scheduled = charged_at.date()
     card.last_debit_at = charged_at
-    card.next_debit_at = datetime.combine(add_months(scheduled, 1), datetime.min.time())
+    sandbox_days = get_sandbox_renewal_interval_days()
+    next_date = (
+        charged_at.date() + timedelta(days=sandbox_days)
+        if sandbox_days
+        else add_months(scheduled, 1)
+    )
+    card.next_debit_at = datetime.combine(next_date, datetime.min.time())
     card.failed_attempts = 0
 
 
@@ -681,6 +709,7 @@ def debug(current_user: User = Depends(get_current_user)):
         "has_client_app_key": bool(get_client_app_key()),
         "has_cron_secret": bool(get_cron_secret()),
         "monthly_prices": MONTHLY_PRICES,
+        "sandbox_renewal_interval_days": get_sandbox_renewal_interval_days(),
         "callback_url": get_callback_url(),
     }
 
@@ -919,6 +948,10 @@ def cron_run(
                 card=card,
                 month=month,
                 year=year,
+                # En Sandbox, una prueba acelerada puede tener más de un
+                # débito dentro del mismo mes calendario. En producción la
+                # deduplicación mensual permanece obligatoria.
+                force=bool(get_sandbox_renewal_interval_days()),
             )
             item["status"] = "processed"
         results.append(item)

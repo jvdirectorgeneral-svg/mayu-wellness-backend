@@ -16,7 +16,12 @@ NUVEI_SERVER_APP_KEY=
 NUVEI_CALLBACK_URL=https://mayu-wellness-backend-v1.onrender.com/payments/nuvei/membership/webhook
 NUVEI_CRON_SECRET=
 NUVEI_MAX_RETRY_ATTEMPTS=3
+NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS=2
 ```
+
+`NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS` acelera las renovaciones para pruebas.
+Solo funciona con `NUVEI_MODE=sandbox`; se ignora automáticamente en `live` o
+`production`, donde la renovación conserva su periodicidad mensual.
 
 El `CLIENT_APP_KEY` se entrega solamente al socio autenticado para ejecutar el
 SDK de tokenización. El `SERVER_APP_KEY` nunca sale del backend. MAYU no recibe
@@ -26,7 +31,8 @@ ni almacena PAN o CVV; persiste únicamente el token y metadatos no sensibles.
 
 Crear un Cron Job en Render con el mismo repositorio y variables del backend:
 
-- Horario: `0 5 * * *` (medianoche de Ecuador continental).
+- Prueba acelerada: `0 * * * *` (revisión cada hora; solo cobra al vencer).
+- Producción mensual: `0 5 * * *` (medianoche de Ecuador continental).
 - Comando: `python scripts/run_nuvei_membership_cron.py`
 
 El cron consulta tarjetas activas, intenta el débito cuando corresponde y
