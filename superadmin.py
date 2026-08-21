@@ -672,7 +672,7 @@ def full_delete_user(
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    if user.role != "member":
+    if (user.role or "").strip().lower() != "member":
         raise HTTPException(
             status_code=403,
             detail="Por seguridad, este borrado completo solo permite eliminar socios member",
@@ -696,6 +696,7 @@ def full_delete_user(
 
         delete_if_table_exists(db, "marketing_events", "user_id", user_id)
         delete_if_table_exists(db, "marketing_campaign_recipients", "user_id", user_id)
+        delete_if_table_exists(db, "marketing_contacts", "user_id", user_id)
 
         # 2. Push / recuperación / notificaciones
         delete_if_table_exists(db, "push_notification_tokens", "user_id", user_id)
@@ -768,9 +769,14 @@ def full_delete_user(
 
         # 8. Solicitudes, tarjetas y otros registros directos
         delete_if_table_exists(db, "plan_change_requests", "user_id", user_id)
+        delete_if_table_exists(db, "member_apple_wallet_registrations", "user_id", user_id)
         delete_if_table_exists(db, "member_cards", "user_id", user_id)
 
-        # 9. Embajador y comisiones si el socio también fue embajador
+        # 9. Referidos y comisiones del socio antes de eliminar su usuario.
+        delete_if_table_exists(db, "commissions", "referred_user_id", user_id)
+        delete_if_table_exists(db, "ambassador_referrals", "user_id", user_id)
+
+        # Embajador y comisiones si el socio también fue embajador
         ambassador = (
             db.query(Ambassador)
             .filter(Ambassador.user_id == user_id)
