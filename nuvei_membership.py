@@ -12,12 +12,14 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
 from dependencies import get_current_user
 from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
+from marketing_contacts import upsert_marketing_contact
+from auth import hash_password
 from renewal_processing import reconcile_subscription_renewal
 from models import (
     MembershipPayment,
@@ -27,6 +29,10 @@ from models import (
     Order,
     Plan,
     User,
+    Ambassador,
+    AmbassadorReferral,
+    MonthlySelectionItem,
+    Product,
 )
 
 router = APIRouter(
@@ -58,6 +64,36 @@ class RegisterTokenRequest(BaseModel):
     transaction_reference: Optional[str] = None
     make_default: bool = True
     charge_initial: bool = False
+
+
+class SecureSignupRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    phone: str
+    cedula: str
+    birth_date: Optional[str] = None
+    city: str
+    address: str
+    reference: str
+    delivery_notes: str
+    phone_secondary: Optional[str] = None
+    ambassador_code: Optional[str] = None
+    accepted_terms: bool = False
+    accepted_privacy_policy: bool = False
+    accepted_digital_policy: bool = False
+    membership_level: int
+    initial_products: list[str] = Field(default_factory=list)
+    token: str
+    status: str = "valid"
+    holder_name: Optional[str] = None
+    bin: Optional[str] = None
+    last4: Optional[str] = None
+    card_type: Optional[str] = None
+    expiry_month: Optional[str] = None
+    expiry_year: Optional[str] = None
+    origin: Optional[str] = None
+    transaction_reference: Optional[str] = None
 
 
 class DebitRequest(BaseModel):
@@ -350,6 +386,24 @@ def is_nuvei_success(response: dict):
     return status in SUCCESS_STATUSES and status_detail in SUCCESS_STATUS_DETAILS
 
 
+def signup_nuvei_user_id(email: str, phone: str):
+    normalized_email = email.strip().lower()
+    return "signup-" + hashlib.sha256(
+        f"{normalized_email}:{phone.strip()}".encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def nuvei_user_id_for_card(user: User, card: NuveiMembershipCard):
+    try:
+        metadata = json.loads(card.raw_payload or "{}")
+        stored = metadata.get("nuvei_user_id")
+        if stored:
+            return str(stored)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return str(user.id)
+
+
 def status_detail_as_int(value):
     try:
         return int(value) if value is not None and str(value) != "" else None
@@ -576,7 +630,7 @@ def run_nuvei_debit(
     dev_reference = f"MWC-NUVEI-{user.id}-{year}{month:02d}-{int(time.time())}"
     request_body = {
         "user": {
-            "id": str(user.id),
+            "id": nuvei_user_id_for_card(user, card),
             "email": user.email,
             "phone": user.phone,
         },
@@ -702,6 +756,173 @@ def client_config(current_user: User = Depends(get_current_user)):
             "phone": current_user.phone,
         },
         "callback_url": get_callback_url(),
+    }
+
+
+@router.get("/signup/client-config")
+def signup_client_config(email: EmailStr, phone: str):
+    """Configuracion publica de tokenizacion; no crea ningun registro MAYU."""
+    normalized_email = email.strip().lower()
+    temporary_id = signup_nuvei_user_id(normalized_email, phone)
+    return {
+        "mode": get_nuvei_mode(),
+        "client_app_code": get_client_app_code(),
+        "client_app_key": get_client_app_key(),
+        "user": {"id": temporary_id, "email": normalized_email, "phone": phone.strip()},
+        "callback_url": get_callback_url(),
+    }
+
+
+@router.post("/signup/activate", status_code=201)
+def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
+    """Cobra primero y confirma toda el alta en una sola transaccion SQL.
+
+    Si Nuvei no responde exactamente status=success y status_detail=3, el
+    rollback elimina usuario, tarjeta, pago, seleccion y referido.
+    """
+    email = payload.email.strip().lower()
+    cedula = payload.cedula.strip()
+    required = {
+        "nombre": payload.name,
+        "telefono": payload.phone,
+        "cedula": cedula,
+        "ciudad": payload.city,
+        "direccion": payload.address,
+        "referencia": payload.reference,
+        "datos de facturacion": payload.delivery_notes,
+        "contrasena": payload.password,
+        "token Nuvei": payload.token,
+    }
+    missing = [label for label, value in required.items() if not str(value or "").strip()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Falta completar: {', '.join(missing)}")
+    if not (payload.accepted_terms and payload.accepted_privacy_policy and payload.accepted_digital_policy):
+        raise HTTPException(status_code=400, detail="Debes aceptar todas las politicas obligatorias")
+    if payload.membership_level not in MONTHLY_PRICES:
+        raise HTTPException(status_code=400, detail="Nivel de membresia invalido")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=409, detail="El correo ya esta registrado")
+    if db.query(User).filter(User.cedula == cedula).first():
+        raise HTTPException(status_code=409, detail="La cedula ya esta registrada")
+
+    ambassador = None
+    ambassador_code = (payload.ambassador_code or "").strip() or None
+    if ambassador_code:
+        ambassador = db.query(Ambassador).filter(Ambassador.ambassador_code == ambassador_code).first()
+        if not ambassador:
+            raise HTTPException(status_code=400, detail="Codigo de embajador invalido")
+
+    now = datetime.utcnow()
+    birth_date = None
+    if payload.birth_date:
+        try:
+            birth_date = datetime.fromisoformat(payload.birth_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Fecha de nacimiento invalida")
+    try:
+        user = User(
+            name=payload.name.strip(), email=email, password=hash_password(payload.password),
+            phone=payload.phone.strip(), cedula=cedula, city=payload.city.strip(),
+            address=payload.address.strip(), reference=payload.reference.strip(),
+            birth_date=birth_date,
+            delivery_notes=payload.delivery_notes.strip(),
+            phone_secondary=(payload.phone_secondary or "").strip() or None,
+            role="member", is_active=False, status="payment_pending",
+            membership_level=payload.membership_level, membership_active=False,
+            accepted_terms=True, accepted_privacy_policy=True, accepted_digital_policy=True,
+            accepted_terms_at=now, accepted_privacy_policy_at=now, accepted_digital_policy_at=now,
+        )
+        db.add(user)
+        db.flush()
+        raw_card = {"card": {
+            "token": payload.token, "status": payload.status,
+            "holder_name": payload.holder_name, "bin": payload.bin, "last4": payload.last4,
+            "type": payload.card_type, "expiry_month": payload.expiry_month,
+            "expiry_year": payload.expiry_year, "origin": payload.origin,
+            "transaction_reference": payload.transaction_reference,
+        }}
+        card = save_card_from_payload(db, user, raw_card, make_default=True)
+        external_nuvei_user_id = signup_nuvei_user_id(email, payload.phone)
+        card.raw_payload = json.dumps({
+            "card": {"token_received": True},
+            "nuvei_user_id": external_nuvei_user_id,
+        })
+        month, year = current_cycle()
+        amount = MONTHLY_PRICES[payload.membership_level]
+        dev_reference = f"MWC-NUVEI-SIGNUP-{user.id}-{int(time.time())}"
+        request_body = {
+            "user": {"id": external_nuvei_user_id, "email": user.email, "phone": user.phone},
+            "order": {"amount": amount, "description": f"Mayu Wellness Club primer debito Nivel {payload.membership_level}", "dev_reference": dev_reference, "vat": 0.00},
+            "card": {"token": card.token},
+        }
+        response = nuvei_request("POST", "/v2/transaction/debit/", request_body)
+        transaction = response.get("transaction") or response
+        if not is_nuvei_success(response):
+            db.rollback()
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": "Nuvei no aprobo el pago. No se registro ningun usuario.",
+                    "status": transaction.get("status"),
+                    "status_detail": transaction.get("status_detail"),
+                },
+            )
+
+        attempt = NuveiRecurringAttempt(
+            user_id=user.id, card_id=card.id, dev_reference=dev_reference,
+            transaction_id=transaction.get("id"), authorization_code=transaction.get("authorization_code"),
+            amount=amount, currency="USD", month=month, year=year, attempt_type="subscription",
+            status=str(transaction.get("status")), status_detail=status_detail_as_int(transaction.get("status_detail")),
+            message=transaction.get("message"), request_payload=json.dumps(request_body),
+            response_payload=json.dumps(response), due_date=now, charged_at=now,
+        )
+        db.add(attempt)
+        db.flush()
+        payment = create_payment_from_success(db, user, attempt, response)
+        advance_card_after_success(card, now)
+
+        selection = get_or_create_monthly_selection(db, user, month, year)
+        if selection:
+            # Los nombres vienen de las opciones publicadas por el propio backend.
+            for product_name in dict.fromkeys(payload.initial_products):
+                product = db.query(Product).filter(Product.name == product_name).first()
+                if product:
+                    db.add(MonthlySelectionItem(monthly_selection_id=selection.id, product_id=product.id, quantity=1))
+            selection.status = "confirmed"
+            selection.editable = True
+
+        if ambassador:
+            db.add(AmbassadorReferral(
+                ambassador_id=ambassador.id, user_id=user.id,
+                referral_code=ambassador_code, status="active",
+            ))
+        upsert_marketing_contact(
+            db, name=user.name, email=user.email, phone=user.phone, city=user.city,
+            source="mayu_wellness", user_id=user.id, marketing_consent=True,
+            consent_source="digital_policy",
+        )
+        db.commit()
+        db.refresh(user)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    welcome = None
+    try:
+        welcome = send_welcome_member_notifications(db=db, user=user, trigger="nuvei_subscription_activation")
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        welcome = {"sent": False, "error": str(exc)}
+    return {
+        "id": user.id, "name": user.name, "email": user.email,
+        "membership_level": user.membership_level, "membership_active": user.membership_active,
+        "payment_id": payment.id, "transaction_id": transaction.get("id"),
+        "authorization_code": transaction.get("authorization_code"),
+        "welcome_notifications": welcome,
     }
 
 

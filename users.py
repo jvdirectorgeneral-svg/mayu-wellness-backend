@@ -306,6 +306,16 @@ def get_users(db: Session = Depends(get_db)):
 
 @router.post("/users")
 def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+    # El alta publica de socios no puede existir antes de que Nuvei confirme
+    # el primer cobro. Se conserva esta ruta solamente para detectar clientes
+    # antiguos y obligarlos a usar el flujo atomico seguro.
+    raise HTTPException(
+        status_code=409,
+        detail="El socio solo se registra despues de que Nuvei confirme el pago",
+    )
+
+    # Flujo legado (inalcanzable): se mantiene temporalmente para facilitar una
+    # migracion controlada de clientes antiguos.
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
 
