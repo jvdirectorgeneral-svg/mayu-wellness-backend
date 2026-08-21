@@ -870,13 +870,10 @@ def delete_user(
     if user.role in PROTECTED_TEAM_ROLES:
         raise HTTPException(status_code=403, detail="No puedes eliminar usuarios del sistema Mayu Team")
 
-    db.delete(user)
-    db.commit()
-
-    return {
-        "message": "Usuario eliminado correctamente",
-        "user_id": user_id,
-    }
+    # Compatibilidad con versiones antiguas de Flutter que todavía llaman a
+    # este endpoint. Usa el mismo borrado completo para no dejar referencias
+    # huérfanas ni fallar por claves foráneas.
+    return delete_user_full(user_id, db, current_user)
 
 
 @router.delete("/superadmin/users/{user_id}/full-delete")
@@ -896,6 +893,18 @@ def delete_user_full(
         raise HTTPException(status_code=403, detail="No puedes eliminar usuarios internos del sistema")
 
     try:
+        # Estos registros pueden existir incluso cuando la membresía está
+        # inactiva y bloquean el DELETE final del usuario.
+        if hasattr(models, "MarketingContact"):
+            db.query(models.MarketingContact).filter(
+                models.MarketingContact.user_id == user_id
+            ).delete(synchronize_session=False)
+
+        if hasattr(models, "MemberAppleWalletRegistration"):
+            db.query(models.MemberAppleWalletRegistration).filter(
+                models.MemberAppleWalletRegistration.user_id == user_id
+            ).delete(synchronize_session=False)
+
         orders = db.query(models.Order).filter(models.Order.user_id == user_id).all()
 
         for order in orders:
