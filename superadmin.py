@@ -769,7 +769,14 @@ def full_delete_user(
 
         # 8. Solicitudes, tarjetas y otros registros directos
         delete_if_table_exists(db, "plan_change_requests", "user_id", user_id)
-        delete_if_table_exists(db, "member_apple_wallet_registrations", "user_id", user_id)
+        delete_by_subquery_if_table_exists(
+            db,
+            "member_apple_wallet_registrations",
+            "card_id",
+            "member_cards",
+            "user_id",
+            user_id,
+        )
         delete_if_table_exists(db, "member_cards", "user_id", user_id)
 
         # 9. Referidos y comisiones del socio antes de eliminar su usuario.

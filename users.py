@@ -902,7 +902,11 @@ def delete_user_full(
 
         if hasattr(models, "MemberAppleWalletRegistration"):
             db.query(models.MemberAppleWalletRegistration).filter(
-                models.MemberAppleWalletRegistration.user_id == user_id
+                models.MemberAppleWalletRegistration.card_id.in_(
+                    db.query(models.MemberCard.id).filter(
+                        models.MemberCard.user_id == user_id
+                    )
+                )
             ).delete(synchronize_session=False)
 
         orders = db.query(models.Order).filter(models.Order.user_id == user_id).all()
