@@ -54,9 +54,9 @@ MAYU_PUSH_LOGO_URL = os.getenv(
 )
 
 MEMBERSHIP_MONTHLY_PRICES = {
-    1: 42.00,
-    2: 52.00,
-    3: 62.00,
+    1: 40.00,
+    2: 50.00,
+    3: 60.00,
 }
 
 VALID_CHANNELS = {"push", "email", "whatsapp"}

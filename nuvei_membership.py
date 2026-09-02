@@ -41,9 +41,9 @@ router = APIRouter(
 )
 
 MONTHLY_PRICES = {
-    1: 42.00,
-    2: 52.00,
-    3: 62.00,
+    1: 40.00,
+    2: 50.00,
+    3: 60.00,
 }
 
 SUCCESS_STATUS_DETAILS = {"3", 3}
@@ -189,19 +189,11 @@ def get_max_retry_attempts():
 
 
 def get_sandbox_renewal_interval_days() -> Optional[int]:
-    """Return an accelerated renewal interval only outside production."""
-    if get_nuvei_mode() in {"production", "live"}:
-        return None
-    raw = os.getenv("NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS", "").strip()
-    if not raw:
-        return None
-    try:
-        return max(1, min(int(raw), 28))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS debe ser un entero entre 1 y 28",
-        ) from exc
+    """Memberships renew monthly, including sandbox.
+
+    Ignore the obsolete two-day test setting retained in older deployments.
+    """
+    return None
 
 
 def auth_token():
@@ -559,6 +551,13 @@ def schedule_card_retry(card: NuveiMembershipCard):
     )
 
 
+def monthly_due_date(card: NuveiMembershipCard, scheduled: date) -> date:
+    """Do not honor stale accelerated schedules before one full month."""
+    if card.last_debit_at:
+        return max(scheduled, add_months(card.last_debit_at.date(), 1))
+    return scheduled
+
+
 def create_payment_from_success(
     db: Session,
     user: User,
@@ -626,7 +625,10 @@ def run_nuvei_debit(
             "year": year,
         }
 
-    amount = round(float(amount if amount is not None else monthly_amount_for_user(user)), 2)
+    expected_amount = monthly_amount_for_user(user)
+    if amount is not None and float(amount) != expected_amount:
+        raise HTTPException(status_code=400, detail="El monto debe coincidir con la mensualidad del plan")
+    amount = expected_amount
     dev_reference = f"MWC-NUVEI-{user.id}-{year}{month:02d}-{int(time.time())}"
     request_body = {
         "user": {
@@ -1121,6 +1123,10 @@ def cron_run(
             if card.next_debit_at
             else next_debit_date_for_user(db, user)
         )
+        # Never use an old accelerated sandbox date before a full month
+        # has passed since the last successful debit. Failed attempts do not
+        # update last_debit_at, so daily retries after the due date still work.
+        due_date = monthly_due_date(card, due_date)
         month, year = cycle_from_date(due_date)
         item = {
             "user_id": user.id,

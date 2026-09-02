@@ -2,7 +2,7 @@ import base64
 import hashlib
 import os
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
@@ -11,6 +11,7 @@ import nuvei_membership
 
 
 class FakeCard:
+    raw_payload = None
     next_debit_at = None
     last_debit_at = None
     failed_attempts = 0
@@ -93,11 +94,33 @@ class NuveiMembershipTests(unittest.TestCase):
         self.assertGreater(card.next_debit_at, charged_at)
 
     def test_all_three_membership_plan_prices(self):
-        for level, expected in ((1, 42.0), (2, 52.0), (3, 62.0)):
+        self.assertEqual(nuvei_membership.MONTHLY_PRICES, {1: 40.0, 2: 50.0, 3: 60.0})
+        for level, expected in ((1, 40.0), (2, 50.0), (3, 60.0)):
             user = type("FakeUser", (), {"membership_level": level})()
             self.assertEqual(nuvei_membership.monthly_amount_for_user(user), expected)
 
-    def test_sandbox_can_renew_in_two_days_but_live_cannot(self):
+    def test_membership_debit_rejects_surcharges(self):
+        for level, amount in ((1, 44.80), (2, 56.00), (3, 67.20), (3, 62.00)):
+            user = type("FakeUser", (), {"id": 1, "membership_level": level})()
+            with self.assertRaises(HTTPException) as raised:
+                nuvei_membership.run_nuvei_debit(
+                    MagicMock(), user, FakeCard(), 9, 2026, amount=amount, force=True
+                )
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_old_accelerated_date_cannot_charge_before_next_month(self):
+        card = FakeCard()
+        card.last_debit_at = datetime(2026, 8, 31, 12, 0, 0)
+        self.assertEqual(
+            nuvei_membership.monthly_due_date(card, date(2026, 9, 2)),
+            date(2026, 9, 30),
+        )
+        self.assertEqual(
+            nuvei_membership.monthly_due_date(card, date(2026, 10, 1)),
+            date(2026, 10, 1),
+        )
+
+    def test_sandbox_and_live_renew_monthly_despite_old_two_day_setting(self):
         charged_at = datetime(2026, 8, 20, 15, 0, 0)
         sandbox_card = FakeCard()
         with patch.dict(
@@ -109,7 +132,7 @@ class NuveiMembershipTests(unittest.TestCase):
             clear=False,
         ):
             nuvei_membership.advance_card_after_success(sandbox_card, charged_at)
-        self.assertEqual(sandbox_card.next_debit_at.date().isoformat(), "2026-08-22")
+        self.assertEqual(sandbox_card.next_debit_at.date().isoformat(), "2026-09-20")
 
         live_card = FakeCard()
         with patch.dict(
@@ -141,6 +164,7 @@ class NuveiMembershipTests(unittest.TestCase):
             {
                 "id": 7,
                 "token": "card-token",
+                "raw_payload": None,
                 "next_debit_at": None,
                 "last_debit_at": None,
                 "failed_attempts": 0,
