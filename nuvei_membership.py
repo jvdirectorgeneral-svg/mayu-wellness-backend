@@ -189,11 +189,19 @@ def get_max_retry_attempts():
 
 
 def get_sandbox_renewal_interval_days() -> Optional[int]:
-    """Memberships renew monthly, including sandbox.
-
-    Ignore the obsolete two-day test setting retained in older deployments.
-    """
-    return None
+    """Return an accelerated renewal interval only outside production."""
+    if get_nuvei_mode() in {"production", "live"}:
+        return None
+    raw = os.getenv("NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS", "2").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, min(int(raw), 28))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS debe ser un entero entre 1 y 28",
+        ) from exc
 
 
 def auth_token():
@@ -552,8 +560,8 @@ def schedule_card_retry(card: NuveiMembershipCard):
 
 
 def monthly_due_date(card: NuveiMembershipCard, scheduled: date) -> date:
-    """Do not honor stale accelerated schedules before one full month."""
-    if card.last_debit_at:
+    """Protect live renewals while allowing accelerated sandbox tests."""
+    if card.last_debit_at and not get_sandbox_renewal_interval_days():
         return max(scheduled, add_months(card.last_debit_at.date(), 1))
     return scheduled
 

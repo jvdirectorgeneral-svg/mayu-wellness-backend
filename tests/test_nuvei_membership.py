@@ -111,16 +111,21 @@ class NuveiMembershipTests(unittest.TestCase):
     def test_old_accelerated_date_cannot_charge_before_next_month(self):
         card = FakeCard()
         card.last_debit_at = datetime(2026, 8, 31, 12, 0, 0)
-        self.assertEqual(
-            nuvei_membership.monthly_due_date(card, date(2026, 9, 2)),
-            date(2026, 9, 30),
-        )
-        self.assertEqual(
-            nuvei_membership.monthly_due_date(card, date(2026, 10, 1)),
-            date(2026, 10, 1),
-        )
+        with patch.dict(
+            os.environ,
+            {"NUVEI_MODE": "live", "NUVEI_SANDBOX_RENEWAL_INTERVAL_DAYS": "2"},
+            clear=False,
+        ):
+            self.assertEqual(
+                nuvei_membership.monthly_due_date(card, date(2026, 9, 2)),
+                date(2026, 9, 30),
+            )
+            self.assertEqual(
+                nuvei_membership.monthly_due_date(card, date(2026, 10, 1)),
+                date(2026, 10, 1),
+            )
 
-    def test_sandbox_and_live_renew_monthly_despite_old_two_day_setting(self):
+    def test_sandbox_renews_in_two_days_but_live_renews_monthly(self):
         charged_at = datetime(2026, 8, 20, 15, 0, 0)
         sandbox_card = FakeCard()
         with patch.dict(
@@ -132,7 +137,13 @@ class NuveiMembershipTests(unittest.TestCase):
             clear=False,
         ):
             nuvei_membership.advance_card_after_success(sandbox_card, charged_at)
-        self.assertEqual(sandbox_card.next_debit_at.date().isoformat(), "2026-09-20")
+            self.assertEqual(
+                nuvei_membership.monthly_due_date(
+                    sandbox_card, sandbox_card.next_debit_at.date()
+                ),
+                date(2026, 8, 22),
+            )
+        self.assertEqual(sandbox_card.next_debit_at.date().isoformat(), "2026-08-22")
 
         live_card = FakeCard()
         with patch.dict(
