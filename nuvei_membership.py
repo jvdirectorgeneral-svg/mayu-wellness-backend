@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -45,6 +46,8 @@ MONTHLY_PRICES = {
     2: 50.00,
     3: 60.00,
 }
+
+DEFAULT_NUVEI_VAT_PERCENTAGE = Decimal("15")
 
 SUCCESS_STATUS_DETAILS = {"3", 3}
 SUCCESS_STATUSES = {"success", "1", 1}
@@ -254,6 +257,33 @@ def monthly_amount_for_user(user: User) -> float:
     if level not in MONTHLY_PRICES:
         raise HTTPException(status_code=400, detail="Socio sin nivel válido")
     return MONTHLY_PRICES[level]
+
+
+def nuvei_vat_included_in_total(amount: float) -> float:
+    """Return the VAT portion already included in the final membership price."""
+    raw_percentage = os.getenv("NUVEI_VAT_PERCENTAGE", "15").strip() or "15"
+    try:
+        percentage = Decimal(raw_percentage)
+    except InvalidOperation as exc:
+        raise RuntimeError("NUVEI_VAT_PERCENTAGE debe ser un número válido") from exc
+    if percentage <= 0:
+        raise RuntimeError("NUVEI_VAT_PERCENTAGE debe ser mayor que cero")
+
+    total = Decimal(str(amount))
+    vat = total * percentage / (Decimal("100") + percentage)
+    return float(vat.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def nuvei_order(amount: float, description: str, dev_reference: str) -> dict:
+    return {
+        "amount": amount,
+        "description": description,
+        "dev_reference": dev_reference,
+        # Nuvei Ecuador requires a positive VAT amount when the application has
+        # tax_percentage configured. This is the tax portion of the price, not
+        # a surcharge: order.amount remains exactly USD 40, 50 or 60.
+        "vat": nuvei_vat_included_in_total(amount),
+    }
 
 
 def current_cycle():
@@ -644,12 +674,11 @@ def run_nuvei_debit(
             "email": user.email,
             "phone": user.phone,
         },
-        "order": {
-            "amount": amount,
-            "description": description or f"Mayu Wellness Club mensualidad {month}/{year}",
-            "dev_reference": dev_reference,
-            "vat": 0.00,
-        },
+        "order": nuvei_order(
+            amount,
+            description or f"Mayu Wellness Club mensualidad {month}/{year}",
+            dev_reference,
+        ),
         "card": {
             "token": card.token,
         },
@@ -862,7 +891,11 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
         dev_reference = f"MWC-NUVEI-SIGNUP-{user.id}-{int(time.time())}"
         request_body = {
             "user": {"id": external_nuvei_user_id, "email": user.email, "phone": user.phone},
-            "order": {"amount": amount, "description": f"Mayu Wellness Club primer debito Nivel {payload.membership_level}", "dev_reference": dev_reference, "vat": 0.00},
+            "order": nuvei_order(
+                amount,
+                f"Mayu Wellness Club primer debito Nivel {payload.membership_level}",
+                dev_reference,
+            ),
             "card": {"token": card.token},
         }
         response = nuvei_request("POST", "/v2/transaction/debit/", request_body)

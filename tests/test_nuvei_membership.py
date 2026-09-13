@@ -99,6 +99,20 @@ class NuveiMembershipTests(unittest.TestCase):
             user = type("FakeUser", (), {"membership_level": level})()
             self.assertEqual(nuvei_membership.monthly_amount_for_user(user), expected)
 
+    def test_nuvei_order_keeps_final_price_and_sends_included_vat(self):
+        expected_vat = {40.0: 5.22, 50.0: 6.52, 60.0: 7.83}
+        with patch.dict(os.environ, {"NUVEI_VAT_PERCENTAGE": "15"}, clear=False):
+            for amount, vat in expected_vat.items():
+                order = nuvei_membership.nuvei_order(amount, "Mensualidad", "MWC-TEST")
+                self.assertEqual(order["amount"], amount)
+                self.assertEqual(order["vat"], vat)
+
+    def test_nuvei_vat_percentage_is_configurable_without_surcharge(self):
+        with patch.dict(os.environ, {"NUVEI_VAT_PERCENTAGE": "12"}, clear=False):
+            order = nuvei_membership.nuvei_order(60.0, "Mensualidad", "MWC-TEST")
+        self.assertEqual(order["amount"], 60.0)
+        self.assertEqual(order["vat"], 6.43)
+
     def test_membership_debit_rejects_surcharges(self):
         for level, amount in ((1, 44.80), (2, 56.00), (3, 67.20), (3, 62.00)):
             user = type("FakeUser", (), {"id": 1, "membership_level": level})()
