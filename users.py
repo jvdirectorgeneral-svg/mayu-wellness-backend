@@ -905,6 +905,27 @@ def delete_user_full(
     try:
         # Estos registros pueden existir incluso cuando la membresía está
         # inactiva y bloquean el DELETE final del usuario.
+        # Los eventos deben eliminarse antes que sus destinatarios porque
+        # ambos conservan claves foráneas hacia el socio.
+        if hasattr(models, "MarketingEvent"):
+            if hasattr(models, "MarketingCampaignRecipient"):
+                db.query(models.MarketingEvent).filter(
+                    models.MarketingEvent.recipient_id.in_(
+                        db.query(models.MarketingCampaignRecipient.id).filter(
+                            models.MarketingCampaignRecipient.user_id == user_id
+                        )
+                    )
+                ).delete(synchronize_session=False)
+
+            db.query(models.MarketingEvent).filter(
+                models.MarketingEvent.user_id == user_id
+            ).delete(synchronize_session=False)
+
+        if hasattr(models, "MarketingCampaignRecipient"):
+            db.query(models.MarketingCampaignRecipient).filter(
+                models.MarketingCampaignRecipient.user_id == user_id
+            ).delete(synchronize_session=False)
+
         if hasattr(models, "MarketingContact"):
             db.query(models.MarketingContact).filter(
                 models.MarketingContact.user_id == user_id
