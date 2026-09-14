@@ -333,7 +333,7 @@ def build_doctor_recovery_email_message(doctor: models.DoctorPrescriber) -> str:
       <div style="background:#f4f4f1;border-radius:18px;padding:18px;margin:18px 0">
         <p><strong>Código:</strong> {code}</p>
         <p><strong>Saldo pendiente:</strong> ${float(commission):.2f}</p>
-        <p><strong>Beneficios:</strong> 30% en efectivo/WhatsApp y 22% con tarjeta/PayPhone.</p>
+        <p><strong>Beneficios:</strong> 30% en efectivo/WhatsApp y 22% con tu tarjeta preferida.</p>
       </div>
       <p style="text-align:center">
         <img src="{qr_url}" alt="QR Doctor Prescriptor Mayu" style="max-width:220px;width:100%;border-radius:16px" />
@@ -447,7 +447,7 @@ def build_doctor_apple_wallet_file(doctor: models.DoctorPrescriber) -> str:
                     {
                         "key": "rate",
                         "label": "BENEFICIOS",
-                        "value": "30% efectivo · 22% tarjeta",
+                        "value": "30% efectivo/WhatsApp · 22% con tu tarjeta preferida",
                     },
                 ],
                 "auxiliaryFields": [
@@ -1082,7 +1082,7 @@ def build_doctor_google_wallet_object(doctor: models.DoctorPrescriber, issuer_id
         },
         "textModulesData": [
             {"id": "commission", "header": "Ganancias pendientes", "body": commission_value},
-            {"id": "rate", "header": "Beneficios", "body": "30% efectivo · 22% tarjeta"},
+            {"id": "rate", "header": "Beneficios", "body": "30% efectivo/WhatsApp · 22% con tu tarjeta preferida"},
             {"id": "rules_cash", "header": "Compra en efectivo",
                 "body": "30% si compra el doctor o sus pacientes."},
             {"id": "rules_card", "header": "Compra con tarjeta de crédito",
