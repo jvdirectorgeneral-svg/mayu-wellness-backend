@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 import nuvei_membership
+import marketing
 
 
 class FakeCard:
@@ -112,6 +113,31 @@ class NuveiMembershipTests(unittest.TestCase):
             order = nuvei_membership.nuvei_order(60.0, "Mensualidad", "MWC-TEST")
         self.assertEqual(order["amount"], 60.0)
         self.assertEqual(order["vat"], 6.43)
+
+    def test_welcome_copy_is_specific_for_each_membership_level(self):
+        expected_products = {
+            1: "Chocomedical",
+            2: "Melena de León",
+            3: "Magnesio Bisglicinato",
+        }
+        for level, product in expected_products.items():
+            info = marketing.member_level_info(level)
+            self.assertIn(product, " ".join(info["benefits"]))
+            self.assertTrue(info["positioning"])
+
+    def test_nuvei_welcome_copy_does_not_name_paypal_or_zero_vat(self):
+        user = type(
+            "FakeUser",
+            (),
+            {"name": "Socio de prueba", "membership_level": 1},
+        )()
+        message = marketing.build_welcome_email_message(
+            user, trigger="nuvei_subscription_activation"
+        )
+        self.assertIn("Nuvei", message)
+        self.assertIn("IVA aplicable está incluido", message)
+        self.assertNotIn("PayPal", message)
+        self.assertNotIn("IVA: 0%", message)
 
     def test_membership_debit_rejects_surcharges(self):
         for level, amount in ((1, 44.80), (2, 56.00), (3, 67.20), (3, 62.00)):

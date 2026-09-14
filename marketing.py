@@ -1385,31 +1385,40 @@ def member_level_info(level: int | None):
         1: {
             "name": "Nivel 1 - Cobre",
             "price": MEMBERSHIP_MONTHLY_PRICES[1],
+            "positioning": "Bienestar esencial, todos los meses.",
             "benefits": [
-                "Selección mensual de productos Mayu Wellness Club.",
-                "Tarjeta digital Mayu con acceso a tu membresía.",
-                "Contenido educativo para crear hábitos de salud diarios.",
-                "Despacho mensual según el calendario operativo del club.",
+                "1 coloide de 30 ml, a elegir entre las opciones disponibles.",
+                "1 aceite CBD de 30 ml, a elección: CBD 874 mg o CBD al 4%.",
+                "1 Chocomedical incluido en tu selección mensual.",
+                "15% de beneficio en consultas y terapias autorizadas.",
+                "10% de beneficio en productos seleccionados de Farmacia Mayu.",
+                "Acceso a Mayu Educación, Wallet digital y comunidad del club.",
             ],
         },
         2: {
             "name": "Nivel 2 - Plata",
             "price": MEMBERSHIP_MONTHLY_PRICES[2],
+            "positioning": "Una experiencia ampliada para sostener tu bienestar.",
             "benefits": [
-                "Selección mensual ampliada de productos Mayu Wellness Club.",
-                "Tarjeta digital Mayu con beneficios activos.",
-                "Contenido educativo y acompañamiento para sostener hábitos saludables.",
-                "Despacho mensual según el calendario operativo del club.",
+                "1 coloide de 30 ml, a elegir entre las opciones disponibles.",
+                "1 aceite CBD de 30 ml, a elección: CBD 874 mg o CBD al 4%.",
+                "1 Melena de León y 1 Chocomedical incluidos en tu selección mensual.",
+                "15% de beneficio en consultas y terapias autorizadas.",
+                "10% de beneficio en productos seleccionados de Farmacia Mayu.",
+                "Acceso a Mayu Educación, Wallet digital y comunidad del club.",
             ],
         },
         3: {
             "name": "Nivel 3 - Oro",
             "price": MEMBERSHIP_MONTHLY_PRICES[3],
+            "positioning": "La experiencia integral de Mayu Wellness Club.",
             "benefits": [
-                "Selección mensual premium de productos Mayu Wellness Club.",
-                "Tarjeta digital Mayu con beneficios activos.",
-                "Contenido educativo y bienestar continuo para tu rutina diaria.",
-                "Despacho mensual según el calendario operativo del club.",
+                "1 coloide de 30 ml, a elegir entre las opciones disponibles.",
+                "1 aceite CBD de 30 ml, a elección: CBD 874 mg o CBD al 4%.",
+                "Té CBD, Melena de León, Magnesio Bisglicinato y Chocomedical incluidos.",
+                "15% de beneficio en consultas y terapias autorizadas.",
+                "10% de beneficio en productos seleccionados de Farmacia Mayu.",
+                "Acceso a Mayu Educación, Wallet digital y comunidad del club.",
             ],
         },
     }
@@ -1417,6 +1426,7 @@ def member_level_info(level: int | None):
     return plans.get(level) or {
         "name": "Mayu Wellness Club",
         "price": 0.00,
+        "positioning": "Bienestar conectado en un solo lugar.",
         "benefits": [
             "Membresía activa Mayu Wellness Club.",
             "Acceso a beneficios digitales y comunicación del club.",
@@ -1424,9 +1434,18 @@ def member_level_info(level: int | None):
     }
 
 
-def build_welcome_email_message(user: User):
+def build_welcome_email_message(user: User, trigger: str = "membership_active"):
     level_info = member_level_info(user.membership_level)
     benefits = "\n".join(f"- {benefit}" for benefit in level_info["benefits"])
+    is_nuvei = trigger.startswith("nuvei_")
+    payment_authorization = (
+        "Al registrar tu tarjeta autorizaste a Nuvei a procesar el débito "
+        "automático recurrente del valor de tu plan hasta que solicites su cancelación."
+        if is_nuvei
+        else
+        "Tu membresía mantiene un débito automático recurrente del valor de tu plan "
+        "a través del proveedor de pagos autorizado, hasta que solicites su cancelación."
+    )
 
     return f"""
 Hola {user.name},
@@ -1435,11 +1454,11 @@ Bienvenido a Mayu Wellness Club.
 
 Tu membresía quedó activa en {level_info["name"]}.
 Valor mensual del plan: ${level_info["price"]:.2f} USD.
-IVA: 0%. No existe cuota de inscripción.
+El IVA aplicable está incluido en el valor final. No existe cuota de inscripción.
 
-Al aprobar la suscripción autorizas a PayPal a realizar el débito automático mensual del valor de tu plan hasta que canceles la suscripción.
+{payment_authorization}
 
-La salud es nuestros hábitos de todos los días. Por eso, tu club está pensado para acompañarte mes a mes con productos, educación y una rutina más consciente.
+{level_info["positioning"]} Tu membresía integra productos seleccionados, servicios complementarios, educación y herramientas digitales en una experiencia diseñada para acompañar tu bienestar de forma continua.
 
 Beneficios de tu plan:
 {benefits}
@@ -1450,7 +1469,7 @@ Gracias por ser parte de Mayu Wellness Club.
 """
 
 
-def send_welcome_email(to_email: str, user: User):
+def send_welcome_email(to_email: str, user: User, trigger: str = "membership_active"):
     if user.role == "ambassador":
         send_marketing_email(
             to_email=to_email,
@@ -1464,7 +1483,7 @@ def send_welcome_email(to_email: str, user: User):
     send_marketing_email(
         to_email=to_email,
         subject=f"Bienvenido a Mayu Wellness Club - {level_info['name']}",
-        message=build_welcome_email_message(user),
+        message=build_welcome_email_message(user, trigger=trigger),
         image_url=None,
     )
 
@@ -1752,7 +1771,7 @@ def send_welcome_member_notifications(db: Session, user: User, trigger: str = "m
         campaign = MarketingCampaign(
             title=campaign_title,
             subject=f"Bienvenido a Mayu Wellness Club - {level_info['name']}",
-            message=build_welcome_email_message(user),
+            message=build_welcome_email_message(user, trigger=trigger),
             image_url=None,
             channel="email",
             target_group="active_members",
@@ -1807,7 +1826,7 @@ def send_welcome_member_notifications(db: Session, user: User, trigger: str = "m
 
     if not email_already_sent:
         try:
-            send_welcome_email(user.email, user)
+            send_welcome_email(user.email, user, trigger=trigger)
             email_sent = True
             add_marketing_event(
                 db=db,
