@@ -38,6 +38,7 @@ from models import (
     DoctorPrescriber,
     MemberCard,
     MarketingContact,
+    NuveiMembershipCard,
 )
 from marketing_contacts import contact_to_dict as directory_contact_to_dict, upsert_marketing_contact
 
@@ -309,6 +310,42 @@ def build_admin_member_payment_message(
         payment_type = getattr(payment, "payment_type", "-")
         is_initial_subscription = payment_type == "subscription"
         is_renewal = payment_type == "subscription_renewal"
+        provider = (getattr(payment, "provider", None) or "paypal").strip().lower()
+        provider_label = {
+            "nuvei": "Nuvei",
+            "paypal": "PayPal",
+            "payphone": "PayPhone",
+        }.get(provider, provider.title() or "Pago recurrente")
+        reference_label = (
+            "Transacción Nuvei" if provider == "nuvei" else f"{provider_label}/Suscripción"
+        )
+        payment_reference = payment.paypal_order_id or payment.payment_reference or "-"
+
+        next_debit_line = (
+            f"- Próximo débito mensual estimado: {safe_money(amounts['monthly_amount'])} "
+            f"el día {amounts['next_debit_day']} de cada mes"
+        )
+        next_debit_initial_line = (
+            f"- Próximo débito mensual: {safe_money(amounts['monthly_amount'])} "
+            f"el día {amounts['next_debit_day']} de cada mes"
+        )
+        if provider == "nuvei":
+            nuvei_card = (
+                db.query(NuveiMembershipCard)
+                .filter(
+                    NuveiMembershipCard.user_id == user.id,
+                    NuveiMembershipCard.is_active == True,
+                    NuveiMembershipCard.is_default == True,
+                )
+                .order_by(NuveiMembershipCard.id.desc())
+                .first()
+            )
+            if nuvei_card and nuvei_card.next_debit_at:
+                next_debit_line = (
+                    f"- Próximo débito programado: {safe_money(amounts['monthly_amount'])} "
+                    f"el {nuvei_card.next_debit_at.date().isoformat()}"
+                )
+                next_debit_initial_line = next_debit_line
 
         lines.extend([
             "",
@@ -317,28 +354,28 @@ def build_admin_member_payment_message(
             f"- Tipo: {payment_type}",
             f"- Estado: {payment.status}",
             f"- Valor: {safe_money(payment.amount)} {payment.currency or 'USD'}",
-            f"- PayPal/Subscripción: {payment.paypal_order_id or payment.payment_reference or '-'}",
+            f"- {reference_label}: {payment_reference}",
             f"- Fecha pago: {payment.paid_at or payment.created_at}",
         ])
 
         if is_initial_subscription:
             lines.extend([
                 "",
-                "Detalle PayPal inicial:",
+                f"Detalle {provider_label} inicial:",
                 f"- Pago inicial cobrado: {safe_money(payment.amount)} {payment.currency or 'USD'}",
                 "- Cuota de inscripción: $0.00",
                 f"- Primer cobro mensual: {safe_money(amounts['monthly_amount'])}",
                 "- IVA: 0%",
-                f"- Próximo débito mensual: {safe_money(amounts['monthly_amount'])} el día {amounts['next_debit_day']} de cada mes",
-                "- Estado operativo: PayPal OK, socio activo en vivo",
+                next_debit_initial_line,
+                f"- Estado operativo: {provider_label} confirmado, socio activo",
             ])
         elif is_renewal:
             lines.extend([
                 "",
-                "Detalle PayPal mensual:",
+                f"Detalle {provider_label} mensual:",
                 f"- Débito mensual cobrado: {safe_money(payment.amount)} {payment.currency or 'USD'}",
-                f"- Próximo débito mensual estimado: {safe_money(amounts['monthly_amount'])} el día {amounts['next_debit_day']} de cada mes",
-                "- Estado operativo: PayPal OK, socio activo en vivo",
+                next_debit_line,
+                f"- Estado operativo: {provider_label} confirmado, socio activo",
             ])
 
     if order:
@@ -394,9 +431,11 @@ def notify_admin_member_payment_event(
         "admin_payment_verify": "Pago verificado por admin",
         "paypal_subscription_activation": "PayPal OK, socio activo en vivo",
         "paypal_subscription_renewal": "PayPal OK, débito mensual confirmado",
+        "nuvei_subscription_activation": "Afiliación confirmada por Nuvei",
+        "nuvei_subscription_renewal": "Débito mensual confirmado por Nuvei",
     }
     event_label = labels.get(trigger, "Pago Mayu Wellness Club confirmado")
-    subject = f"Mayu Club: {event_label} - {user.name}"
+    subject = f"Mayu Wellness Club: {event_label} - {user.name}"
     payment_key = payment.id if payment else "sin_pago"
     campaign_title = f"Admin aviso {trigger} user:{user.id} payment:{payment_key}"
     existing_campaign = (
@@ -550,13 +589,13 @@ def notify_admin_ambassador_payout_window(db: Session, force: bool = False):
 
     result = send_admin_notification_email(
         db=db,
-        subject=f"Mayu Club: pagos a embajadores pendientes {today.isoformat()}",
+        subject=f"Mayu Wellness Club: pagos a embajadores pendientes {today.isoformat()}",
         message=message,
     )
 
     campaign = MarketingCampaign(
         title=campaign_title,
-        subject=f"Mayu Club: pagos a embajadores pendientes {today.isoformat()}",
+        subject=f"Mayu Wellness Club: pagos a embajadores pendientes {today.isoformat()}",
         message=message,
         image_url=None,
         channel="email",
