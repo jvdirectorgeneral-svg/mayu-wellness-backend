@@ -564,10 +564,11 @@ def get_best_selection_for_payment(db: Session, user: User):
 
 
 def monthly_amount_with_iva_by_level(level):
+    """Precio final de la membresía; el IVA aplicable ya está incluido."""
     prices = {
-        1: 42.00,
-        2: 52.00,
-        3: 62.00,
+        1: 40.00,
+        2: 50.00,
+        3: 60.00,
     }
     try:
         return prices.get(int(level or 0), 0.0)

@@ -111,9 +111,9 @@ def add_tracking_history(
 
 def get_monthly_amount_by_level(level: int) -> float:
     prices = {
-        1: 42.00,
-        2: 52.00,
-        3: 62.00,
+        1: 40.00,
+        2: 50.00,
+        3: 60.00,
     }
 
     if level not in prices:
@@ -155,13 +155,13 @@ def infer_level_from_amount(amount: Optional[float]) -> Optional[int]:
 
     rounded = round(float(amount), 2)
 
-    if rounded == 42.00:
+    if rounded == 40.00:
         return 1
 
-    if rounded == 52.00:
+    if rounded == 50.00:
         return 2
 
-    if rounded == 62.00:
+    if rounded == 60.00:
         return 3
 
     return None

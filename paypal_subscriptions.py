@@ -102,9 +102,9 @@ IVA_RATE = 0.00
 SIGNUP_FEE_BASE = 0.00
 
 BASE_MONTHLY_PRICES = {
-    1: 42.00,
-    2: 52.00,
-    3: 62.00,
+    1: 40.00,
+    2: 50.00,
+    3: 60.00,
 }
 
 MONTHLY_PRICES = {
