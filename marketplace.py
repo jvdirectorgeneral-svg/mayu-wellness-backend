@@ -213,7 +213,7 @@ def product_to_dict(product: models.MarketplaceProduct):
 def order_to_dict(order: models.MarketplaceOrder):
     payment_method = (order.payment_method or "").strip().lower()
     doctor_percent = 22.0 if payment_method in {
-        "payphone", "card", "credit_card", "tarjeta"
+        "payphone", "nuvei", "card", "credit_card", "tarjeta"
     } else 30.0
     total = float(order.total or 0)
     discount_percent = float(getattr(order, "discount_percent", 0) or 0)
@@ -252,7 +252,7 @@ def order_to_dict(order: models.MarketplaceOrder):
             ),
             "description": (
                 f"Beneficio Doctor Prescriptor {doctor_percent:.0f}% por "
-                f"{'PayPhone/tarjeta' if doctor_percent == 22 else 'WhatsApp/efectivo'}."
+                f"{'tarjeta preferida' if doctor_percent == 22 else 'WhatsApp/efectivo'}."
                 if doctor_code
                 else "No vinculado."
             ),
@@ -620,7 +620,9 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
         return {"credited": False, "detail": "El total del pedido no permite acreditar comisión"}
 
     payment_method = (getattr(order, "payment_method", "") or "").strip().lower()
-    is_card_payment = payment_method in {"payphone", "card", "credit_card", "tarjeta"}
+    is_card_payment = payment_method in {
+        "payphone", "nuvei", "card", "credit_card", "tarjeta"
+    }
     applied_rate_bps = 2200 if is_card_payment else 3000
     gross_commission_cents = int(round(sale_cents * applied_rate_bps / 10000))
     transaction = models.DoctorCommissionTransaction(
@@ -631,9 +633,9 @@ def credit_marketplace_doctor_if_paid(db: Session, order, sync_wallet: bool = Tr
         deduction_cents=0,
         commission_cents=gross_commission_cents,
         commission_rate_bps=applied_rate_bps,
-        source="marketplace_payphone" if is_card_payment else "marketplace_cash_whatsapp",
+        source=(f"marketplace_{payment_method}" if is_card_payment else "marketplace_cash_whatsapp"),
         reference=reference,
-        note=("Compra Marketplace con tarjeta PayPhone: beneficio Doctor Prescriptor 22%"
+        note=("Compra Marketplace con tu tarjeta preferida: beneficio Doctor Prescriptor 22%"
             if is_card_payment else
             "Compra Marketplace efectivo/WhatsApp: beneficio Doctor Prescriptor 30%"),
     )
