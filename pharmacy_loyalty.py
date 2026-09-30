@@ -1615,11 +1615,12 @@ def get_pharmacy_wallet_logo():
 
 def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(
+    notification_icon_path = os.path.join(
         base_dir,
         "assets",
         "logo_mayu_salud_funcional.png",
     )
+    card_logo_path = os.path.join(base_dir, "assets", "logo_farmacia.png")
     wallet_image_path = os.path.join(base_dir, "assets", "tarjeta_sociosfarmacia_43.png")
     bg_color = (0, 96, 84)
 
@@ -1628,8 +1629,8 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
         ("icon@2x.png", (58, 58)),
     ]:
         target = os.path.join(pass_dir, filename)
-        if os.path.exists(logo_path):
-            fit_transparent_image_to_canvas(logo_path, target, size)
+        if os.path.exists(notification_icon_path):
+            fit_transparent_image_to_canvas(notification_icon_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -1638,8 +1639,8 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
         ("logo@2x.png", (140, 52)),
     ]:
         target = os.path.join(pass_dir, filename)
-        if os.path.exists(logo_path):
-            fit_transparent_image_to_canvas(logo_path, target, size)
+        if os.path.exists(card_logo_path):
+            fit_transparent_image_to_canvas(card_logo_path, target, size)
         else:
             create_wallet_icon(target)
 
@@ -1712,7 +1713,7 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": "Tarjeta Mayu Magistral",
-            "logoText": "MAYU SALUD FUNCIONAL",
+            "logoText": "FARMACIA MAGISTRAL MAYU",
             "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple",
             "authenticationToken": pharmacy_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
@@ -1721,19 +1722,6 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "suppressStripShine": True,
             "sharingProhibited": False,
             "storeCard": {
-                "headerFields": [
-                    {
-                        "key": "last_update",
-                        "label": "ACTUALIZADA",
-                        "value": (card.updated_at or datetime.utcnow()).strftime(
-                            "%d/%m/%Y %H:%M"
-                        ),
-                        "changeMessage": (
-                            "Tu Tarjeta Mayu Magistral se actualizó correctamente el %@. "
-                            "Tu saldo y beneficios están al día."
-                        ),
-                    }
-                ],
                 "primaryFields": [
                     {
                         "key": "points",
@@ -1764,11 +1752,14 @@ def build_pharmacy_apple_wallet_file(customer, card):
                 "backFields": [
                     {
                         "key": "last_sync",
-                        "label": "ÚLTIMA SINCRONIZACIÓN",
+                        "label": "ÚLTIMA ACTUALIZACIÓN",
                         "value": (card.updated_at or datetime.utcnow()).strftime(
                             "%d/%m/%Y %H:%M:%S UTC"
                         ),
-                        "changeMessage": "Tu Tarjeta Mayu Magistral fue actualizada.",
+                        "changeMessage": (
+                            "Tu Tarjeta Farmacia Magistral Mayu se actualizó correctamente. "
+                            "Tu saldo y beneficios están al día."
+                        ),
                     },
                     {"key": "email", "label": "Correo", "value": customer.email},
                     {"key": "phone", "label": "Teléfono", "value": customer.phone},
