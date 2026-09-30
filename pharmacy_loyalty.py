@@ -1080,16 +1080,22 @@ def test_push_by_pharmacy(
     firebase = safe_send_push_to_pharmacy_customer(
         db=db,
         pharmacy_customer_id=card.pharmacy_customer_id,
-        title="🔔 Prueba Mayu Magistral",
-        message="Esta es una prueba de notificaciones de tu Tarjeta Mayu Magistral.",
+        title="Mayu Salud Funcional",
+        message=(
+            "Tu Tarjeta Mayu Magistral está activa y sincronizada. "
+            f"Saldo disponible: {card.points_balance} puntos."
+        ),
     )
     apple = safe_send_apple_wallet_update_pushes(db, card)
     google_update = safe_update_google_wallet_object(customer, card)
     google_notification = safe_notify_google_wallet_points(
         customer,
         card,
-        "Prueba Mayu Magistral",
-        "Las notificaciones y el saldo de tu Tarjeta Mayu Magistral están sincronizados.",
+        "Mayu Salud Funcional",
+        (
+            "Tu Tarjeta Mayu Magistral está activa y sincronizada. "
+            f"Saldo disponible: {card.points_balance} puntos."
+        ),
     )
     db.commit()
     return {
@@ -1609,7 +1615,11 @@ def get_pharmacy_wallet_logo():
 
 def copy_or_create_pharmacy_wallet_images(pass_dir: str):
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    logo_path = os.path.join(base_dir, "assets", "logo_farmacia.png")
+    logo_path = os.path.join(
+        base_dir,
+        "assets",
+        "logo_mayu_salud_funcional.png",
+    )
     wallet_image_path = os.path.join(base_dir, "assets", "tarjeta_sociosfarmacia_43.png")
     bg_color = (0, 96, 84)
 
@@ -1656,22 +1666,28 @@ def copy_or_create_pharmacy_wallet_images(pass_dir: str):
 def build_pharmacy_apple_wallet_file(customer, card):
     pass_type_id = os.getenv("APPLE_PASS_TYPE_ID")
     team_id = os.getenv("APPLE_TEAM_ID")
-    organization_name = os.getenv("APPLE_ORGANIZATION_NAME", "Mayu Magistral")
+    organization_name = os.getenv(
+        "APPLE_PHARMACY_ORGANIZATION_NAME",
+        "Mayu Salud Funcional",
+    )
 
     latest_transaction = card.transactions[0] if card.transactions else None
     points_delta = int(latest_transaction.points_delta or 0) if latest_transaction else 0
     if points_delta > 0:
         points_change_message = (
-            f"Acreditación de puntos Mayu: se acreditaron {points_delta} puntos. "
-            "Tu nuevo saldo es %@ puntos."
+            f"¡Recibiste {points_delta} puntos Mayu! "
+            "Tu nuevo saldo es %@ puntos. Gracias por confiar en Mayu Salud Funcional."
         )
     elif points_delta < 0:
         points_change_message = (
-            f"Utilización de puntos Mayu: utilizaste {abs(points_delta)} puntos. "
-            "Tu nuevo saldo es %@ puntos."
+            f"Utilizaste {abs(points_delta)} puntos Mayu. "
+            "Tu saldo actualizado es %@ puntos."
         )
     else:
-        points_change_message = "Tu saldo Mayu es ahora %@ puntos."
+        points_change_message = (
+            "Tu Tarjeta Mayu Magistral está actualizada. "
+            "Tu saldo disponible es %@ puntos."
+        )
 
     if not pass_type_id:
         raise HTTPException(status_code=500, detail="Falta APPLE_PASS_TYPE_ID")
@@ -1696,7 +1712,7 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "teamIdentifier": team_id,
             "organizationName": organization_name,
             "description": "Tarjeta Mayu Magistral",
-            "logoText": "MAYU MAGISTRAL",
+            "logoText": "MAYU SALUD FUNCIONAL",
             "webServiceURL": f"{BASE_PUBLIC_URL}/pharmacy-loyalty/wallet/apple",
             "authenticationToken": pharmacy_wallet_auth_token(card),
             "foregroundColor": "rgb(255,255,255)",
@@ -1705,6 +1721,19 @@ def build_pharmacy_apple_wallet_file(customer, card):
             "suppressStripShine": True,
             "sharingProhibited": False,
             "storeCard": {
+                "headerFields": [
+                    {
+                        "key": "last_update",
+                        "label": "ACTUALIZADA",
+                        "value": (card.updated_at or datetime.utcnow()).strftime(
+                            "%d/%m/%Y %H:%M"
+                        ),
+                        "changeMessage": (
+                            "Tu Tarjeta Mayu Magistral se actualizó correctamente el %@. "
+                            "Tu saldo y beneficios están al día."
+                        ),
+                    }
+                ],
                 "primaryFields": [
                     {
                         "key": "points",
