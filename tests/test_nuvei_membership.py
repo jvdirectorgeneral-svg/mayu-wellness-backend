@@ -135,7 +135,7 @@ class NuveiMembershipTests(unittest.TestCase):
         self.assertGreater(card.next_debit_at, charged_at)
 
     def test_all_three_membership_plan_prices(self):
-        self.assertEqual(nuvei_membership.MONTHLY_PRICES, {1: 40.0, 2: 50.0, 3: 60.0})
+        self.assertEqual(nuvei_membership.MONTHLY_PRICES, {1: 42.0, 2: 52.0, 3: 62.0})
         for level, expected in ((1, 40.0), (2, 50.0), (3, 60.0)):
             user = type("FakeUser", (), {"membership_level": level})()
             self.assertEqual(nuvei_membership.monthly_amount_for_user(user), expected)

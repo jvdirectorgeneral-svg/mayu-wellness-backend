@@ -293,9 +293,9 @@ def payphone_headers():
 
 def get_monthly_amount_by_level(level: int) -> float:
     prices = {
-        1: 40.00,
-        2: 50.00,
-        3: 60.00,
+        1: 42.00,
+        2: 52.00,
+        3: 62.00,
     }
 
     if level not in prices:
@@ -305,7 +305,7 @@ def get_monthly_amount_by_level(level: int) -> float:
 
 
 def get_signup_amount_by_level(level: int) -> float:
-    return 5.00
+    return 0.00
 
 
 def get_first_payment_amount_by_level(level: int) -> float:

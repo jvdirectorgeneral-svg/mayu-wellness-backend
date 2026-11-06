@@ -60,7 +60,7 @@ class MarketingNuveiMessageTests(unittest.TestCase):
 
         self.assertIn("Transacción Nuvei: NUVEI-TX-127", message)
         self.assertIn("Detalle Nuvei mensual:", message)
-        self.assertIn("Próximo débito programado: $40.00 el 2026-09-18", message)
+        self.assertIn("Próximo débito programado: $42.00 el 2026-09-18", message)
         self.assertIn("Estado operativo: Nuvei confirmado, socio activo", message)
         self.assertIn("Transaction ID DF: NUVEI-TX-127", message)
         self.assertIn("Código de autorización: AUTH-127", message)

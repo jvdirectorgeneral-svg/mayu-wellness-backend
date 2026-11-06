@@ -45,9 +45,9 @@ router = APIRouter(
 )
 
 MONTHLY_PRICES = {
-    1: 40.00,
-    2: 50.00,
-    3: 60.00,
+    1: 42.00,
+    2: 52.00,
+    3: 62.00,
 }
 
 DEFAULT_NUVEI_VAT_PERCENTAGE = Decimal("15")
