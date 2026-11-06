@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -1327,11 +1327,15 @@ def continue_three_ds(state: str, db: Session = Depends(get_db)):
 
 
 @router.post("/3ds/term/{state}", response_class=HTMLResponse)
-def complete_three_ds_challenge(
+async def complete_three_ds_challenge(
     state: str,
-    cres: str = Form(...),
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    form = await request.form()
+    cres = str(form.get("cres") or form.get("CRes") or "").strip()
+    if not cres:
+        raise HTTPException(status_code=400, detail="CRes requerido")
     attempt = _attempt_from_state(db, state)
     result = _verify_three_ds(db, attempt, "BY_CRES", cres)
     success = bool(result.get("success") or result.get("already_completed"))
@@ -1339,9 +1343,11 @@ def complete_three_ds_challenge(
     return HTMLResponse(
         "<!doctype html><html><body>"
         f"<p>{message}</p>"
-        "<script>window.parent.postMessage({type:'mayu-nuvei-3ds',success:"
+        "<script>const p=window.location.ancestorOrigins&&window.location.ancestorOrigins[0];"
+        "const a=['https://mayuwellnesclub.com','https://www.mayuwellnesclub.com'];"
+        "if(a.includes(p))window.parent.postMessage({type:'mayu-nuvei-3ds',success:"
         f"{str(success).lower()}"
-        "}, 'https://mayuwellnesclub.com');</script>"
+        "},p);</script>"
         "</body></html>"
     )
 

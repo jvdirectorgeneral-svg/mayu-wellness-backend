@@ -211,7 +211,10 @@ async def security_headers(request: Request, call_next):
     response: Response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     is_three_ds_frame = request.url.path.startswith("/payments/nuvei/membership/3ds/")
-    response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_three_ds_frame else "DENY"
+    # 3DS is embedded cross-origin by mayuwellnesclub.com. CSP below restricts
+    # the allowed parent; X-Frame-Options cannot express that allowlist.
+    if not is_three_ds_frame:
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
