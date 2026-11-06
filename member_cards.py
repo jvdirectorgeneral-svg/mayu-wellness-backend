@@ -506,6 +506,8 @@ def card_response(db: Session, user, card):
     return {
         "id": card.id,
         "user_id": card.user_id,
+        "name": user.name,
+        "phone": user.phone,
         "member_code": display_code,
         "qr_token": card.qr_token,
         "level_snapshot": card.level_snapshot,

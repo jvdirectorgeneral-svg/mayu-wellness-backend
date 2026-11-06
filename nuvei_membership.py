@@ -375,6 +375,7 @@ def _three_ds_artifact(response: dict, name: str) -> Optional[str]:
         transaction.get("three_ds") or {},
         response.get("threeDS2_data") or {},
         response.get("three_ds") or {},
+        response.get("3ds") or {},
     ]
     for candidate in candidates:
         value = candidate.get(name) if isinstance(candidate, dict) else None
@@ -1312,10 +1313,30 @@ def three_ds_content(state: str, db: Session = Depends(get_db)):
     artifact = (
         _three_ds_artifact(response, "challenge_request")
         or _three_ds_artifact(response, "hidden_iframe")
+        or _three_ds_artifact(response, "html")
+        or _three_ds_artifact(response, "content")
     )
     if not artifact:
-        raise HTTPException(status_code=409, detail="Nuvei no entregó contenido 3DS")
+        # Some sandbox processors complete status 36 asynchronously through
+        # the webhook and do not return challenge HTML. Keep the bank window
+        # clean and wait for the authoritative server-side result.
+        status_url = f"{_public_api_base()}/payments/nuvei/membership/3ds/status/{state}"
+        return HTMLResponse(f"""<!doctype html><html lang=\"es\"><head>
+<meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<style>body{{font-family:Arial,sans-serif;display:grid;place-items:center;min-height:85vh;margin:0;color:#063f38}}.box{{text-align:center;padding:28px}}.spin{{width:42px;height:42px;margin:0 auto 20px;border:4px solid #d9efec;border-top-color:#2bb3ad;border-radius:50%;animation:s 1s linear infinite}}@keyframes s{{to{{transform:rotate(360deg)}}}}</style>
+</head><body><div class=\"box\"><div class=\"spin\"></div><h2>Confirmando el pago seguro</h2><p>Espera un momento. No cierres esta ventana.</p></div>
+<script>const u={json.dumps(status_url)};const timer=setInterval(async()=>{{try{{const r=await fetch(u,{{headers:{{Accept:'application/json'}}}});const d=await r.json();if(d.success===true){{clearInterval(timer);parent.postMessage({{type:'mayu-nuvei-3ds',success:true}},location.origin)}}else if(d.failed===true){{clearInterval(timer);document.querySelector('p').textContent='El banco no aprobó el pago.'}}}}catch(e){{}}}},1500);</script></body></html>""")
     return HTMLResponse(artifact)
+
+
+@router.get("/3ds/status/{state}")
+def three_ds_status(state: str, db: Session = Depends(get_db)):
+    attempt = _attempt_from_state(db, state)
+    if attempt.membership_payment_id:
+        return {"success": True, "payment_id": attempt.membership_payment_id}
+    if attempt.status_detail not in {35, 36} and attempt.status not in {"created", "pending"}:
+        return {"success": False, "failed": True}
+    return {"success": False, "payment_pending": True}
 
 
 @router.post("/3ds/continue/{state}")
