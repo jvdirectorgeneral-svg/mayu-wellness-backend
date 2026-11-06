@@ -211,18 +211,34 @@ async def security_headers(request: Request, call_next):
     response: Response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     is_three_ds_frame = request.url.path.startswith("/payments/nuvei/membership/3ds/")
+    is_education_viewer = (
+        request.url.path.startswith("/education/resources/")
+        and request.url.path.endswith("/view")
+    )
     # 3DS is embedded cross-origin by mayuwellnesclub.com. CSP below restricts
     # the allowed parent; X-Frame-Options cannot express that allowlist.
     if not is_three_ds_frame:
         response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "form-action https:; frame-src https:; frame-ancestors https://mayuwellnesclub.com https://www.mayuwellnesclub.com"
-        if is_three_ds_frame
-        else "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
-    )
+    if is_three_ds_frame:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "form-action https:; frame-src https:; frame-ancestors "
+            "https://mayuwellnesclub.com https://www.mayuwellnesclub.com"
+        )
+    elif is_education_viewer:
+        # The protected viewer is server-rendered and intentionally uses inline
+        # styles plus HTTPS Cloudinary media. Keep every other capability denied.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+            "img-src https: data:; media-src https:; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        )
     if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/payments/") else response.headers.get("Cache-Control", "no-cache")
