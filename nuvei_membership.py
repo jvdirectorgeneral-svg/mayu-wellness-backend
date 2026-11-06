@@ -12,16 +12,19 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
+from cryptography.fernet import Fernet, InvalidToken
 
 from database import get_db
 from dependencies import get_current_user
 from marketing import notify_admin_member_payment_event, send_welcome_member_notifications
 from marketing_contacts import upsert_marketing_contact
-from auth import hash_password
+from auth import SECRET_KEY, hash_password
 from renewal_processing import reconcile_subscription_renewal
+from security_alerts import _sanitize, record_security_event
 from models import (
     MembershipPayment,
     MonthlySelection,
@@ -69,6 +72,16 @@ class RegisterTokenRequest(BaseModel):
     charge_initial: bool = False
 
 
+class BrowserInfo(BaseModel):
+    language: Optional[str] = None
+    java_enabled: bool = False
+    javascript_enabled: bool = True
+    color_depth: Optional[int] = None
+    screen_height: Optional[int] = None
+    screen_width: Optional[int] = None
+    timezone_offset: Optional[int] = None
+
+
 class SecureSignupRequest(BaseModel):
     name: str
     email: EmailStr
@@ -97,6 +110,9 @@ class SecureSignupRequest(BaseModel):
     expiry_year: Optional[str] = None
     origin: Optional[str] = None
     transaction_reference: Optional[str] = None
+    # Used only for the first debit and never persisted or logged.
+    cvc: Optional[str] = Field(default=None, min_length=3, max_length=4)
+    browser_info: Optional[BrowserInfo] = None
 
 
 class DebitRequest(BaseModel):
@@ -291,6 +307,98 @@ def current_cycle():
     return now.month, now.year
 
 
+def _three_ds_state(dev_reference: str, expires_in: int = 900) -> str:
+    expires_at = int(time.time()) + expires_in
+    payload = f"{dev_reference}|{expires_at}"
+    signature = hmac.new(
+        SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{encoded}.{signature}"
+
+
+def _parse_three_ds_state(state: str) -> str:
+    try:
+        encoded, signature = state.split(".", 1)
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        dev_reference, expires_at = payload.rsplit("|", 1)
+        expected = hmac.new(
+            SECRET_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid signature")
+        if int(expires_at) < int(time.time()):
+            raise ValueError("expired")
+        return dev_reference
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Estado 3DS inválido o expirado") from exc
+
+
+def _public_api_base() -> str:
+    configured = (os.getenv("PUBLIC_API_BASE_URL") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    callback = get_callback_url()
+    marker = "/payments/nuvei/membership/"
+    return callback.split(marker, 1)[0].rstrip("/")
+
+
+def _three_ds_term_url(state: str) -> str:
+    return f"{_public_api_base()}/payments/nuvei/membership/3ds/term/{state}"
+
+
+def _browser_payload(request: Request, info: Optional[BrowserInfo]) -> dict:
+    provided = info or BrowserInfo()
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    client_ip = forwarded or (request.client.host if request.client else "")
+    return {
+        "ip": client_ip,
+        "language": provided.language or request.headers.get("accept-language", "es-EC").split(",", 1)[0],
+        "java_enabled": provided.java_enabled,
+        "javascript_enabled": provided.javascript_enabled,
+        "color_depth": provided.color_depth or 24,
+        "screen_height": provided.screen_height or 0,
+        "screen_width": provided.screen_width or 0,
+        "timezone_offset": provided.timezone_offset or 0,
+        "user_agent": request.headers.get("user-agent", "")[:500],
+        "accept_header": request.headers.get("accept", "*/*")[:500],
+    }
+
+
+def _three_ds_artifact(response: dict, name: str) -> Optional[str]:
+    transaction = response.get("transaction") or response
+    candidates = [
+        transaction,
+        response,
+        transaction.get("threeDS2_data") or {},
+        transaction.get("three_ds") or {},
+        response.get("threeDS2_data") or {},
+        response.get("three_ds") or {},
+    ]
+    for candidate in candidates:
+        value = candidate.get(name) if isinstance(candidate, dict) else None
+        if value:
+            return str(value)
+    return None
+
+
+def _three_ds_action(attempt: NuveiRecurringAttempt, state: str, response: dict) -> dict:
+    detail = status_detail_as_int(attempt.status_detail)
+    action = "frictionless_wait" if detail == 35 else "challenge"
+    return {
+        "success": False,
+        "payment_pending": True,
+        "status": attempt.status,
+        "status_detail": detail,
+        "next_action": action,
+        "state": state,
+        "content_url": f"{_public_api_base()}/payments/nuvei/membership/3ds/content/{state}",
+        "continue_url": f"{_public_api_base()}/payments/nuvei/membership/3ds/continue/{state}",
+        "expires_in_seconds": 900,
+    }
+
+
 def cycle_from_date(value: date):
     return value.month, value.year
 
@@ -478,6 +586,46 @@ def normalize_card_payload(payload: dict):
     }
 
 
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _token_cipher() -> Optional[Fernet]:
+    key = (os.getenv("NUVEI_TOKEN_ENCRYPTION_KEY") or "").strip()
+    if not key:
+        if get_nuvei_mode() in {"production", "live"}:
+            raise RuntimeError("Falta NUVEI_TOKEN_ENCRYPTION_KEY en producción")
+        return None
+    try:
+        return Fernet(key.encode("ascii"))
+    except Exception as exc:
+        raise RuntimeError("NUVEI_TOKEN_ENCRYPTION_KEY no es una clave Fernet válida") from exc
+
+
+def _encrypt_card_token(token: str) -> str:
+    cipher = _token_cipher()
+    if not cipher:
+        return token
+    return "enc:v1:" + cipher.encrypt(token.encode("utf-8")).decode("ascii")
+
+
+def token_for_provider(card: NuveiMembershipCard) -> str:
+    stored = str(card.token or "")
+    if not stored.startswith("enc:v1:"):
+        cipher = _token_cipher()
+        if cipher:
+            card.token_fingerprint = _token_fingerprint(stored)
+            card.token = _encrypt_card_token(stored)
+        return stored
+    cipher = _token_cipher()
+    if not cipher:
+        raise RuntimeError("No se puede descifrar el token Nuvei")
+    try:
+        return cipher.decrypt(stored.removeprefix("enc:v1:").encode("ascii")).decode("utf-8")
+    except InvalidToken as exc:
+        raise RuntimeError("Token Nuvei cifrado inválido") from exc
+
+
 def card_to_dict(card: NuveiMembershipCard):
     return {
         "id": card.id,
@@ -535,7 +683,11 @@ def save_card_from_payload(
     if not token:
         raise HTTPException(status_code=400, detail="Nuvei no devolvió token de tarjeta")
 
-    existing = db.query(NuveiMembershipCard).filter(NuveiMembershipCard.token == token).first()
+    fingerprint = _token_fingerprint(token)
+    existing = db.query(NuveiMembershipCard).filter(
+        (NuveiMembershipCard.token_fingerprint == fingerprint)
+        | (NuveiMembershipCard.token == token)
+    ).first()
     if existing and existing.user_id != user.id:
         raise HTTPException(status_code=409, detail="Token Nuvei ya pertenece a otro socio")
 
@@ -546,14 +698,19 @@ def save_card_from_payload(
             .update({"is_default": False})
         )
 
-    card = existing or NuveiMembershipCard(user_id=user.id, token=token)
+    card = existing or NuveiMembershipCard(
+        user_id=user.id,
+        token=_encrypt_card_token(token),
+        token_fingerprint=fingerprint,
+    )
+    card.token_fingerprint = fingerprint
     for key, value in card_data.items():
         if value is not None:
             setattr(card, key, value)
     card.is_active = True
     card.is_default = make_default or card.is_default
-    # Persistimos únicamente metadatos permitidos. PAN y CVV nunca deben llegar
-    # al backend MAYU; la tokenización ocurre exclusivamente en el SDK Nuvei.
+    # Persistimos únicamente metadatos permitidos. PAN nunca llega al backend;
+    # el CVC del primer débito se usa en memoria y nunca pasa por esta función.
     card.raw_payload = json.dumps({"card": {"token_received": True, **card_data}})
 
     if not existing:
@@ -628,7 +785,7 @@ def create_payment_from_success(
         status="subscription_paid",
         payer_email=user.email,
         payment_reference=attempt.dev_reference,
-        raw_payload=json.dumps(response),
+        raw_payload=json.dumps(_sanitize(response)),
         admin_verified=False,
         paid_at=datetime.utcnow(),
     )
@@ -680,7 +837,7 @@ def run_nuvei_debit(
             dev_reference,
         ),
         "card": {
-            "token": card.token,
+            "token": token_for_provider(card),
         },
     }
 
@@ -694,7 +851,7 @@ def run_nuvei_debit(
         year=year,
         attempt_type=attempt_type,
         status="created",
-        request_payload=json.dumps(request_body),
+        request_payload=json.dumps(_sanitize(request_body)),
         due_date=datetime(year, month, 1),
     )
     db.add(attempt)
@@ -702,7 +859,7 @@ def run_nuvei_debit(
 
     response = nuvei_request("POST", "/v2/transaction/debit/", request_body)
     transaction = response.get("transaction") or response
-    attempt.response_payload = json.dumps(response)
+    attempt.response_payload = json.dumps(_sanitize(response))
     attempt.transaction_id = transaction.get("id")
     attempt.authorization_code = transaction.get("authorization_code")
     attempt.status = str(transaction.get("status") or "unknown")
@@ -750,6 +907,21 @@ def run_nuvei_debit(
         # reintenta y el estado final se administra con la politica de cobro.
         attempt.next_retry_at = datetime.utcnow() + timedelta(days=1)
         schedule_card_retry(card)
+        if card.failed_attempts >= 3:
+            record_security_event(
+                db,
+                event_type="nuvei_repeated_payment_failure",
+                severity="critical",
+                source="nuvei_membership_renewal",
+                reference=dev_reference,
+                summary="La membresía alcanzó tres o más intentos de cobro fallidos.",
+                metadata={
+                    "user_id": user.id,
+                    "failed_attempts": card.failed_attempts,
+                    "status": attempt.status,
+                    "status_detail": attempt.status_detail,
+                },
+            )
 
     db.commit()
 
@@ -812,13 +984,110 @@ def signup_client_config(email: EmailStr, phone: str):
     }
 
 
-@router.post("/signup/activate", status_code=201)
-def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
-    """Cobra primero y confirma toda el alta en una sola transaccion SQL.
+def _complete_initial_signup(
+    db: Session,
+    *,
+    user: User,
+    card: NuveiMembershipCard,
+    attempt: NuveiRecurringAttempt,
+    response: dict,
+) -> MembershipPayment:
+    if attempt.membership_payment_id:
+        return db.query(MembershipPayment).filter(
+            MembershipPayment.id == attempt.membership_payment_id
+        ).first()
 
-    Si Nuvei no responde exactamente status=success y status_detail=3, el
-    rollback elimina usuario, tarjeta, pago, seleccion y referido.
-    """
+    metadata = json.loads(attempt.request_payload or "{}")
+    payment = create_payment_from_success(db, user, attempt, response)
+    advance_card_after_success(card, datetime.utcnow())
+
+    selection = get_or_create_monthly_selection(db, user, attempt.month, attempt.year)
+    if selection:
+        for product_name in dict.fromkeys(metadata.get("initial_products") or []):
+            product = db.query(Product).filter(Product.name == product_name).first()
+            if product:
+                exists = db.query(MonthlySelectionItem).filter(
+                    MonthlySelectionItem.monthly_selection_id == selection.id,
+                    MonthlySelectionItem.product_id == product.id,
+                ).first()
+                if not exists:
+                    db.add(MonthlySelectionItem(
+                        monthly_selection_id=selection.id,
+                        product_id=product.id,
+                        quantity=1,
+                    ))
+        selection.status = "confirmed"
+        selection.editable = True
+
+    ambassador_code = (metadata.get("ambassador_code") or "").strip()
+    if ambassador_code:
+        ambassador = db.query(Ambassador).filter(
+            Ambassador.ambassador_code == ambassador_code
+        ).first()
+        existing_referral = db.query(AmbassadorReferral).filter(
+            AmbassadorReferral.user_id == user.id
+        ).first()
+        if ambassador and not existing_referral:
+            db.add(AmbassadorReferral(
+                ambassador_id=ambassador.id,
+                user_id=user.id,
+                referral_code=ambassador_code,
+                status="active",
+            ))
+
+    upsert_marketing_contact(
+        db,
+        name=user.name,
+        email=user.email,
+        phone=user.phone,
+        city=user.city,
+        source="mayu_wellness",
+        user_id=user.id,
+        marketing_consent=True,
+        consent_source="digital_policy",
+    )
+    return payment
+
+
+def _apply_three_ds_result(
+    db: Session,
+    attempt: NuveiRecurringAttempt,
+    response: dict,
+) -> tuple[Optional[MembershipPayment], Optional[dict]]:
+    transaction = response.get("transaction") or response
+    attempt.response_payload = json.dumps(_sanitize(response))
+    attempt.transaction_id = transaction.get("id") or attempt.transaction_id
+    attempt.authorization_code = transaction.get("authorization_code") or attempt.authorization_code
+    attempt.status = str(transaction.get("status") or attempt.status)
+    attempt.status_detail = status_detail_as_int(transaction.get("status_detail"))
+    attempt.message = transaction.get("message")
+
+    if is_nuvei_success(response):
+        user = db.query(User).filter(User.id == attempt.user_id).first()
+        card = db.query(NuveiMembershipCard).filter(
+            NuveiMembershipCard.id == attempt.card_id
+        ).first()
+        if not user or not card:
+            raise HTTPException(status_code=409, detail="Alta 3DS incompleta")
+        attempt.charged_at = datetime.utcnow()
+        return _complete_initial_signup(
+            db, user=user, card=card, attempt=attempt, response=response
+        ), None
+
+    if attempt.status_detail in {35, 36}:
+        state = _three_ds_state(attempt.dev_reference)
+        return None, _three_ds_action(attempt, state, response)
+
+    return None, None
+
+
+@router.post("/signup/activate", status_code=201)
+def secure_signup(
+    payload: SecureSignupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Creates a pending member and completes activation only after Nuvei/3DS approval."""
     email = payload.email.strip().lower()
     cedula = payload.cedula.strip()
     required = {
@@ -839,6 +1108,10 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Debes aceptar todas las politicas obligatorias")
     if payload.membership_level not in MONTHLY_PRICES:
         raise HTTPException(status_code=400, detail="Nivel de membresia invalido")
+    if get_nuvei_mode() in {"production", "live"} and not payload.cvc:
+        raise HTTPException(status_code=400, detail="CVC requerido para el primer pago 3DS")
+    if get_nuvei_mode() in {"production", "live"} and not payload.browser_info:
+        raise HTTPException(status_code=400, detail="Información del navegador requerida para 3DS")
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=409, detail="El correo ya esta registrado")
     if db.query(User).filter(User.cedula == cedula).first():
@@ -889,6 +1162,7 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
         month, year = current_cycle()
         amount = MONTHLY_PRICES[payload.membership_level]
         dev_reference = f"MWC-NUVEI-SIGNUP-{user.id}-{int(time.time())}"
+        state = _three_ds_state(dev_reference)
         request_body = {
             "user": {"id": external_nuvei_user_id, "email": user.email, "phone": user.phone},
             "order": nuvei_order(
@@ -896,11 +1170,50 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
                 f"Mayu Wellness Club primer debito Nivel {payload.membership_level}",
                 dev_reference,
             ),
-            "card": {"token": card.token},
+            "card": {
+                "token": token_for_provider(card),
+                **({"cvc": payload.cvc} if payload.cvc else {}),
+            },
+            "extra_params": {
+                "threeDS2_data": {
+                    "term_url": _three_ds_term_url(state),
+                    "device_type": "browser",
+                    "browser_info": _browser_payload(request, payload.browser_info),
+                }
+            },
         }
+        attempt = NuveiRecurringAttempt(
+            user_id=user.id,
+            card_id=card.id,
+            dev_reference=dev_reference,
+            amount=amount,
+            currency="USD",
+            month=month,
+            year=year,
+            attempt_type="subscription",
+            status="created",
+            request_payload=json.dumps({
+                "initial_products": payload.initial_products,
+                "ambassador_code": ambassador_code,
+                "three_ds": {"term_url_created": True, "browser_info_received": True},
+            }),
+            due_date=now,
+        )
+        db.add(attempt)
+        db.flush()
         response = nuvei_request("POST", "/v2/transaction/debit/", request_body)
         transaction = response.get("transaction") or response
-        if not is_nuvei_success(response):
+        payment, next_action = _apply_three_ds_result(db, attempt, response)
+
+        # Erase the only in-memory reference containing the CVC as soon as the
+        # provider call returns. It is never written to PostgreSQL or logs.
+        request_body["card"].pop("cvc", None)
+
+        if next_action:
+            db.commit()
+            return JSONResponse(status_code=202, content=next_action)
+
+        if not payment:
             db.rollback()
             raise HTTPException(
                 status_code=402,
@@ -911,39 +1224,6 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
                 },
             )
 
-        attempt = NuveiRecurringAttempt(
-            user_id=user.id, card_id=card.id, dev_reference=dev_reference,
-            transaction_id=transaction.get("id"), authorization_code=transaction.get("authorization_code"),
-            amount=amount, currency="USD", month=month, year=year, attempt_type="subscription",
-            status=str(transaction.get("status")), status_detail=status_detail_as_int(transaction.get("status_detail")),
-            message=transaction.get("message"), request_payload=json.dumps(request_body),
-            response_payload=json.dumps(response), due_date=now, charged_at=now,
-        )
-        db.add(attempt)
-        db.flush()
-        payment = create_payment_from_success(db, user, attempt, response)
-        advance_card_after_success(card, now)
-
-        selection = get_or_create_monthly_selection(db, user, month, year)
-        if selection:
-            # Los nombres vienen de las opciones publicadas por el propio backend.
-            for product_name in dict.fromkeys(payload.initial_products):
-                product = db.query(Product).filter(Product.name == product_name).first()
-                if product:
-                    db.add(MonthlySelectionItem(monthly_selection_id=selection.id, product_id=product.id, quantity=1))
-            selection.status = "confirmed"
-            selection.editable = True
-
-        if ambassador:
-            db.add(AmbassadorReferral(
-                ambassador_id=ambassador.id, user_id=user.id,
-                referral_code=ambassador_code, status="active",
-            ))
-        upsert_marketing_contact(
-            db, name=user.name, email=user.email, phone=user.phone, city=user.city,
-            source="mayu_wellness", user_id=user.id, marketing_consent=True,
-            consent_source="digital_policy",
-        )
         db.commit()
         db.refresh(user)
     except HTTPException:
@@ -967,6 +1247,103 @@ def secure_signup(payload: SecureSignupRequest, db: Session = Depends(get_db)):
         "authorization_code": transaction.get("authorization_code"),
         "welcome_notifications": welcome,
     }
+
+
+def _attempt_from_state(db: Session, state: str) -> NuveiRecurringAttempt:
+    dev_reference = _parse_three_ds_state(state)
+    attempt = db.query(NuveiRecurringAttempt).filter(
+        NuveiRecurringAttempt.dev_reference == dev_reference,
+        NuveiRecurringAttempt.attempt_type == "subscription",
+    ).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Transacción 3DS no encontrada")
+    return attempt
+
+
+def _verify_three_ds(db: Session, attempt: NuveiRecurringAttempt, verify_type: str, value: str):
+    if attempt.membership_payment_id:
+        return {"already_completed": True, "payment_id": attempt.membership_payment_id}
+    card = db.query(NuveiMembershipCard).filter(
+        NuveiMembershipCard.id == attempt.card_id
+    ).first()
+    user = db.query(User).filter(User.id == attempt.user_id).first()
+    if not card or not user or not attempt.transaction_id:
+        raise HTTPException(status_code=409, detail="Transacción 3DS incompleta")
+    body = {
+        "transaction": {"id": attempt.transaction_id},
+        "user": {"id": nuvei_user_id_for_card(user, card)},
+        "type": verify_type,
+        "value": value,
+        "more_info": True,
+    }
+    response = nuvei_request("POST", "/v2/transaction/verify", body)
+    payment, next_action = _apply_three_ds_result(db, attempt, response)
+    db.commit()
+    if payment:
+        try:
+            send_welcome_member_notifications(
+                db=db, user=user, trigger="nuvei_subscription_activation"
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+        return {"success": True, "payment_id": payment.id, "status_detail": 3}
+    if next_action:
+        return next_action
+    record_security_event(
+        db,
+        event_type="nuvei_3ds_failed",
+        severity="critical",
+        source="nuvei_membership_3ds",
+        reference=attempt.dev_reference,
+        summary="Nuvei no aprobó la verificación 3DS inicial.",
+        metadata={"status": attempt.status, "status_detail": attempt.status_detail},
+    )
+    db.commit()
+    raise HTTPException(status_code=402, detail="Verificación 3DS no aprobada")
+
+
+@router.get("/3ds/content/{state}", response_class=HTMLResponse)
+def three_ds_content(state: str, db: Session = Depends(get_db)):
+    attempt = _attempt_from_state(db, state)
+    if attempt.membership_payment_id:
+        return HTMLResponse("<p>Pago ya confirmado.</p>")
+    response = json.loads(attempt.response_payload or "{}")
+    artifact = (
+        _three_ds_artifact(response, "challenge_request")
+        or _three_ds_artifact(response, "hidden_iframe")
+    )
+    if not artifact:
+        raise HTTPException(status_code=409, detail="Nuvei no entregó contenido 3DS")
+    return HTMLResponse(artifact)
+
+
+@router.post("/3ds/continue/{state}")
+def continue_three_ds(state: str, db: Session = Depends(get_db)):
+    attempt = _attempt_from_state(db, state)
+    if attempt.status_detail != 35 and not attempt.membership_payment_id:
+        raise HTTPException(status_code=409, detail="La transacción no espera continuación frictionless")
+    return _verify_three_ds(db, attempt, "AUTHENTICATION_CONTINUE", "")
+
+
+@router.post("/3ds/term/{state}", response_class=HTMLResponse)
+def complete_three_ds_challenge(
+    state: str,
+    cres: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    attempt = _attempt_from_state(db, state)
+    result = _verify_three_ds(db, attempt, "BY_CRES", cres)
+    success = bool(result.get("success") or result.get("already_completed"))
+    message = "Pago confirmado correctamente." if success else "El banco todavía está verificando el pago."
+    return HTMLResponse(
+        "<!doctype html><html><body>"
+        f"<p>{message}</p>"
+        "<script>window.parent.postMessage({type:'mayu-nuvei-3ds',success:"
+        f"{str(success).lower()}"
+        "}, 'https://mayuwellnesclub.com');</script>"
+        "</body></html>"
+    )
 
 
 @router.post("/cards/register-token")
@@ -1080,14 +1457,14 @@ def delete_card(
         "POST",
         "/v2/card/delete/",
         {
-            "card": {"token": card.token},
+            "card": {"token": token_for_provider(card)},
             "user": {"id": str(user.id)},
         },
     )
     card.is_active = False
     card.is_default = False
     card.deleted_at = datetime.utcnow()
-    card.raw_payload = json.dumps({"delete_response": response})
+    card.raw_payload = json.dumps({"delete_response": _sanitize(response)})
     db.commit()
     return {"message": "Tarjeta eliminada", "card_id": card.id, "nuvei": response}
 
@@ -1230,7 +1607,7 @@ def refund(
 
     if payment and is_nuvei_success(response):
         payment.status = "refunded"
-        payment.raw_payload = json.dumps({"last_refund": response})
+        payment.raw_payload = json.dumps({"last_refund": _sanitize(response)})
         db.commit()
 
     return {"message": "Reverso solicitado a Nuvei", "nuvei": response}
@@ -1264,7 +1641,20 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     dev_reference = str(transaction.get("dev_reference") or "")
     user_id = user_payload.get("id")
 
-    validate_webhook_signature(transaction, user_id)
+    try:
+        validate_webhook_signature(transaction, user_id)
+    except HTTPException:
+        record_security_event(
+            db,
+            event_type="nuvei_invalid_webhook_signature",
+            severity="critical",
+            source="nuvei_webhook",
+            reference=dev_reference or transaction_id or None,
+            summary="Nuvei webhook rechazado por firma o application_code inválidos.",
+            metadata={"transaction_id": transaction_id, "dev_reference": dev_reference},
+        )
+        db.commit()
+        raise
 
     attempt = None
     if dev_reference:
@@ -1283,6 +1673,16 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     if not attempt:
         # Este endpoint procesa exclusivamente cobros de membresia creados por
         # MAYU. Otros productos Nuvei no pueden activar socios por callback.
+        record_security_event(
+            db,
+            event_type="nuvei_unknown_callback",
+            severity="warning",
+            source="nuvei_webhook",
+            reference=dev_reference or transaction_id or None,
+            summary="Se recibió un callback que no corresponde a una membresía creada por Mayu.",
+            metadata={"transaction_id": transaction_id, "dev_reference": dev_reference},
+        )
+        db.commit()
         return {
             "status": "ignored",
             "reason": "membership_attempt_not_found",
@@ -1295,7 +1695,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         callback_was_already_processed = bool(
             attempt.response_payload and attempt.next_retry_at
         )
-        attempt.response_payload = json.dumps(event)
+        attempt.response_payload = json.dumps(_sanitize(event))
         attempt.transaction_id = transaction_id or attempt.transaction_id
         attempt.authorization_code = transaction.get("authorization_code")
         attempt.status = str(transaction.get("status") or attempt.status)
@@ -1309,6 +1709,16 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     if user and is_nuvei_success({"transaction": transaction}):
         callback_amount = round(float(transaction.get("amount") or 0), 2)
         if callback_amount != round(float(attempt.amount), 2):
+            record_security_event(
+                db,
+                event_type="nuvei_amount_mismatch",
+                severity="critical",
+                source="nuvei_webhook",
+                reference=attempt.dev_reference,
+                summary="El valor reportado por el callback no coincide con la membresía esperada.",
+                metadata={"expected_amount": attempt.amount, "callback_amount": callback_amount},
+            )
+            db.commit()
             raise HTTPException(status_code=409, detail="Monto del webhook no coincide")
         was_already_reconciled = attempt.membership_payment_id is not None
         payment = create_payment_from_success(db, user, attempt, {"transaction": transaction})

@@ -3,7 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import marketing
-from models import AmbassadorReferral, NuveiMembershipCard
+from models import AmbassadorReferral, NuveiMembershipCard, NuveiRecurringAttempt
 
 
 class _Query:
@@ -26,6 +26,8 @@ class _Db:
             return _Query(None)
         if model is NuveiMembershipCard:
             return _Query(SimpleNamespace(next_debit_at=datetime(2026, 9, 18)))
+        if model is NuveiRecurringAttempt:
+            return _Query(SimpleNamespace(authorization_code="AUTH-127"))
         raise AssertionError(f"Consulta inesperada: {model}")
 
 
@@ -60,6 +62,8 @@ class MarketingNuveiMessageTests(unittest.TestCase):
         self.assertIn("Detalle Nuvei mensual:", message)
         self.assertIn("Próximo débito programado: $40.00 el 2026-09-18", message)
         self.assertIn("Estado operativo: Nuvei confirmado, socio activo", message)
+        self.assertIn("Transaction ID DF: NUVEI-TX-127", message)
+        self.assertIn("Código de autorización: AUTH-127", message)
         self.assertNotIn("PayPal", message)
 
 

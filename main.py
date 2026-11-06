@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
+from fastapi.responses import Response
 import json
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -32,7 +33,6 @@ from marketplace_paypal import router as marketplace_paypal_router
 from pharmacy_loyalty import router as pharmacy_loyalty_router
 from doctor_prescribers import router as doctor_prescribers_router
 from nuvei_membership import router as nuvei_membership_router
-from nuvei_marketplace import router as nuvei_marketplace_router
 
 from dependencies import get_current_user
 import models
@@ -65,6 +65,16 @@ with engine.begin() as connection:
         "ALTER TABLE nuvei_membership_cards ADD COLUMN IF NOT EXISTS next_debit_at TIMESTAMP",
         "ALTER TABLE nuvei_membership_cards ADD COLUMN IF NOT EXISTS last_debit_at TIMESTAMP",
         "ALTER TABLE nuvei_membership_cards ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE nuvei_membership_cards ADD COLUMN IF NOT EXISTS token_fingerprint VARCHAR",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_nuvei_membership_cards_token_fingerprint "
+        "ON nuvei_membership_cards (token_fingerprint) WHERE token_fingerprint IS NOT NULL",
+        "CREATE TABLE IF NOT EXISTS security_events ("
+        "id SERIAL PRIMARY KEY, event_type VARCHAR NOT NULL, severity VARCHAR NOT NULL DEFAULT 'warning', "
+        "source VARCHAR NOT NULL DEFAULT 'application', reference VARCHAR, summary TEXT NOT NULL, "
+        "metadata_json TEXT, notified BOOLEAN NOT NULL DEFAULT FALSE, notification_error TEXT, "
+        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE INDEX IF NOT EXISTS ix_security_events_event_type ON security_events (event_type)",
+        "CREATE INDEX IF NOT EXISTS ix_security_events_created_at ON security_events (created_at)",
     ):
         connection.execute(text(statement))
     connection.execute(text(
@@ -191,9 +201,29 @@ app.add_middleware(
     ],
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response: Response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    is_three_ds_frame = request.url.path.startswith("/payments/nuvei/membership/3ds/")
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if is_three_ds_frame else "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "form-action https:; frame-src https:; frame-ancestors https://mayuwellnesclub.com https://www.mayuwellnesclub.com"
+        if is_three_ds_frame
+        else "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    )
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/payments/") else response.headers.get("Cache-Control", "no-cache")
+    return response
 
 
 app.include_router(users_router)
@@ -222,7 +252,6 @@ app.include_router(marketplace_paypal_router)
 app.include_router(pharmacy_loyalty_router)
 app.include_router(doctor_prescribers_router)
 app.include_router(nuvei_membership_router)
-app.include_router(nuvei_marketplace_router)
 
 
 @app.get("/")

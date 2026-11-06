@@ -905,6 +905,7 @@ class NuveiMembershipCard(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
 
     token = Column(String, nullable=False, unique=True, index=True)
+    token_fingerprint = Column(String, nullable=True, unique=True, index=True)
     status = Column(String, nullable=False, default="valid")
     is_default = Column(Boolean, default=False, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
@@ -980,6 +981,23 @@ class NuveiRecurringAttempt(Base):
         "MembershipPayment",
         foreign_keys=[membership_payment_id],
     )
+
+
+class SecurityEvent(Base):
+    """Auditable security signal. Never store credentials or full payment data."""
+
+    __tablename__ = "security_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    severity = Column(String, nullable=False, default="warning", index=True)
+    source = Column(String, nullable=False, default="application", index=True)
+    reference = Column(String, nullable=True, index=True)
+    summary = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=True)
+    notified = Column(Boolean, nullable=False, default=False)
+    notification_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class PasswordResetCode(Base):

@@ -39,6 +39,7 @@ from models import (
     MemberCard,
     MarketingContact,
     NuveiMembershipCard,
+    NuveiRecurringAttempt,
 )
 from marketing_contacts import contact_to_dict as directory_contact_to_dict, upsert_marketing_contact
 
@@ -357,6 +358,18 @@ def build_admin_member_payment_message(
             f"- {reference_label}: {payment_reference}",
             f"- Fecha pago: {payment.paid_at or payment.created_at}",
         ])
+        if provider == "nuvei":
+            nuvei_attempt = (
+                db.query(NuveiRecurringAttempt)
+                .filter(NuveiRecurringAttempt.membership_payment_id == payment.id)
+                .order_by(NuveiRecurringAttempt.id.desc())
+                .first()
+            )
+            lines.extend([
+                f"- Transaction ID DF: {payment_reference}",
+                f"- Código de autorización: "
+                f"{(nuvei_attempt.authorization_code if nuvei_attempt else None) or '-'}",
+            ])
 
         if is_initial_subscription:
             lines.extend([

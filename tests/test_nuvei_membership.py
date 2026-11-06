@@ -6,9 +6,11 @@ from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from cryptography.fernet import Fernet
 
 import nuvei_membership
 import marketing
+import security_alerts
 
 
 class FakeCard:
@@ -19,6 +21,44 @@ class FakeCard:
 
 
 class NuveiMembershipTests(unittest.TestCase):
+    def test_three_ds_state_is_signed_expires_and_rejects_tampering(self):
+        with patch.object(nuvei_membership.time, "time", return_value=1700000000):
+            state = nuvei_membership._three_ds_state("MWC-NUVEI-SIGNUP-1", expires_in=60)
+            self.assertEqual(
+                nuvei_membership._parse_three_ds_state(state),
+                "MWC-NUVEI-SIGNUP-1",
+            )
+            with self.assertRaises(HTTPException):
+                nuvei_membership._parse_three_ds_state(state[:-1] + "0")
+        with patch.object(nuvei_membership.time, "time", return_value=1700000061):
+            with self.assertRaises(HTTPException):
+                nuvei_membership._parse_three_ds_state(state)
+
+    def test_security_event_metadata_redacts_payment_secrets(self):
+        sanitized = security_alerts._sanitize({
+            "token": "private-token",
+            "cvc": "123",
+            "password": "secret-password",
+            "transaction_id": "DF-123",
+        })
+        self.assertEqual(sanitized["token"], "[REDACTED]")
+        self.assertEqual(sanitized["cvc"], "[REDACTED]")
+        self.assertEqual(sanitized["password"], "[REDACTED]")
+        self.assertEqual(sanitized["transaction_id"], "DF-123")
+
+    def test_nuvei_token_is_encrypted_at_rest_and_can_be_decrypted(self):
+        key = Fernet.generate_key().decode("ascii")
+        with patch.dict(
+            os.environ,
+            {"NUVEI_TOKEN_ENCRYPTION_KEY": key, "NUVEI_MODE": "sandbox"},
+            clear=False,
+        ):
+            encrypted = nuvei_membership._encrypt_card_token("provider-token")
+            card = type("Card", (), {"token": encrypted, "token_fingerprint": None})()
+            self.assertTrue(encrypted.startswith("enc:v1:"))
+            self.assertNotIn("provider-token", encrypted)
+            self.assertEqual(nuvei_membership.token_for_provider(card), "provider-token")
+
     def test_auth_token_uses_server_credentials(self):
         with patch.dict(
             os.environ,
